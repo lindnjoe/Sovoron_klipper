@@ -1493,14 +1493,8 @@ class afcACE(afcUnit):
             if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
                 buffer_obj.enable_advance_latch()
 
-            # Sync the filament sensor's reported state with the actual
-            # hardware switch.  During printing, the U1 filament_motion_sensor
-            # delays clearing filament_present when the switch goes False
-            # (it waits for extrusion movement that never happens during a
-            # tool change).  This leaves filament_present stale-True even
-            # though the old filament was physically removed.  Syncing here
-            # ensures the ACE feed detects a genuine insertion, not a stale
-            # state from the previous lane.
+            # U1 only: sync stale motion sensor state before feeding.
+            # No-op for non-U1 sensors.
             self._sync_toolhead_sensor(cur_extruder, cur_lane)
 
             self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
@@ -1910,10 +1904,20 @@ class afcACE(afcUnit):
             f"ACE: ACE did not become ready within {timeout:.0f}s, proceeding anyway"
         )
 
+    def _is_u1_motion_sensor(self, cur_extruder):
+        """Check if the extruder uses a U1 filament_motion_sensor.
+
+        U1 motion sensors expose runout_buttun_state (raw hardware switch)
+        which can diverge from filament_present during printing.  Regular
+        switch sensors don't have this attribute or this stale-state problem.
+        """
+        sensor_obj = getattr(cur_extruder, 'filament_sensor_obj', None)
+        return sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state')
+
     def _sync_toolhead_sensor(self, cur_extruder, cur_lane):
         """Sync the toolhead sensor's reported state with hardware reality.
 
-        The U1's filament_motion_sensor delays clearing filament_present
+        U1-only: the filament_motion_sensor delays clearing filament_present
         during printing (waits for extrusion-based runout detection).
         During tool changes no extrusion happens, so filament_present
         stays stale-True even after the old filament was removed.
@@ -1923,13 +1927,11 @@ class afcACE(afcUnit):
         going through note_filament_present (which would fire runout
         events and potentially pause the print).
         """
-        sensor_obj = getattr(cur_extruder, 'filament_sensor_obj', None)
-        if sensor_obj is None:
+        if not self._is_u1_motion_sensor(cur_extruder):
             return
-        helper = getattr(sensor_obj, 'runout_helper', None)
-        hw_state = getattr(sensor_obj, 'runout_buttun_state', None)
-        if helper is None or hw_state is None:
-            return
+        sensor_obj = cur_extruder.filament_sensor_obj
+        helper = sensor_obj.runout_helper
+        hw_state = sensor_obj.runout_buttun_state
         if hw_state != helper.filament_present:
             self.logger.info(
                 "ACE load: syncing toolhead sensor — switch=%s, "
@@ -1977,11 +1979,14 @@ class afcACE(afcUnit):
             f"length={feed_length}mm @ {feed_spd}mm/s"
         )
 
-        # Record sensor state before feeding.  If already True, the
-        # reading is stale (motion sensor default, old filament from a
-        # previous load, etc.) and cannot be used for trigger detection.
-        # Feed the full distance and let post-feed verification handle it.
+        # U1-only: if the motion sensor still reads True before feed, the
+        # reading is stale (printing-mode delayed clear from previous lane).
+        # _sync_toolhead_sensor should have corrected this, but if it didn't
+        # (edge case), skip sensor checks and trust calibrated distance.
+        # Non-U1 sensors don't have this stale-state problem — trust their
+        # reading and proceed with normal sensor-based detection.
         sensor_stale = (lane is not None
+                        and self._is_u1_motion_sensor(lane.extruder_obj)
                         and lane.get_toolhead_pre_sensor_state())
         self._sensor_stale = sensor_stale
         if sensor_stale:
