@@ -378,7 +378,7 @@ class AFCU1Bridge:
     def _run_home_z(self, z_offset=0.0):
         if z_offset:
             self.gcode.run_script_from_command(
-                "G28 Z Z_OFFSET={:.4f}".format(z_offset))
+                "G28 Z Z_OFFSET {:.4f}".format(z_offset))
         else:
             self.gcode.run_script_from_command("G28 Z")
 
