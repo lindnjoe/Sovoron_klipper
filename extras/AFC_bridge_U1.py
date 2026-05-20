@@ -263,6 +263,7 @@ class AFCU1Bridge:
         "BED_MESH":          {"type": "int", "default": 0},
         "FLOW_CALIBRATE":    {"type": "int", "default": 0},
         "SHAPER_CALIBRATE":  {"type": "int", "default": 0},
+        "Z_OFFSET":          {"type": "float", "default": 0.0},
     }
 
     def cmd_AFC_PRINT_SETUP_U1(self, gcmd: "GCodeCommand"):
@@ -279,6 +280,7 @@ class AFCU1Bridge:
         bed_mesh = gcmd.get_int("BED_MESH", 0, minval=0, maxval=1)
         flow_calibrate = gcmd.get_int("FLOW_CALIBRATE", 0, minval=0, maxval=1)
         shaper_calibrate = gcmd.get_int("SHAPER_CALIBRATE", 0, minval=0, maxval=1)
+        z_offset = gcmd.get_float("Z_OFFSET", 0.0)
 
         # ── 1. Build extruder map from AFC tool assignments ──────
         used_tools = self._get_used_tool_indices()
@@ -318,14 +320,14 @@ class AFCU1Bridge:
         self._run_preheat(used_physical)
 
         # ── 5a. Home Z before nozzle clean ───────────────────────
-        self.gcode.run_script_from_command("G28 Z")
+        self._run_home_z(z_offset)
 
         # ── 5b. Clean nozzles after preheat ──────────────────────
         self._run_nozzle_clean()
 
         # ── 5c. Precise Z home after nozzle clean ─────────────
         if bed_mesh:
-            self.gcode.run_script_from_command("G28 Z")
+            self._run_home_z(z_offset)
 
         # ── 6. Exit PRINTING for calibrations that need IDLE ───
         if bed_mesh or shaper_calibrate:
@@ -334,7 +336,7 @@ class AFCU1Bridge:
             )
 
         if bed_mesh:
-            self._run_bed_mesh()
+            self._run_bed_mesh(z_offset)
 
         if shaper_calibrate:
             self._run_shaper_calibrate()
@@ -373,10 +375,18 @@ class AFCU1Bridge:
 
     # ── calibration helpers ──────────────────────────────────────
 
-    def _run_bed_mesh(self):
-        self.gcode.run_script_from_command(
-            "BED_MESH_CALIBRATE METHOD=scan ADAPTIVE=1 ADAPTIVE_MARGIN=50"
-        )
+    def _run_home_z(self, z_offset=0.0):
+        if z_offset:
+            self.gcode.run_script_from_command(
+                "G28 Z Z_OFFSET={:.4f}".format(z_offset))
+        else:
+            self.gcode.run_script_from_command("G28 Z")
+
+    def _run_bed_mesh(self, z_offset=0.0):
+        cmd = "BED_MESH_CALIBRATE METHOD=scan ADAPTIVE=1 ADAPTIVE_MARGIN=50"
+        if z_offset:
+            cmd += " Z_OFFSET={:.4f}".format(z_offset)
+        self.gcode.run_script_from_command(cmd)
 
     def _run_shaper_calibrate(self):
         self.gcode.run_script_from_command("SM_FAST_SHAPER_CALIBRATE")
