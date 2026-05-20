@@ -520,6 +520,22 @@ class AFCU1Bridge:
                             k, lane.name,
                             logical_idx if logical_idx is not None
                             else "?", name)
+                else:
+                    self.logger.info(
+                        "Flow calibration did not confirm for %s on %s "
+                        "(calibrated_in_printing=%s, current_k=%s)",
+                        lane.name, name,
+                        flow_cal._calibrated_in_printing.get(name)
+                        if flow_cal else "N/A",
+                        flow_cal._current_k.get(name)
+                        if flow_cal else "N/A")
+
+        if self._lane_flow_k:
+            self.logger.info(
+                "Per-lane flow K after calibration: %s",
+                {k: "%.6f" % v for k, v in self._lane_flow_k.items()})
+        else:
+            self.logger.info("No per-lane flow K values stored after calibration")
 
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
         """Apply the calibrated flow K for the currently loading/loaded lane.
@@ -529,6 +545,9 @@ class AFCU1Bridge:
         back to lane_loaded for calls outside the load sequence.
         """
         if not self._lane_flow_k:
+            gcmd.respond_info(
+                "AFC flow calibration: no per-lane K stored "
+                "(calibration may not have run)")
             return
 
         lane_name = self.afc.current_loading
@@ -540,10 +559,15 @@ class AFCU1Bridge:
                 lane_name = ext_obj.lane_loaded
 
         if not lane_name:
+            gcmd.respond_info(
+                "AFC flow calibration: no lane currently loading/loaded")
             return
 
         k = self._lane_flow_k.get(lane_name)
         if k is None:
+            gcmd.respond_info(
+                "AFC flow calibration: no K stored for lane %s "
+                "(stored lanes: %s)" % (lane_name, list(self._lane_flow_k.keys())))
             return
 
         toolhead = self.printer.lookup_object("toolhead")
@@ -557,9 +581,6 @@ class AFCU1Bridge:
             gcmd.respond_info(
                 "AFC flow calibration: K=%.6f for lane %s on %s"
                 % (k, lane_name, ext_name))
-            self.logger.info(
-                "Applied flow K=%.6f for lane %s on %s",
-                k, lane_name, ext_name)
 
 
 def load_config(config):
