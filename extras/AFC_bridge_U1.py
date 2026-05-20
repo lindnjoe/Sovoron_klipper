@@ -9,7 +9,7 @@
 # (bed mesh, flow calibration, input shaper) and extruder mapping
 # are handled automatically during PRINT_START.
 #
-# Loaded by AFC_Toolchanger when machine_state_manager is detected.
+# Add [AFC_bridge_U1] to your config to enable.
 
 from __future__ import annotations
 import copy
