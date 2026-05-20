@@ -383,7 +383,7 @@ class AFCU1Bridge:
             self.gcode.run_script_from_command("G28 Z")
 
     def _run_bed_mesh(self, z_offset=0.0):
-        cmd = "BED_MESH_CALIBRATE METHOD=scan ADAPTIVE=1 ADAPTIVE_MARGIN=50"
+        cmd = "BED_MESH_CALIBRATE PROBE_COUNT=11,11 ADAPTIVE=1 ADAPTIVE_MARGIN=50"
         if z_offset:
             cmd += " Z_OFFSET={:.4f}".format(z_offset)
         self.gcode.run_script_from_command(cmd)
