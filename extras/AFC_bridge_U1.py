@@ -14,6 +14,7 @@
 from __future__ import annotations
 import copy
 import logging
+import os
 from typing import TYPE_CHECKING, Optional, Dict
 
 if TYPE_CHECKING:
@@ -78,6 +79,38 @@ class AFCU1Bridge:
 
     # ── helpers ──────────────────────────────────────────────────────
 
+    def _get_used_tool_indices(self) -> Optional[set]:
+        """Parse the current gcode file for filament usage metadata.
+
+        Returns a set of tool indices (0-based) that have non-zero filament
+        usage, or None if the metadata cannot be found.
+        """
+        sdcard = self.printer.lookup_object("virtual_sdcard", None)
+        if sdcard is None:
+            return None
+        filepath = sdcard.file_path()
+        if not filepath or not os.path.exists(filepath):
+            return None
+        try:
+            with open(filepath, "r") as f:
+                for line in f:
+                    if line.startswith("; filament used [mm]"):
+                        parts = line.split("=", 1)
+                        if len(parts) < 2:
+                            return None
+                        values = parts[1].strip().split(",")
+                        used = set()
+                        for i, val in enumerate(values):
+                            try:
+                                if float(val.strip()) > 0:
+                                    used.add(i)
+                            except ValueError:
+                                continue
+                        return used if used else None
+        except (IOError, OSError):
+            return None
+        return None
+
     def _get_physical_index(self, extruder_name: str) -> Optional[int]:
         if extruder_name == "extruder":
             return 0
@@ -86,8 +119,11 @@ class AFCU1Bridge:
         except (ValueError, AttributeError):
             return None
 
-    def _build_extruder_map(self) -> tuple[list, list, Dict[int, "AFCLane"], list]:
+    def _build_extruder_map(self, used_tools: Optional[set] = None) -> tuple[list, list, Dict[int, "AFCLane"], list]:
         """Build U1 extruder_map_table entries from AFC's tool_cmds.
+
+        Args:
+            used_tools: If provided, only include these tool indices (0-based).
 
         Returns (map_entries, used_physical, phys_to_lane, logical_indices).
         """
@@ -104,6 +140,9 @@ class AFCU1Bridge:
             except ValueError:
                 continue
             if logical_index >= LOGICAL_EXTRUDER_NUM:
+                continue
+
+            if used_tools is not None and logical_index not in used_tools:
                 continue
 
             lane = self.afc.lanes.get(lane_name)
@@ -242,8 +281,14 @@ class AFCU1Bridge:
         shaper_calibrate = gcmd.get_int("SHAPER_CALIBRATE", 0, minval=0, maxval=1)
 
         # ── 1. Build extruder map from AFC tool assignments ──────
+        used_tools = self._get_used_tool_indices()
+        if used_tools is not None:
+            self.logger.info(
+                "AFC_PRINT_SETUP_U1: gcode metadata says tools used: %s",
+                sorted(used_tools)
+            )
         map_entries, used_physical, phys_to_lane, logical_indices = (
-            self._build_extruder_map()
+            self._build_extruder_map(used_tools)
         )
         if not map_entries:
             self.logger.info(
