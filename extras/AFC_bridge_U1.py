@@ -50,8 +50,10 @@ class AFCU1Bridge:
         self._afc = None
         self.physical_extruder_num = config.getint("physical_extruder_num", PHYSICAL_EXTRUDER_NUM)
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
+        logging.info("AFC_bridge_U1: __init__ complete")
 
     def _handle_connect(self):
+        logging.info("AFC_bridge_U1: _handle_connect starting")
         self.functions = self.printer.lookup_object('AFC_functions')
         afc = self.printer.lookup_object("AFC")
         self.functions.register_commands(
