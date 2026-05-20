@@ -47,6 +47,7 @@ class AFCU1Bridge:
         self.gcode = self.printer.lookup_object("gcode")
         self.logger = logging.getLogger("AFC_bridge_U1")
         self._afc = None
+        self.physical_extruder_num = config.getint("physical_extruder_num", PHYSICAL_EXTRUDER_NUM)
         self.functions = self.printer.load_object(config, 'AFC_functions')
 
         afc = self.printer.lookup_object("AFC")
@@ -108,7 +109,7 @@ class AFCU1Bridge:
                 continue
 
             phys = self._get_physical_index(lane.extruder_obj.name)
-            if phys is None or phys >= PHYSICAL_EXTRUDER_NUM:
+            if phys is None or phys >= self.physical_extruder_num:
                 continue
 
             map_entries.append([logical_index, phys])
@@ -182,12 +183,12 @@ class AFCU1Bridge:
         for logical, physical in map_entries:
             cfg["extruder_map_table"][logical] = physical
 
-        cfg["extruders_used"] = [False] * PHYSICAL_EXTRUDER_NUM
+        cfg["extruders_used"] = [False] * self.physical_extruder_num
         for phys in used_physical:
             cfg["extruders_used"][phys] = True
 
         cfg["flow_calibrate"] = bool(flow_calibrate)
-        cfg["flow_calib_extruders"] = [False] * PHYSICAL_EXTRUDER_NUM
+        cfg["flow_calib_extruders"] = [False] * self.physical_extruder_num
         if flow_calibrate:
             for phys in used_physical:
                 cfg["flow_calib_extruders"][phys] = True
