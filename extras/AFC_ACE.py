@@ -1493,6 +1493,16 @@ class afcACE(afcUnit):
             if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
                 buffer_obj.enable_advance_latch()
 
+            # Sync the filament sensor's reported state with the actual
+            # hardware switch.  During printing, the U1 filament_motion_sensor
+            # delays clearing filament_present when the switch goes False
+            # (it waits for extrusion movement that never happens during a
+            # tool change).  This leaves filament_present stale-True even
+            # though the old filament was physically removed.  Syncing here
+            # ensures the ACE feed detects a genuine insertion, not a stale
+            # state from the previous lane.
+            self._sync_toolhead_sensor(cur_extruder, cur_lane)
+
             self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
@@ -1899,6 +1909,33 @@ class afcACE(afcUnit):
         self.logger.warning(
             f"ACE: ACE did not become ready within {timeout:.0f}s, proceeding anyway"
         )
+
+    def _sync_toolhead_sensor(self, cur_extruder, cur_lane):
+        """Sync the toolhead sensor's reported state with hardware reality.
+
+        The U1's filament_motion_sensor delays clearing filament_present
+        during printing (waits for extrusion-based runout detection).
+        During tool changes no extrusion happens, so filament_present
+        stays stale-True even after the old filament was removed.
+
+        This reads the raw switch state (runout_buttun_state) and
+        directly corrects filament_present if they disagree, without
+        going through note_filament_present (which would fire runout
+        events and potentially pause the print).
+        """
+        sensor_obj = getattr(cur_extruder, 'filament_sensor_obj', None)
+        if sensor_obj is None:
+            return
+        helper = getattr(sensor_obj, 'runout_helper', None)
+        hw_state = getattr(sensor_obj, 'runout_buttun_state', None)
+        if helper is None or hw_state is None:
+            return
+        if hw_state != helper.filament_present:
+            self.logger.info(
+                "ACE load: syncing toolhead sensor — switch=%s, "
+                "filament_present=%s (stale from printing mode)",
+                hw_state, helper.filament_present)
+            helper.filament_present = hw_state
 
     def _feed_slot(self, slot_index, lane=None, feed_distance=None):
         """Feed filament from an ACE slot through to the toolhead.
