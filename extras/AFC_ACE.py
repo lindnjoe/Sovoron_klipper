@@ -1934,9 +1934,8 @@ class afcACE(afcUnit):
         hw_state = sensor_obj.runout_buttun_state
         if hw_state != helper.filament_present:
             self.logger.info(
-                "ACE load: syncing toolhead sensor — switch=%s, "
-                "filament_present=%s (stale from printing mode)",
-                hw_state, helper.filament_present)
+                f"ACE load: syncing toolhead sensor — switch={hw_state}, "
+                f"filament_present={helper.filament_present} (stale from printing mode)")
             helper.filament_present = hw_state
 
     def _feed_slot(self, slot_index, lane=None, feed_distance=None):
