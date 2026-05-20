@@ -440,3 +440,7 @@ class AFCU1Bridge:
             self._exit_discard_bin()
             self._sync_filament_to_ptc(ptc, {ext: phys_to_lane[ext]})
             self.gcode.run_script_from_command("FLOW_CALIBRATE")
+
+
+def load_config(config):
+    return AFCU1Bridge(config)

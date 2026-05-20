@@ -57,12 +57,7 @@ class AfcToolchanger(afcUnit):
                                          self.cmd_AFC_SET_TOOLHEAD_LED_options)
 
         # Load U1 bridge (no-ops gracefully on non-U1 printers)
-        try:
-            from extras.AFC_bridge_U1 import AFCU1Bridge
-            self._u1_bridge = AFCU1Bridge(config)
-        except Exception:
-            import logging
-            logging.exception("AFC_Toolchanger: failed to load AFC_bridge_U1")
+        self.printer.load_object(config, 'AFC_bridge_U1')
 
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
