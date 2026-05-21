@@ -51,6 +51,7 @@ class AFCU1Bridge:
         self._lane_flow_k = {}
         self.physical_extruder_num = PHYSICAL_EXTRUDER_NUM
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
+        self.printer.register_event_handler("afc:tool_loaded", self._handle_tool_loaded)
 
     def _handle_connect(self):
         self.functions = self.printer.lookup_object('AFC_functions')
@@ -537,6 +538,38 @@ class AFCU1Bridge:
         else:
             self.logger.info("No per-lane flow K values stored after calibration")
 
+    def _apply_lane_flow_k(self, lane_name):
+        """Apply per-lane flow K for the given lane.
+
+        Returns a status message string, or None if nothing was applied.
+        """
+        if not self._lane_flow_k:
+            return None
+
+        k = self._lane_flow_k.get(lane_name)
+        if k is None:
+            return None
+
+        toolhead = self.printer.lookup_object("toolhead")
+        printer_ext = toolhead.get_extruder()
+        ext_name = printer_ext.get_name()
+
+        flow_cal = self.printer.lookup_object("flow_calibrator", None)
+        if flow_cal:
+            flow_cal._set_pressure_advance(printer_ext, k)
+            flow_cal._current_k[ext_name] = k
+            msg = "AFC flow calibration: applied K=%.6f for lane %s on %s" % (
+                k, lane_name, ext_name)
+            self.logger.info(msg)
+            return msg
+        return None
+
+    def _handle_tool_loaded(self, cur_lane):
+        """Event handler for afc:tool_loaded — apply per-lane flow K."""
+        if not self._lane_flow_k:
+            return
+        self._apply_lane_flow_k(cur_lane.name)
+
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
         """Apply the calibrated flow K for the currently loading/loaded lane.
 
@@ -563,24 +596,13 @@ class AFCU1Bridge:
                 "AFC flow calibration: no lane currently loading/loaded")
             return
 
-        k = self._lane_flow_k.get(lane_name)
-        if k is None:
+        msg = self._apply_lane_flow_k(lane_name)
+        if msg:
+            gcmd.respond_info(msg)
+        else:
             gcmd.respond_info(
                 "AFC flow calibration: no K stored for lane %s "
                 "(stored lanes: %s)" % (lane_name, list(self._lane_flow_k.keys())))
-            return
-
-        toolhead = self.printer.lookup_object("toolhead")
-        printer_ext = toolhead.get_extruder()
-        ext_name = printer_ext.get_name()
-
-        flow_cal = self.printer.lookup_object("flow_calibrator", None)
-        if flow_cal:
-            flow_cal._set_pressure_advance(printer_ext, k)
-            flow_cal._current_k[ext_name] = k
-            gcmd.respond_info(
-                "AFC flow calibration: K=%.6f for lane %s on %s"
-                % (k, lane_name, ext_name))
 
 
 def load_config(config):
