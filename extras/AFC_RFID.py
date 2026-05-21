@@ -15,44 +15,96 @@ if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
 
 _COLOR_NAMES = {
-    "ff0000": "Red",       "cc0000": "Red",       "990000": "Dark Red",
-    "660000": "Dark Red",  "4d0000": "Dark Red",  "330000": "Maroon",
-    "c03020": "Red",       "b02018": "Red",       "cc3333": "Red",
-    "e02020": "Red",       "a01818": "Dark Red",  "801010": "Dark Red",
-    "00ff00": "Green",     "00cc00": "Green",     "006600": "Dark Green",
-    "003300": "Dark Green","1a3300": "Dark Green",
-    "0000ff": "Blue",      "0000cc": "Blue",      "000099": "Dark Blue",
-    "000066": "Dark Blue", "003366": "Dark Blue",
-    "ffffff": "White",     "f0f0f0": "White",     "e0e0e0": "Light Gray",
-    "000000": "Black",     "0a0a0a": "Black",     "141414": "Black",
-    "ffff00": "Yellow",    "cccc00": "Yellow",    "ffd700": "Gold",
-    "998200": "Dark Gold", "b8860b": "Dark Gold",
-    "ff8000": "Orange",    "ff6600": "Orange",    "ff4500": "Orange",
-    "cc5500": "Dark Orange","993d00": "Dark Orange",
-    "800080": "Purple",    "660066": "Purple",    "9900cc": "Purple",
-    "330033": "Dark Purple","4a0066": "Dark Purple",
-    "ff00ff": "Magenta",   "cc00cc": "Magenta",
-    "ffc0cb": "Pink",      "ff69b4": "Pink",      "ff1493": "Hot Pink",
-    "808080": "Gray",      "999999": "Gray",      "666666": "Dark Gray",
-    "4d4d4d": "Dark Gray", "333333": "Dark Gray",
-    "a0a0a0": "Gray",      "c0c0c0": "Silver",    "b0b0b0": "Silver",
-    "8b4513": "Brown",     "654321": "Brown",     "a0522d": "Brown",
-    "3b1e08": "Dark Brown","4a2812": "Dark Brown", "3f231c": "Dark Brown",
-    "2c1a0e": "Dark Brown","5c3a1e": "Dark Brown", "6b3a2a": "Brown",
-    "d2691e": "Chocolate", "7b3f00": "Chocolate",
-    "00ffff": "Cyan",      "008b8b": "Teal",      "008080": "Teal",
-    "004d4d": "Dark Teal", "003333": "Dark Teal",
-    "000080": "Navy",      "191970": "Navy",
-    "f5f5dc": "Beige",     "d2b48c": "Tan",       "ffe4c4": "Bisque",
-    "ff7f50": "Coral",     "fa8072": "Salmon",
-    "7fff00": "Chartreuse","32cd32": "Lime",      "00ff7f": "Mint",
-    "4b0082": "Indigo",    "ee82ee": "Violet",    "dda0dd": "Plum",
-    "40e0d0": "Turquoise", "87ceeb": "Sky Blue",  "4169e1": "Royal Blue",
-    "556b2f": "Olive",     "808000": "Olive",     "333300": "Dark Olive",
-    "f0e68c": "Khaki",     "bdb76b": "Dark Khaki",
-    "fffdd0": "Cream",     "fffacd": "Lemon",
-    "e6e6fa": "Lavender",  "d8bfd8": "Thistle",
-    "fff0f5": "Blush",     "ffe4e1": "Misty Rose",
+    # ── Reds ──
+    "ff0000": "Red",        "ee0000": "Red",        "dd0000": "Red",
+    "cc0000": "Red",        "e02020": "Red",        "c03020": "Red",
+    "b02018": "Red",        "cc3333": "Red",        "dc143c": "Crimson",
+    "b22222": "Firebrick",  "990000": "Dark Red",   "a01818": "Dark Red",
+    "801010": "Dark Red",   "660000": "Dark Red",   "4d0000": "Dark Red",
+    "330000": "Maroon",     "800000": "Maroon",
+
+    # ── Oranges ──
+    "ff8000": "Orange",     "ff6600": "Orange",     "ff4500": "Orange Red",
+    "ff7f50": "Coral",      "ff6347": "Tomato",     "e9967a": "Salmon",
+    "fa8072": "Salmon",     "ffa07a": "Light Salmon",
+    "cc5500": "Dark Orange","ff8c00": "Dark Orange", "993d00": "Dark Orange",
+
+    # ── Yellows / Golds ──
+    "ffff00": "Yellow",     "ffee00": "Yellow",     "cccc00": "Yellow",
+    "ffd700": "Gold",       "daa520": "Goldenrod",  "b8860b": "Dark Goldenrod",
+    "998200": "Dark Gold",  "f0e68c": "Khaki",      "bdb76b": "Dark Khaki",
+    "fffacd": "Lemon",      "fff44f": "Lemon Yellow",
+
+    # ── Greens ──
+    "00ff00": "Green",      "00ee00": "Green",      "00cc00": "Green",
+    "00dd00": "Green",      "32cd32": "Lime",       "7fff00": "Chartreuse",
+    "90ee90": "Light Green","98fb98": "Pale Green",  "00ff7f": "Mint",
+    "3cb371": "Sea Green",  "2e8b57": "Sea Green",
+    "228b22": "Forest Green","006400": "Dark Green", "006600": "Dark Green",
+    "003300": "Dark Green", "1a3300": "Dark Green",
+
+    # ── Blues ──
+    "0000ff": "Blue",       "0000ee": "Blue",       "0000cc": "Blue",
+    "1e90ff": "Dodger Blue","4169e1": "Royal Blue",  "6495ed": "Cornflower Blue",
+    "4682b4": "Steel Blue", "87ceeb": "Sky Blue",    "87cefa": "Light Sky Blue",
+    "add8e6": "Light Blue", "b0e0e6": "Powder Blue",
+    "000099": "Dark Blue",  "000066": "Dark Blue",   "003366": "Dark Blue",
+    "000080": "Navy",       "191970": "Midnight Blue","00008b": "Dark Blue",
+
+    # ── Cyans / Teals ──
+    "00ffff": "Cyan",       "00eeee": "Cyan",       "e0ffff": "Light Cyan",
+    "40e0d0": "Turquoise",  "48d1cc": "Turquoise",  "00ced1": "Dark Turquoise",
+    "7fffd4": "Aquamarine",
+    "008b8b": "Teal",       "008080": "Teal",       "20b2aa": "Teal",
+    "004d4d": "Dark Teal",  "003333": "Dark Teal",
+
+    # ── Purples / Violets ──
+    "800080": "Purple",     "660066": "Purple",     "9900cc": "Purple",
+    "9370db": "Medium Purple","8a2be2": "Blue Violet",
+    "9400d3": "Dark Violet","7b68ee": "Slate Blue",
+    "4b0082": "Indigo",     "330033": "Dark Purple", "4a0066": "Dark Purple",
+    "ee82ee": "Violet",     "dda0dd": "Plum",
+
+    # ── Magentas / Pinks ──
+    "ff00ff": "Magenta",    "ee00ee": "Magenta",    "cc00cc": "Magenta",
+    "ff1493": "Hot Pink",   "ff69b4": "Hot Pink",
+    "ffc0cb": "Pink",       "ffb6c1": "Light Pink", "ff91a4": "Pink",
+    "c71585": "Magenta",    "db7093": "Pale Violet Red",
+
+    # ── Browns ──
+    "a0522d": "Sienna",     "8b4513": "Brown",      "654321": "Brown",
+    "6b3a2a": "Brown",      "d2691e": "Chocolate",  "7b3f00": "Chocolate",
+    "cd853f": "Peru",       "deb887": "Burlywood",
+    "5c3a1e": "Dark Brown", "4a2812": "Dark Brown",  "3f231c": "Dark Brown",
+    "3b1e08": "Dark Brown", "2c1a0e": "Dark Brown",
+
+    # ── Whites / Creams ──
+    "ffffff": "White",      "fafafa": "White",      "f5f5f5": "White",
+    "f0f0f0": "White",      "fffdd0": "Cream",      "faebd7": "Antique White",
+    "fff8dc": "Cornsilk",   "ffe4c4": "Bisque",
+    "f5f5dc": "Beige",      "d2b48c": "Tan",        "ffe4b5": "Moccasin",
+
+    # ── Grays / Silvers ──
+    "e0e0e0": "Light Gray", "d3d3d3": "Light Gray",
+    "c0c0c0": "Silver",     "b0b0b0": "Silver",     "a9a9a9": "Silver",
+    "a0a0a0": "Gray",       "999999": "Gray",        "808080": "Gray",
+    "666666": "Dark Gray",  "4d4d4d": "Dark Gray",   "333333": "Dark Gray",
+
+    # ── Blacks ──
+    "000000": "Black",      "0a0a0a": "Black",      "141414": "Black",
+    "1a1a1a": "Black",      "202020": "Black",
+
+    # ── Olives ──
+    "808000": "Olive",      "556b2f": "Olive",      "6b8e23": "Olive Drab",
+    "333300": "Dark Olive", "9acd32": "Yellow Green",
+
+    # ── Pastels / Misc ──
+    "e6e6fa": "Lavender",   "d8bfd8": "Thistle",
+    "fff0f5": "Blush",      "ffe4e1": "Misty Rose",
+    "f08080": "Light Coral","cd5c5c": "Indian Red",
+    "bc8f8f": "Rosy Brown", "f4a460": "Sandy Brown",
+    "ffdab9": "Peach",      "ffdead": "Navajo White",
+    "b0c4de": "Light Steel Blue", "778899": "Slate Gray",
 }
 
 MATERIAL_DENSITY = {
