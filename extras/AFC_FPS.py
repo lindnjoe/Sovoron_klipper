@@ -6,17 +6,27 @@
 
 # FPS (Filament Position Sensor) Buffer Driver
 #
-# Uses an analog FPS sensor to provide proportional buffer control for any
-# AFC unit type.  Instead of the TurtleNeck's bang-bang approach (two
-# mechanical switches toggling between high/low multipliers), this driver
-# reads a continuous 0.0-1.0 value from an ADC pin and applies a smooth,
-# proportional rotation-distance adjustment to keep the buffer at its
-# set_point (default 0.5).
+# Uses an analog Hall-effect sensor (or any proportional filament position
+# sensor) to provide proportional buffer control for any AFC unit type.
+# Instead of the TurtleNeck's bang-bang approach (two mechanical switches
+# toggling between high/low multipliers), this driver reads a continuous
+# 0.0-1.0 value from an ADC pin and applies a smooth, proportional
+# rotation-distance adjustment to keep the buffer at its set_point.
+#
+# Compatible with any ADC-based filament position sensor including:
+#   - TurtleNeck FPS boards
+#   - Proportional Sync Feedback (PSF) sensors (DRV5055A2 / MT9105ET Hall)
+#   - Any Hall-effect + spring slider producing a 0.0-1.0 analog signal
 #
 # FPS reading semantics:
-#   0.1 (low)  -> buffer is stretched / not feeding fast enough -> increase feed
-#   0.5 (mid)  -> buffer is centered / ideal state
-#   0.9 (high) -> buffer is compressed / pushing too much -> decrease feed
+#   0.1 (low)  -> buffer stretched / tension -> increase feed
+#   0.5 (mid)  -> buffer centered / ideal state
+#   0.9 (high) -> buffer compressed / pushing -> decrease feed
+#
+# PSF users: this driver accepts PSF-compatible config aliases:
+#   neutral_point  -> set_point    (default 0.5)
+#   max_tension    -> low_point    (default 0.1)
+#   max_compression -> high_point  (default 0.9)
 #
 # The driver is unit-agnostic and registers itself as an AFC buffer so any
 # lane can reference it via  buffer: <name>  in its config.
@@ -159,10 +169,16 @@ class AFCFPSBuffer:
             self.adc.setup_adc_callback(self._adc_callback)
 
         # ---- Buffer tuning parameters ----
+        # PSF-compatible aliases: neutral_point/max_tension/max_compression
+        # are accepted alongside set_point/low_point/high_point. If both
+        # are specified, the primary name takes precedence.
         self.fps_value: float = 0.0
-        self.set_point: float = config.getfloat('set_point', 0.5, minval=0.1, maxval=0.9)
-        self.low_point: float = config.getfloat('low_point', 0.1, minval=0.0, maxval=0.5)
-        self.high_point: float = config.getfloat('high_point', 0.9, minval=0.5, maxval=1.0)
+        _sp_default = config.getfloat('neutral_point', 0.5, minval=0.1, maxval=0.9)
+        self.set_point: float = config.getfloat('set_point', _sp_default, minval=0.1, maxval=0.9)
+        _lp_default = config.getfloat('max_tension', 0.1, minval=0.0, maxval=0.5)
+        self.low_point: float = config.getfloat('low_point', _lp_default, minval=0.0, maxval=0.5)
+        _hp_default = config.getfloat('max_compression', 0.9, minval=0.5, maxval=1.0)
+        self.high_point: float = config.getfloat('high_point', _hp_default, minval=0.5, maxval=1.0)
 
         # Multiplier range — how aggressively the buffer corrects
         self.multiplier_high: float = config.getfloat('multiplier_high', 1.15, minval=1.0)
