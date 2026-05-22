@@ -99,6 +99,7 @@ class afc:
         self.in_print_timer     = None
         self.activate_cb_done = True
         self.db_backup          = False
+        self.u1_rfid            = None
 
         # Objects for everything configured for AFC
         self.units      = {}
@@ -427,6 +428,7 @@ class afc:
         self.gcode.register_command('_AFC_TEST_MESSAGES',   self.cmd__AFC_TEST_MESSAGES,    desc=self.cmd__AFC_TEST_MESSAGES_help)
         self.gcode.register_command('AFC_M104',             self._cmd_AFC_M104,             desc=self._cmd_AFC_M104_help)
         self.gcode.register_command('AFC_M109',             self._cmd_AFC_M109,             desc=self._cmd_AFC_M109_help)
+        self.gcode.register_command('AFC_RFID_READ',        self._cmd_U1_RFID_READ,         desc=self._cmd_U1_RFID_READ_help)
 
         self._rename_macros()
 
@@ -717,6 +719,12 @@ class afc:
         else:
             return self.quiet_mode
 
+    @staticmethod
+    def is_u1_motion_sensor(extruder_obj):
+        """Check if an extruder uses a U1 filament_motion_sensor."""
+        sensor_obj = getattr(extruder_obj, 'filament_sensor_obj', None)
+        return sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state')
+
     def _get_bypass_state(self):
         """
         Helper function to return if filament is present in bypass sensor
@@ -922,7 +930,7 @@ class afc:
         if abs(distance) >= 200: speed_mode = SpeedMode.LONG
 
         cur_lane.set_load_current() # Making current is set correctly when doing lane moves
-        cur_lane.move_advanced(distance, speed_mode, assist_active = AssistActive.YES)
+        cur_lane.unit_obj.lane_move(cur_lane, distance, speed_mode)
         cur_lane.do_enable(False)
         self.current_state = State.IDLE
         cur_lane.unit_obj.return_to_home()
@@ -1196,6 +1204,10 @@ class afc:
         self.LANE_UNLOAD( cur_lane )
 
     def LANE_UNLOAD(self, cur_lane: AFCLane):
+        custom_result = cur_lane.unit_obj.lane_unload(cur_lane)
+        if custom_result is not None:
+            return custom_result
+
         # TODO: update this to unload from toolhead and move all the way back to load
         # when homing is enabled
 
@@ -1333,7 +1345,7 @@ class afc:
             cur_hub = cur_lane.hub_obj
 
             # Check if the lane is in a state ready to load and hub is clear.
-            if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub()):
+            if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub() or cur_hub.is_virtual_pin()):
 
                 self.logger.info("Loading {}".format(cur_lane.name))
 
@@ -1357,6 +1369,7 @@ class afc:
                     # Activate the tool-loaded LED and handle filament operations if enabled.
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
+                    self.printer.send_event("afc:tool_loaded", cur_lane)
                     if self.poop:
                         if purge_length is not None:
                             self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))
@@ -1396,14 +1409,13 @@ class afc:
                     load_time = self.afcDeltaTime.log_major_delta("{} is now loaded in toolhead".format(cur_lane.name), False)
                     self.afc_stats.average_tool_load_time.average_time(load_time)
 
+                    if self.post_load_macro is not None:
+                        self.gcode.run_script_from_command(self.post_load_macro)
+
                     # Increment stat counts
                     cur_lane.extruder_obj.estats.tc_tool_load.increase_count()
                     cur_lane.lane_load_count.increase_count()
                     cur_lane.espooler.stats.update_database()
-
-                    if self.post_load_macro is not None:
-                        self.gcode.run_script_from_command(self.post_load_macro)
-                        # TODO: Add afcDeltaTime log
                 finally:
                     self.restore_toolhead_temp(temp_state)
 
@@ -1765,6 +1777,8 @@ class afc:
                     return success
             finally:
                 self.restore_toolhead_temp(temp_state)
+
+            cur_extruder.clear_toolhead_sensor()
 
             unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
             self.afc_stats.average_tool_unload_time.average_time(unload_time)
@@ -2663,3 +2677,14 @@ class afc:
         self.logger.error("Test Message 1")
         self.logger.error("Test Message 2")
         self.logger.error("Test Message 3")
+
+    _cmd_U1_RFID_READ_help = "Force RFID re-read for a U1 lane"
+    def _cmd_U1_RFID_READ(self, gcmd):
+        if self.u1_rfid is None:
+            gcmd.respond_info("U1 RFID not configured")
+            return
+        lane_name = gcmd.get('LANE', None)
+        if lane_name is None:
+            gcmd.respond_info("Usage: AFC_RFID_READ LANE=<lane_name>")
+            return
+        self.u1_rfid.force_read(lane_name)

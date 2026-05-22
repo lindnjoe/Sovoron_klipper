@@ -289,6 +289,11 @@ class AFCExtruder:
 
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
+            elif self.tool_start == "internal":
+                self.logger.info(
+                    "Setting up as internal — relying on unit firmware "
+                    "(e.g. ACE) for filament engagement verification"
+                )
             else:
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
                                                                                     self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
@@ -484,6 +489,19 @@ class AFCExtruder:
     def note_tool_start_callback(self, state, force=False):
         self.orig_note_filament_present(state, force)
         self.tool_start_callback(0, state)
+
+    def clear_toolhead_sensor(self):
+        """Clear U1 motion sensor state after unload for clean detection baseline."""
+        if (self.filament_sensor_name is not None
+                and self.filament_sensor_obj is not None
+                and self.afc.is_u1_motion_sensor(self)):
+            helper = self.filament_sensor_obj.runout_helper
+            if helper.filament_present:
+                helper.filament_present = False
+                self.logger.info(
+                    "Cleared U1 toolhead sensor after unload — "
+                    "filament_present was stale True")
+            self.tool_start_state = False
 
     def tool_start_callback(self, eventtime, state):
         """

@@ -73,6 +73,7 @@ class afcUnit:
         self.buffer_name                 = config.get('buffer', None)                                        # Buffer name(AFC_buffer) that belongs to this unit, can be overridden in AFC_stepper section
 
         self.remember_spool              = config.get('remember_spool', False)                               # Turns on/off ability to remember last ejected spool values for all lanes in this unit, can be overridden in AFC_stepper section
+        self.auto_spoolman_create        = config.getboolean('auto_spoolman_create', False)
         # LED SETTINGS
         # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
         self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane
@@ -697,6 +698,40 @@ class afcUnit:
 
     def calibration_lane_message(self) -> str:
         return ""
+
+    def abort_load(self, cur_lane):
+        """Cancel any in-progress load operation on the hardware.
+        Override in subclass for hardware-specific cancellation (ACE, OpenAMS)."""
+        pass
+
+    def lane_move(self, cur_lane, distance, speed_mode):
+        """Move filament in a lane by the given distance.
+        Override in subclass for hardware-specific movement (ACE serial, OpenAMS)."""
+        cur_lane.move_advanced(distance, speed_mode, assist_active=AssistActive.YES)
+
+    def lane_unload(self, cur_lane):
+        """Override in subclass for custom lane unload. Return non-None to skip default."""
+        return None
+
+    def on_lane_unset_loaded(self, lane, extruder_name):
+        """Called after a lane is manually unset from the toolhead via unset_lane_loaded."""
+        pass
+
+    def prep_capture_td1(self, cur_lane):
+        """Override in subclass for custom TD-1 prep capture. Return non-None to skip default."""
+        return None
+
+    def capture_td1_data(self, cur_lane):
+        """Override in subclass for custom TD-1 data capture. Return non-None to skip default."""
+        return None
+
+    def get_lane_reset_command(self, lane, dis):
+        """Override in subclass for custom lane reset command. Return None to use default."""
+        return None
+
+    def get_current_lane_fallback(self, tool_obj):
+        """Override in subclass to provide a fallback lane name when on_shuttle() is False."""
+        return None
 
     def get_calibrated_lanes(self) -> Optional[list[str]]:
         """

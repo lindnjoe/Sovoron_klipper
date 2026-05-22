@@ -141,6 +141,8 @@ class AFCLane:
         self.hub: str           = config.get('hub',None)                                # Hub name(AFC_hub) that belongs to this stepper, overrides hub that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
         # Overrides buffers set at the unit and extruder level
         self.buffer_name: str   = config.get("buffer", None)                            # Buffer name(AFC_buffer) that belongs to this stepper, overrides buffer that is set in extruder(AFC_extruder) or unit(AFC_BoxTurtle/NightOwl/etc) sections.
+        self.u1_rfid_channel: int  = config.getint('u1_rfid_channel', -1)
+        self.spool_scanner: bool   = config.getboolean('spool_scanner', False)
         self.unit               = unit.split(':')[0]
         try:
             self.index              = int(unit.split(':')[1])
@@ -287,8 +289,9 @@ class AFCLane:
         if (self.hub
             and "direct" not in self.hub):
             self._get_hub_object()
-            self._set_homing_endstop(query_endstops, ppins,
-                                     self.hub_obj.switch_pin, AFCHomingPoints.HUB)
+            if not self.hub_obj.is_virtual_pin():
+                self._set_homing_endstop(query_endstops, ppins,
+                                         self.hub_obj.switch_pin, AFCHomingPoints.HUB)
         if self.buffer_name:
             self._get_buffer_object()
             self._set_homing_endstop(query_endstops, ppins,
@@ -298,7 +301,7 @@ class AFCLane:
             and "extruder" not in self.name): # Protects against standalone lanes
             self._get_extruder_object()
             pin = self.extruder_obj.tool_start
-            if "buffer" not in pin:
+            if pin is not None and pin not in ("buffer", "internal"):
                 self._set_homing_endstop(query_endstops, ppins,
                                          pin, AFCHomingPoints.TOOL)
 
@@ -455,10 +458,14 @@ class AFCLane:
 
         raises error if buffer is not found
         """
-        try:
-            self.buffer_obj = self.printer.load_object(self._config, "AFC_buffer {}".format(self.buffer_name))
-        except:
-            error_string = 'Error: No config found for buffer: {buffer} in [{stepper}]. Please make sure [AFC_buffer {buffer}] section exists in your config'.format(
+        for prefix in ("AFC_buffer", "AFC_FPS"):
+            try:
+                self.buffer_obj = self.printer.load_object(self._config, "{} {}".format(prefix, self.buffer_name))
+                break
+            except Exception:
+                pass
+        else:
+            error_string = 'Error: No config found for buffer: {buffer} in [{stepper}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
                 buffer=self.buffer_name, stepper=self.fullname )
             raise error(error_string)
 
@@ -591,8 +598,9 @@ class AFCLane:
               and self.extruder_obj.tool_start == "buffer"
               and len(self.extruder_obj.lanes) > 1
               and self.name != self.extruder_obj.name):
-            if self.extruder_obj.buffer_name is not None:
-                self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(self.extruder_obj.buffer_name))
+            buf_name = self.extruder_obj.buffer_name or getattr(self.unit_obj, 'buffer_name', None)
+            if buf_name is not None:
+                self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(buf_name))
             else:
                 error_string = 'Error: Buffer was defined as tool_start in [AFC_extruder {extruder}] config, but buffer variable has not been configured. Please add buffer variable to either [AFC_extruder {extruder}], [AFC_stepper {name}] or [AFC_{unit_type} {unit_name}] section in your config file'.format(
                     extruder=self.extruder_obj.name, name=self.name, unit_type=self.unit_obj.type.replace("_", ""), unit_name=self.unit_obj.name )
@@ -1002,6 +1010,9 @@ class AFCLane:
         Common function to grab TD-1 data once user inserts filament into a lane. Only happens if user has specified
         this by setting `capture_td1_when_loaded: True` and if hub is clear and toolhead is not loaded.
         """
+        custom_result = self.unit_obj.prep_capture_td1(self)
+        if custom_result is not None:
+            return
         if self.td1_when_loaded:
             if not self.hub_obj.state and self.afc.function.get_current_lane_obj() is None:
                 self.get_td1_data()
@@ -1473,6 +1484,10 @@ class AFCLane:
         """
         if self.extruder_obj.tool_start == "buffer":
             return self.buffer_obj.advance_state
+        elif self.extruder_obj.tool_start == "internal":
+            return self.extruder_obj.tool_start_state
+        elif self.extruder_obj.tool_start is None and self.extruder_obj.filament_sensor_obj is not None:
+            return self.extruder_obj.filament_sensor_obj.runout_helper.filament_present
         else:
             return self.extruder_obj.tool_start_state
 
@@ -1485,6 +1500,8 @@ class AFCLane:
         """
         if self.extruder_obj.tool_start == "buffer":
             return self.buffer_endstop_name
+        elif self.extruder_obj.tool_start == "internal":
+            return AFCHomingPoints.TOOL
         else:
             return self.tool_endstop_name
 
@@ -1646,6 +1663,9 @@ class AFCLane:
         Captures TD-1 data for lane. Has error checking to verify that lane is loaded, hub is not blocked
         and that TD-1 device is still detected before trying to capture data.
         """
+        custom_result = self.unit_obj.capture_td1_data(self)
+        if custom_result is not None:
+            return custom_result
         max_move_tries = 0
         status = True
         msg = ""
