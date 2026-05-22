@@ -184,7 +184,6 @@ class afcACE(afcUnit):
         self._fps_latched = False
         self._fps_consecutive_hits = 0  # consecutive readings above threshold
         self._fps_poll_timer = None  # timer for polling AFC_FPS buffers
-        self._sensor_stale = False  # sensor was True before feed started
 
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
@@ -1357,7 +1356,6 @@ class afcACE(afcUnit):
         self._operation_active = True
         self._fps_latched = False
         self._fps_consecutive_hits = 0
-        self._sensor_stale = False
         try:
             return self._load_sequence_inner(cur_lane, cur_hub, cur_extruder)
         finally:
@@ -1541,11 +1539,6 @@ class afcACE(afcUnit):
             if self._fps_latched:
                 self.logger.info(
                     "ACE smart load: skipping — FPS already latched during feed"
-                )
-            elif self._sensor_stale:
-                self.logger.info(
-                    "ACE smart load: sensor was stale before feed — "
-                    "trusting calibrated distance"
                 )
             # Standard toolhead sensor verification with retry.
             # When home_to_tool is active, scale retries using
@@ -1909,28 +1902,28 @@ class afcACE(afcUnit):
         return self.afc.is_u1_motion_sensor(cur_extruder)
 
     def _sync_toolhead_sensor(self, cur_extruder, cur_lane):
-        """Sync the toolhead sensor's reported state with hardware reality.
+        """Reset the toolhead sensor to a clean state before feeding.
 
-        U1-only: the filament_motion_sensor delays clearing filament_present
-        during printing (waits for extrusion-based runout detection).
-        During tool changes no extrusion happens, so filament_present
-        stays stale-True even after the old filament was removed.
+        U1 motion sensors can report filament_present=True even after
+        filament is removed: during printing the sensor delays clearing
+        the flag (waits for extrusion-based runout detection), and after
+        a tool-change no extrusion happens to clear it.  The raw switch
+        state (runout_buttun_state) may also rest in True position
+        depending on the encoder wheel.
 
-        This reads the raw switch state (runout_buttun_state) and
-        directly corrects filament_present if they disagree, without
-        going through note_filament_present (which would fire runout
-        events and potentially pause the print).
+        Force filament_present=False so the sensor starts clean.  Real
+        filament arrival will toggle the encoder and set it back to True
+        via note_filament_present — that's the real trigger we detect.
         """
         if not self._is_u1_motion_sensor(cur_extruder):
             return
         sensor_obj = cur_extruder.filament_sensor_obj
         helper = sensor_obj.runout_helper
-        hw_state = sensor_obj.runout_buttun_state
-        if hw_state != helper.filament_present:
+        if helper.filament_present:
             self.logger.info(
-                f"ACE load: syncing toolhead sensor — switch={hw_state}, "
-                f"filament_present={helper.filament_present} (stale from printing mode)")
-            helper.filament_present = hw_state
+                f"ACE load: resetting toolhead sensor — "
+                f"filament_present was True (stale), forcing False for clean detection")
+            helper.filament_present = False
 
     def _feed_slot(self, slot_index, lane=None, feed_distance=None):
         """Feed filament from an ACE slot through to the toolhead.
@@ -1972,22 +1965,6 @@ class afcACE(afcUnit):
             f"length={feed_length}mm @ {feed_spd}mm/s"
         )
 
-        # U1-only: if the motion sensor still reads True before feed, the
-        # reading is stale (printing-mode delayed clear from previous lane).
-        # _sync_toolhead_sensor should have corrected this, but if it didn't
-        # (edge case), skip sensor checks and trust calibrated distance.
-        # Non-U1 sensors don't have this stale-state problem — trust their
-        # reading and proceed with normal sensor-based detection.
-        sensor_stale = (lane is not None
-                        and self._is_u1_motion_sensor(lane.extruder_obj)
-                        and lane.get_toolhead_pre_sensor_state())
-        self._sensor_stale = sensor_stale
-        if sensor_stale:
-            self.logger.info(
-                "ACE feed: sensor already triggered before feed — "
-                "ignoring sensor during feed, will verify post-feed"
-            )
-
         # early_engage: when True the caller should sync the extruder,
         # start feed_assist, and run tool_stn immediately — skipping
         # Phase 3 and the normal engagement path.
@@ -2008,12 +1985,10 @@ class afcACE(afcUnit):
             sensor_hit = self._wait_for_feed_complete(
                 slot_index, feed_length, feed_spd, lane=lane,
                 poll_interval=0.1,
-                check_sensor=not sensor_stale,
             )
 
-            sensor_triggered = (not sensor_stale
-                                and (sensor_hit
-                                     or lane.get_toolhead_pre_sensor_state()))
+            sensor_triggered = (sensor_hit
+                                or lane.get_toolhead_pre_sensor_state())
             total_fed = feed_length
 
             if not sensor_triggered:
@@ -2027,12 +2002,10 @@ class afcACE(afcUnit):
                     sensor_hit = self._wait_for_feed_complete(
                         slot_index, pulse_step, feed_spd, lane=lane,
                         poll_interval=0.1,
-                        check_sensor=not sensor_stale,
                     )
                     total_fed += pulse_step
-                    if (not sensor_stale
-                            and (sensor_hit
-                                 or lane.get_toolhead_pre_sensor_state())):
+                    if (sensor_hit
+                            or lane.get_toolhead_pre_sensor_state()):
                         sensor_triggered = True
                         break
 
@@ -2066,19 +2039,17 @@ class afcACE(afcUnit):
                 ace.feed_filament(slot_index, bulk_distance, feed_spd)
                 sensor_triggered_early = self._wait_for_feed_complete(
                     slot_index, bulk_distance, feed_spd, lane=lane,
-                    check_sensor=not sensor_stale,
                 )
             else:
                 sensor_triggered_early = False
 
             total_fed = bulk_distance
-            sensor_triggered = (not sensor_stale) and sensor_triggered_early
+            sensor_triggered = sensor_triggered_early
 
             if not sensor_triggered:
                 # Check if sensor triggered after bulk feed settled
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
-                if (not sensor_stale
-                        and lane.get_toolhead_pre_sensor_state()):
+                if lane.get_toolhead_pre_sensor_state():
                     sensor_triggered = True
                     self.logger.info(
                         f"ACE feed: toolhead sensor triggered during bulk feed "
@@ -2095,13 +2066,11 @@ class afcACE(afcUnit):
                 sensor_hit = self._wait_for_feed_complete(
                     slot_index, remaining, feed_spd, lane=lane,
                     poll_interval=0.1,
-                    check_sensor=not sensor_stale,
                 )
                 total_fed = max_total
 
-                if (not sensor_stale
-                        and (sensor_hit
-                             or lane.get_toolhead_pre_sensor_state())):
+                if (sensor_hit
+                        or lane.get_toolhead_pre_sensor_state()):
                     sensor_triggered = True
                     self.logger.info(
                         f"ACE feed: toolhead sensor triggered at ~{total_fed:.0f}mm"
@@ -2152,8 +2121,7 @@ class afcACE(afcUnit):
         return total_fed, sensor_triggered, early_engage
 
     def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_s,
-                                 lane=None, poll_interval=0.5,
-                                 check_sensor=True):
+                                 lane=None, poll_interval=0.5):
         """Wait for the ACE hardware to finish a feed/unwind movement.
 
         The ACE acknowledges feed_filament/unwind_filament commands immediately
@@ -2164,9 +2132,6 @@ class afcACE(afcUnit):
         If a lane with a toolhead sensor is provided, also checks the sensor
         each poll iteration and returns early if triggered.
 
-        :param check_sensor: When False, skip toolhead sensor polling during
-            the wait.  Used when the sensor was already True before the feed
-            started (stale state) so we don't false-trigger.
         :param speed_mm_s: Speed in mm/s (ACE firmware native unit)
         Returns True if the sensor triggered during the wait, False otherwise.
         """
@@ -2215,7 +2180,7 @@ class afcACE(afcUnit):
             )
 
             # Check toolhead sensor if available
-            if (check_sensor and lane is not None
+            if (lane is not None
                     and lane.get_toolhead_pre_sensor_state()):
                 sensor_triggered = True
                 self.logger.debug(
