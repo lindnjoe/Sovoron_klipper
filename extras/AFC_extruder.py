@@ -52,6 +52,12 @@ except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.for
 
 LARGE_TIME_OFFSET = 99999.9
 
+# U1 motion sensor clog/stuck spool detection
+U1_CLOG_SENSITIVITY = {'off': None, 'low': 1.5, 'medium': 1.0, 'high': 0.7}
+U1_CLOG_DWELL_BASE = 10.0
+U1_CLOG_CHECK_INTERVAL = 2.0
+U1_CLOG_GRACE_PERIOD = 15.0
+
 class AFCExtruderStats:
     """
     Holds a single value for stat tracking. Also has common functions to
@@ -212,6 +218,8 @@ class AFCExtruder:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        self.printer.register_event_handler("afc:tool_loaded", self._on_tool_loaded_clog)
+        self.printer.register_event_handler("klippy:shutdown", self._stop_clog_monitor)
 
         self.extruder_move_timer= self.reactor.register_timer(self.extruder_move_cb)
         self.temp_check_timer   = self.reactor.register_timer(self.temp_check_cb)
@@ -280,6 +288,26 @@ class AFCExtruder:
         # U1 only related variables
         self.park_detector_obj   = None
         self.filament_sensor_obj = None
+
+        # Clog/stuck spool detection via U1 motion sensor (no buffer)
+        self._clog_use_sensor = (self.filament_sensor_name is not None
+                                 and self.buffer_name is None)
+        if self._clog_use_sensor:
+            _sens = config.get('clog_sensitivity', 'medium')
+            if _sens not in U1_CLOG_SENSITIVITY:
+                raise error(
+                    f"Invalid clog_sensitivity '{_sens}' in [{self.fullname}]. "
+                    f"Valid: {', '.join(U1_CLOG_SENSITIVITY.keys())}")
+            self._clog_sensitivity_name = _sens
+            self._clog_multiplier = U1_CLOG_SENSITIVITY[_sens]
+        else:
+            self._clog_sensitivity_name = 'off'
+            self._clog_multiplier = None
+        self._clog_dwell = (U1_CLOG_DWELL_BASE * self._clog_multiplier
+                            if self._clog_multiplier is not None else 0)
+        self._clog_timer = None
+        self._clog_last_motion_time = None
+        self._clog_fired = False
 
         self.tool_start_state = False
         # TODO: add a check here as pin_tool_start should always be required, or let klipper take care of it by not passing in None
@@ -488,6 +516,9 @@ class AFCExtruder:
 
     def note_tool_start_callback(self, state, force=False):
         self.orig_note_filament_present(state, force)
+        if state and self._clog_timer is not None:
+            self._clog_last_motion_time = self.reactor.monotonic()
+            self._clog_fired = False
         self.tool_start_callback(0, state)
 
     def tool_start_callback(self, eventtime, state):
@@ -847,6 +878,70 @@ class AFCExtruder:
         """
         return self.no_lanes
 
+    # ---- U1 motion sensor clog/stuck spool detection ----
+
+    def _on_tool_loaded_clog(self, cur_lane):
+        if cur_lane.extruder_name == self.name:
+            self._start_clog_monitor()
+
+    def _start_clog_monitor(self):
+        if not self._clog_use_sensor or self._clog_multiplier is None:
+            return
+        now = self.reactor.monotonic()
+        self._clog_last_motion_time = now
+        self._clog_fired = False
+        if self._clog_timer is None:
+            self._clog_timer = self.reactor.register_timer(
+                self._clog_monitor_cb, now + U1_CLOG_GRACE_PERIOD)
+
+    def _stop_clog_monitor(self):
+        if self._clog_timer is not None:
+            self.reactor.unregister_timer(self._clog_timer)
+            self._clog_timer = None
+        self._clog_fired = False
+
+    def _clog_monitor_cb(self, eventtime):
+        if self._clog_multiplier is None:
+            self._stop_clog_monitor()
+            return self.reactor.NEVER
+
+        if not self.lane_loaded:
+            self._stop_clog_monitor()
+            return self.reactor.NEVER
+
+        if not self.afc.function.is_printing():
+            self._clog_last_motion_time = eventtime
+            return eventtime + U1_CLOG_CHECK_INTERVAL
+
+        toolhead = self.printer.lookup_object('toolhead')
+        if toolhead.get_extruder().get_name() != self.name:
+            self._clog_last_motion_time = eventtime
+            return eventtime + U1_CLOG_CHECK_INTERVAL
+
+        if self._clog_last_motion_time is None:
+            self._clog_last_motion_time = eventtime
+            return eventtime + U1_CLOG_CHECK_INTERVAL
+
+        time_since_motion = eventtime - self._clog_last_motion_time
+
+        if time_since_motion >= self._clog_dwell and not self._clog_fired:
+            self._clog_fired = True
+            self._fire_clog_error(time_since_motion)
+
+        return eventtime + U1_CLOG_CHECK_INTERVAL
+
+    def _fire_clog_error(self, elapsed):
+        lane_name = self.lane_loaded
+        if lane_name and lane_name in self.lanes:
+            cur_lane = self.lanes[lane_name]
+            msg = (f"Clog or stuck spool detected: no filament movement "
+                   f"for {elapsed:.1f}s (sensitivity: {self._clog_sensitivity_name})")
+            self.afc.error.handle_lane_failure(cur_lane, msg, pause=True)
+        else:
+            msg = (f"Clog or stuck spool detected on {self.name}: no filament "
+                   f"movement for {elapsed:.1f}s")
+            self.afc.error.AFC_error(msg, pause=True)
+
     cmd_UPDATE_TOOLHEAD_SENSORS_help = "Gives ability to update tool_stn, tool_stn_unload, tool_sensor_after_extruder values without restarting klipper"
     cmd_UPDATE_TOOLHEAD_SENSORS_options = {
         "EXTRUDER": {"type": "string", "default": "extruder"},
@@ -964,6 +1059,8 @@ class AFCExtruder:
         self.response['tool_end_status'] = bool(self.tool_end_state)
         self.response['lanes'] = [lane.name for lane in self.lanes.values()]
         self.response['on_shuttle'] = self.on_shuttle()
+        if self._clog_use_sensor:
+            self.response['clog_sensitivity'] = self._clog_sensitivity_name
         return self.response
 
 def load_config_prefix(config):
