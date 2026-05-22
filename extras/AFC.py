@@ -720,6 +720,17 @@ class afc:
         else:
             return self.quiet_mode
 
+    @staticmethod
+    def is_u1_motion_sensor(extruder_obj):
+        """Check if an extruder uses a U1 filament_motion_sensor.
+
+        U1 motion sensors expose runout_buttun_state (raw hardware switch)
+        which can diverge from filament_present during printing. Regular
+        switch sensors don't have this attribute.
+        """
+        sensor_obj = getattr(extruder_obj, 'filament_sensor_obj', None)
+        return sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state')
+
     def _get_bypass_state(self):
         """
         Helper function to return if filament is present in bypass sensor

@@ -1905,15 +1905,8 @@ class afcACE(afcUnit):
         )
 
     def _is_u1_motion_sensor(self, cur_extruder):
-        """Check if the extruder uses a U1 filament_motion_sensor.
-
-        Delegates to AFC_bridge_U1 which owns U1-specific detection.
-        Returns False if the bridge isn't loaded (non-U1 setup).
-        """
-        bridge = self.printer.lookup_object('AFC_bridge_U1', None)
-        if bridge is None:
-            return False
-        return bridge.is_u1_motion_sensor(cur_extruder)
+        """Check if the extruder uses a U1 filament_motion_sensor."""
+        return self.afc.is_u1_motion_sensor(cur_extruder)
 
     def _sync_toolhead_sensor(self, cur_extruder, cur_lane):
         """Sync the toolhead sensor's reported state with hardware reality.

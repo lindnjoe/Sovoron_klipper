@@ -87,21 +87,6 @@ class AFCU1Bridge:
 
     # ── helpers ──────────────────────────────────────────────────────
 
-    @staticmethod
-    def is_u1_motion_sensor(extruder_obj):
-        """Check if an extruder uses a U1 filament_motion_sensor.
-
-        U1 motion sensors expose runout_buttun_state (raw hardware switch)
-        which can diverge from filament_present during printing. Regular
-        switch sensors don't have this attribute.
-
-        Can be called from any module via:
-            bridge = printer.lookup_object('AFC_bridge_U1', None)
-            if bridge and bridge.is_u1_motion_sensor(extruder_obj): ...
-        """
-        sensor_obj = getattr(extruder_obj, 'filament_sensor_obj', None)
-        return sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state')
-
     def _get_used_tool_indices(self) -> Optional[set]:
         """Parse the current gcode file for filament usage metadata.
 
