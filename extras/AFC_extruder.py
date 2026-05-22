@@ -525,24 +525,27 @@ class AFCExtruder:
         self.tool_start_callback(0, state)
 
     def clear_toolhead_sensor(self):
-        """Signal filament removal to the U1 motion sensor after unload.
+        """Clear the U1 motion sensor state after filament has been unloaded.
 
         U1 motion sensors can leave filament_present=True after unload because
         during printing only True toggles call note_filament_present, and
         position-based runout needs extruder movement (which doesn't happen
         when the ACE motor drives the retraction).
 
-        Uses the existing note_filament_present(False) mechanism so the
-        proper "remove event detected" log and Klipper events fire — we
-        call orig_note_filament_present directly to avoid re-entering
-        tool_start_callback's standalone load/unload logic.
+        Sets state directly rather than through note_filament_present(False)
+        because calling that during printing triggers the runout event path
+        which sets min_event_systime=NEVER, blocking all future sensor
+        events until the async runout handler completes.
         """
         if (self.filament_sensor_name is not None
                 and self.filament_sensor_obj is not None
                 and self.afc.is_u1_motion_sensor(self)):
             helper = self.filament_sensor_obj.runout_helper
             if helper.filament_present:
-                self.orig_note_filament_present(False)
+                helper.filament_present = False
+                self.logger.info(
+                    "Cleared U1 toolhead sensor after unload — "
+                    "filament_present was stale True")
             self.tool_start_state = False
 
     def tool_start_callback(self, eventtime, state):
