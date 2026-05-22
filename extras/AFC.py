@@ -1617,8 +1617,10 @@ class afc:
 
             self.afcDeltaTime.log_with_time("Filament loaded to nozzle")
 
-            # Verify filament engagement via U1 motion sensor
-            if self.is_u1_motion_sensor(cur_extruder):
+            # Verify filament engagement via U1 motion sensor — only
+            # check if the sensor was active (not stale) before the move.
+            if (self.is_u1_motion_sensor(cur_extruder)
+                    and cur_extruder.tool_start_state):
                 self.reactor.pause(self.reactor.monotonic() + 0.5)
                 if (cur_extruder._clog_last_motion_time is None
                         or cur_extruder._clog_last_motion_time <= pre_stn_time):

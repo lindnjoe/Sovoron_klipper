@@ -307,6 +307,7 @@ class AFCExtruder:
                             if self._clog_multiplier is not None else 0)
         self._clog_timer = None
         self._clog_last_motion_time = None
+        self._clog_sensor_seen = False
         self._clog_fired = False
 
         self.tool_start_state = False
@@ -519,6 +520,7 @@ class AFCExtruder:
         self.orig_note_filament_present(state, force)
         if state:
             self._clog_last_motion_time = self.reactor.monotonic()
+            self._clog_sensor_seen = True
             self._clog_fired = False
         self.tool_start_callback(0, state)
 
@@ -888,18 +890,20 @@ class AFCExtruder:
     def _start_clog_monitor(self):
         if not self._clog_use_sensor or self._clog_multiplier is None:
             return
-        now = self.reactor.monotonic()
-        self._clog_last_motion_time = now
+        self._clog_last_motion_time = None
+        self._clog_sensor_seen = False
         self._clog_fired = False
         if self._clog_timer is None:
             self._clog_timer = self.reactor.register_timer(
-                self._clog_monitor_cb, now + U1_CLOG_GRACE_PERIOD)
+                self._clog_monitor_cb,
+                self.reactor.monotonic() + U1_CLOG_GRACE_PERIOD)
 
     def _stop_clog_monitor(self):
         if self._clog_timer is not None:
             self.reactor.unregister_timer(self._clog_timer)
             self._clog_timer = None
         self._clog_fired = False
+        self._clog_sensor_seen = False
 
     def _clog_monitor_cb(self, eventtime):
         if self._clog_multiplier is None:
@@ -910,16 +914,15 @@ class AFCExtruder:
             self._stop_clog_monitor()
             return self.reactor.NEVER
 
+        if not self._clog_sensor_seen:
+            return eventtime + U1_CLOG_CHECK_INTERVAL
+
         if not self.afc.function.is_printing():
             self._clog_last_motion_time = eventtime
             return eventtime + U1_CLOG_CHECK_INTERVAL
 
         toolhead = self.printer.lookup_object('toolhead')
         if toolhead.get_extruder().get_name() != self.name:
-            self._clog_last_motion_time = eventtime
-            return eventtime + U1_CLOG_CHECK_INTERVAL
-
-        if self._clog_last_motion_time is None:
             self._clog_last_motion_time = eventtime
             return eventtime + U1_CLOG_CHECK_INTERVAL
 
