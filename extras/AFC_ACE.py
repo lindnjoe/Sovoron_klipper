@@ -1801,6 +1801,11 @@ class afcACE(afcUnit):
                     local_slot, clear_dis, unload_spd
                 )
 
+            # U1 motion sensor: filament has been retracted past the
+            # toolhead sensor — clear stale filament_present so the
+            # next load starts with a clean False baseline.
+            cur_extruder.clear_toolhead_sensor()
+
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
