@@ -1460,6 +1460,17 @@ class afc:
             if cur_lane.get_toolhead_pre_sensor_state():
                 cur_lane.status = AFCLaneState.TOOL_LOADED
                 self.save_vars()
+            elif self.is_u1_motion_sensor(cur_extruder):
+                # U1 motion sensors detect via encoder rotation during
+                # extruder pulls, not ACE/OAMS push.  The unit's load
+                # sequence verified the feed internally — set the
+                # sensor state so Klipper reports filament present.
+                helper = cur_extruder.filament_sensor_obj.runout_helper
+                if not helper.filament_present:
+                    helper.filament_present = True
+                cur_extruder.tool_start_state = True
+                cur_lane.status = AFCLaneState.TOOL_LOADED
+                self.save_vars()
             else:
                 message = 'Custom load command did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
                 message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
@@ -1782,6 +1793,11 @@ class afc:
                     return success
             finally:
                 self.restore_toolhead_temp(temp_state)
+
+            # U1 motion sensor: filament has been retracted past the
+            # toolhead sensor — clear stale filament_present so the
+            # next load starts with a clean False baseline.
+            cur_extruder.clear_toolhead_sensor()
 
             unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
             self.afc_stats.average_tool_unload_time.average_time(unload_time)

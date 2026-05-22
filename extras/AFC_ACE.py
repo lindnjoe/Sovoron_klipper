@@ -1493,10 +1493,6 @@ class afcACE(afcUnit):
             if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
                 buffer_obj.enable_advance_latch()
 
-            # U1 only: sync stale motion sensor state before feeding.
-            # No-op for non-U1 sensors.
-            self._sync_toolhead_sensor(cur_extruder, cur_lane)
-
             self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
@@ -1546,6 +1542,11 @@ class afcACE(afcUnit):
                 self.logger.info(
                     "ACE smart load: sensor was stale before feed — "
                     "trusting calibrated distance"
+                )
+            elif self._is_u1_motion_sensor(cur_extruder):
+                self.logger.info(
+                    "ACE smart load: U1 motion sensor — skipping ACE push "
+                    "retries, engagement will be verified during tool_stn"
                 )
             # Standard toolhead sensor verification with retry.
             # When home_to_tool is active, scale retries using
@@ -1908,30 +1909,6 @@ class afcACE(afcUnit):
         """Check if the extruder uses a U1 filament_motion_sensor."""
         return self.afc.is_u1_motion_sensor(cur_extruder)
 
-    def _sync_toolhead_sensor(self, cur_extruder, cur_lane):
-        """Sync the toolhead sensor's reported state with hardware reality.
-
-        U1-only: the filament_motion_sensor delays clearing filament_present
-        during printing (waits for extrusion-based runout detection).
-        During tool changes no extrusion happens, so filament_present
-        stays stale-True even after the old filament was removed.
-
-        This reads the raw switch state (runout_buttun_state) and
-        directly corrects filament_present if they disagree, without
-        going through note_filament_present (which would fire runout
-        events and potentially pause the print).
-        """
-        if not self._is_u1_motion_sensor(cur_extruder):
-            return
-        sensor_obj = cur_extruder.filament_sensor_obj
-        helper = sensor_obj.runout_helper
-        hw_state = sensor_obj.runout_buttun_state
-        if hw_state != helper.filament_present:
-            self.logger.info(
-                f"ACE load: syncing toolhead sensor — switch={hw_state}, "
-                f"filament_present={helper.filament_present} (stale from printing mode)")
-            helper.filament_present = hw_state
-
     def _feed_slot(self, slot_index, lane=None, feed_distance=None):
         """Feed filament from an ACE slot through to the toolhead.
 
@@ -1972,15 +1949,13 @@ class afcACE(afcUnit):
             f"length={feed_length}mm @ {feed_spd}mm/s"
         )
 
+        is_u1 = lane is not None and self._is_u1_motion_sensor(lane.extruder_obj)
+
         # U1-only: if the motion sensor still reads True before feed, the
-        # reading is stale (printing-mode delayed clear from previous lane).
-        # _sync_toolhead_sensor should have corrected this, but if it didn't
-        # (edge case), skip sensor checks and trust calibrated distance.
-        # Non-U1 sensors don't have this stale-state problem — trust their
-        # reading and proceed with normal sensor-based detection.
-        sensor_stale = (lane is not None
-                        and self._is_u1_motion_sensor(lane.extruder_obj)
-                        and lane.get_toolhead_pre_sensor_state())
+        # reading is stale (clear_toolhead_sensor should have reset it on
+        # the previous unload).  Skip sensor checks and trust calibrated
+        # distance.  Non-U1 sensors don't have this stale-state problem.
+        sensor_stale = (is_u1 and lane.get_toolhead_pre_sensor_state())
         self._sensor_stale = sensor_stale
         if sensor_stale:
             self.logger.info(
@@ -2016,7 +1991,7 @@ class afcACE(afcUnit):
                                      or lane.get_toolhead_pre_sensor_state()))
             total_fed = feed_length
 
-            if not sensor_triggered:
+            if not sensor_triggered and not is_u1:
                 for pulse in range(1, max_pulses + 1):
                     self.logger.info(
                         f"ACE feed: sensor not triggered, pulsing "
@@ -2148,6 +2123,17 @@ class afcACE(afcUnit):
                     f"G92 E0\n"
                     f"G1 E{self.extruder_assist_length} F{ext_spd}"
                 )
+
+            # U1: re-check sensor after extruder assist — the encoder
+            # can only fire when the extruder motor pulls filament.
+            if is_u1 and not sensor_triggered and lane is not None:
+                self.afc.reactor.pause(
+                    self.afc.reactor.monotonic() + 0.2)
+                if lane.get_toolhead_pre_sensor_state():
+                    sensor_triggered = True
+                    self.logger.info(
+                        "ACE feed: U1 sensor triggered after "
+                        "extruder assist")
 
         return total_fed, sensor_triggered, early_engage
 

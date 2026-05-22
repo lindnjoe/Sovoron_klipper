@@ -490,6 +490,24 @@ class AFCExtruder:
         self.orig_note_filament_present(state, force)
         self.tool_start_callback(0, state)
 
+    def clear_toolhead_sensor(self):
+        """Clear U1 motion sensor state after unload for clean detection baseline.
+
+        Sets state directly rather than through note_filament_present(False)
+        because calling that during printing triggers the runout event path
+        which sets min_event_systime=NEVER, blocking future sensor events.
+        """
+        if (self.filament_sensor_name is not None
+                and self.filament_sensor_obj is not None
+                and self.afc.is_u1_motion_sensor(self)):
+            helper = self.filament_sensor_obj.runout_helper
+            if helper.filament_present:
+                helper.filament_present = False
+                self.logger.info(
+                    "Cleared U1 toolhead sensor after unload — "
+                    "filament_present was stale True")
+            self.tool_start_state = False
+
     def tool_start_callback(self, eventtime, state):
         """
         Callback for the tool_start (pre-extruder) filament sensor.
