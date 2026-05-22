@@ -1611,9 +1611,27 @@ class afc:
                 self.afcDeltaTime.log_with_time("Filament loaded to post-sensor")
 
             # Adjust tool position for loading.
+            pre_stn_time = self.reactor.monotonic()
             self.move_e_pos( cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn" )
+            self.toolhead.wait_moves()
 
             self.afcDeltaTime.log_with_time("Filament loaded to nozzle")
+
+            # Verify filament engagement via U1 motion sensor
+            if self.is_u1_motion_sensor(cur_extruder):
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+                if (cur_extruder._clog_last_motion_time is None
+                        or cur_extruder._clog_last_motion_time <= pre_stn_time):
+                    msg = ("Filament engagement failed: motion sensor did not detect "
+                           "movement during tool_stn load.\n"
+                           "Check that extruder gears are gripping filament and "
+                           "filament path is clear.\n"
+                           f"To resolve, manually load filament and run "
+                           f"SET_LANE_LOADED LANE={cur_lane.name}")
+                    if self.function.in_print():
+                        msg += '\nOnce issue is resolved click resume to continue printing'
+                    self.error.handle_lane_failure(cur_lane, msg)
+                    return False
 
             # Check if ramming is enabled, if it is, go through ram load sequence.
             # Lane will load until Advance sensor is True
