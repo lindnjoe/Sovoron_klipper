@@ -145,6 +145,9 @@ class afcError:
         pause_print function verifies that the printer is homed and not currently paused before calling
         the base pause command
         """
+        if self.afc.function.is_paused():
+            self.logger.debug("pause_print: already paused, skipping")
+            return
         self.set_error_state( True )
         self.logger.info ('PAUSING')
         self.afc.gcode.run_script_from_command('PAUSE')

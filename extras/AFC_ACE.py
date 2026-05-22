@@ -3636,6 +3636,9 @@ class afcACE(afcUnit):
         When unload_on_runout is disabled, pauses the print and tells
         the user which commands to run to clear the filament path.
         """
+        if getattr(lane, '_ace_runout_triggered', False):
+            return
+        lane._ace_runout_triggered = True
         lane_name = getattr(lane, "name", "unknown")
 
         if self.unload_on_runout:
