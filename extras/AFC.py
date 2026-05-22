@@ -1463,8 +1463,13 @@ class afc:
                 self.save_vars()
             elif self.is_u1_motion_sensor(cur_extruder):
                 # U1 motion sensors detect via encoder rotation during
-                # extruder pulls, not ACE push.  Proceed to tool_stn
-                # where the engagement check verifies the load.
+                # extruder pulls, not ACE push.  The unit's load
+                # sequence verified the feed internally — set the
+                # sensor state so Klipper reports filament present.
+                helper = cur_extruder.filament_sensor_obj.runout_helper
+                if not helper.filament_present:
+                    helper.filament_present = True
+                cur_extruder.tool_start_state = True
                 cur_lane.status = AFCLaneState.TOOL_LOADED
                 self.save_vars()
             else:
