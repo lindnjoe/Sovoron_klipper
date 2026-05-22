@@ -214,6 +214,7 @@
         <li><a href="#example-ace">ACE Setup</a></li>
         <li><a href="#example-openams">OpenAMS Setup</a></li>
         <li><a href="#example-fps">FPS Buffer Setup</a></li>
+        <li><a href="#example-psf">PSF Sensor Setup</a></li>
       </ul>
     </nav>
 
@@ -1003,10 +1004,28 @@ multiplier in real time. This example shows all tunable parameters at their defa
   <p><strong>Noisy readings?</strong> Increase <code>smoothing</code> (try 0.5-0.7) and <code>sample_count</code> (try 8-10).<br>
   <strong>Oscillating between advance/trail?</strong> Widen <code>deadband</code> (try 0.4) or increase <code>flip_cooldown</code>.<br>
   <strong>Sluggish correction?</strong> Lower <code>smoothing</code> (try 0.1-0.2) and <code>update_interval</code> (try 0.10).<br>
-  <strong>Sensor reads backwards?</strong> Set <code>reversed: True</code>.<br>
-  <strong>Using PSF naming?</strong> Use <code>neutral_point</code> / <code>max_tension</code> / <code>max_compression</code> instead of
-  <code>set_point</code> / <code>low_point</code> / <code>high_point</code>.</p>
+  <strong>Sensor reads backwards?</strong> Set <code>reversed: True</code>.</p>
 </div>
+
+<h2 id="example-psf">Example — PSF Sensor Setup<a class="headerlink" href="#example-psf">&#182;</a></h2>
+
+<p>The Proportional Sync-Feedback (PSF) sensor is an alternative naming convention for the
+AFC_FPS buffer. PSF uses <code>neutral_point</code>, <code>max_tension</code>, and <code>max_compression</code> in place of
+<code>set_point</code>, <code>low_point</code>, and <code>high_point</code>. Both naming conventions are fully supported and
+can be used interchangeably — the underlying buffer driver is the same.</p>
+
+<pre><code><span class="cfg-comment"># --- PSF sensor ---</span>
+<span class="cfg-section">[AFC_FPS my_buffer]</span>
+<span class="cfg-key">adc_pin</span>: <span class="cfg-val">PA0</span>
+<span class="cfg-key">neutral_point</span>: <span class="cfg-val">0.5</span>
+<span class="cfg-comment">#    Target pressure reading — the ideal operating point.</span>
+<span class="cfg-comment">#    Equivalent to set_point.</span>
+<span class="cfg-key">max_tension</span>: <span class="cfg-val">0.1</span>
+<span class="cfg-comment">#    Threshold for buffer under tension (filament being pulled</span>
+<span class="cfg-comment">#    faster than supplied). Equivalent to low_point.</span>
+<span class="cfg-key">max_compression</span>: <span class="cfg-val">0.9</span>
+<span class="cfg-comment">#    Threshold for buffer fully compressed. Equivalent to high_point.</span>
+</code></pre>
 
     </div><!-- .content -->
   </div><!-- .layout -->
