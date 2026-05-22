@@ -813,45 +813,65 @@ bowden path. The FPS buffer is optional but useful for pressure-based toolhead s
 
 <h2 id="example-openams">Example — OpenAMS Setup<a class="headerlink" href="#example-openams">&#182;</a></h2>
 
-<p>A minimal working OpenAMS setup. OpenAMS requires an FPS buffer for filament pressure
-sensing. The hub uses a physical sensor. OpenAMS communicates with its own firmware — no
-stepper pins are needed in lane sections.</p>
+<p>A working OpenAMS setup. Each lane has its own dedicated hub with a configured bowden length.
+OpenAMS communicates with its own firmware — no stepper pins are needed in lane sections.
+Lanes support <code>map</code> for toolchange macros and <code>custom_load_cmd</code> / <code>custom_unload_cmd</code>
+for custom load/unload behavior.</p>
 
-<pre><code><span class="cfg-section">[AFC_hub oams_hub1]</span>
-<span class="cfg-key">switch_pin</span>: <span class="cfg-val">^!mcu:HUB_PIN</span>
-
-<span class="cfg-section">[AFC_FPS FPS_1]</span>
-<span class="cfg-key">adc_pin</span>: <span class="cfg-val">mcu:PA5</span>
+<pre><code><span class="cfg-comment"># --- FPS buffer ---</span>
+<span class="cfg-section">[AFC_FPS FPS_buffer1]</span>
+<span class="cfg-key">adc_pin</span>: <span class="cfg-val">fps:PA2</span>
+<span class="cfg-key">reversed</span>: <span class="cfg-val">False</span>
 <span class="cfg-key">set_point</span>: <span class="cfg-val">0.5</span>
-<span class="cfg-key">low_point</span>: <span class="cfg-val">0.1</span>
-<span class="cfg-key">high_point</span>: <span class="cfg-val">0.9</span>
+<span class="cfg-key">filament_error_sensitivity</span>: <span class="cfg-val">3.0</span>
+<span class="cfg-key">multiplier_high</span>: <span class="cfg-val">1.15</span>
+<span class="cfg-key">multiplier_low</span>: <span class="cfg-val">0.85</span>
 
-<span class="cfg-section">[AFC_OpenAMS Oams_1]</span>
-<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
-<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
-<span class="cfg-key">buffer</span>: <span class="cfg-val">FPS_1</span>
+<span class="cfg-comment"># --- OpenAMS unit ---</span>
+<span class="cfg-section">[AFC_OpenAMS AMS_1]</span>
 <span class="cfg-key">oams</span>: <span class="cfg-val">oams1</span>
-<span class="cfg-key">clog_sensitivity</span>: <span class="cfg-val">medium</span>
-
-<span class="cfg-section">[AFC_lane oams_lane1]</span>
-<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:1</span>
-<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
 <span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
 
-<span class="cfg-section">[AFC_lane oams_lane2]</span>
-<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:2</span>
-<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
-<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-comment"># --- Lanes (one per bay, each with its own hub) ---</span>
+<span class="cfg-section">[AFC_lane lane0]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">AMS_1:1</span>
+<span class="cfg-key">load_to_hub</span>: <span class="cfg-val">False</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">Hub_1</span>
+<span class="cfg-key">map</span>: <span class="cfg-val">T0</span>
+<span class="cfg-key">custom_load_cmd</span>: <span class="cfg-val">_TX1 GROUP=T0</span>
+<span class="cfg-key">custom_unload_cmd</span>: <span class="cfg-val">SAFE_UNLOAD_FILAMENT1</span>
 
-<span class="cfg-section">[AFC_lane oams_lane3]</span>
-<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:3</span>
-<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
-<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-section">[AFC_lane lane1]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">AMS_1:2</span>
+<span class="cfg-key">load_to_hub</span>: <span class="cfg-val">False</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">Hub_2</span>
+<span class="cfg-key">map</span>: <span class="cfg-val">T1</span>
 
-<span class="cfg-section">[AFC_lane oams_lane4]</span>
-<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:4</span>
-<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
-<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-section">[AFC_lane lane2]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">AMS_1:3</span>
+<span class="cfg-key">load_to_hub</span>: <span class="cfg-val">False</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">Hub_3</span>
+<span class="cfg-key">map</span>: <span class="cfg-val">T2</span>
+
+<span class="cfg-section">[AFC_lane lane3]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">AMS_1:4</span>
+<span class="cfg-key">load_to_hub</span>: <span class="cfg-val">False</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">Hub_4</span>
+<span class="cfg-key">map</span>: <span class="cfg-val">T3</span>
+
+<span class="cfg-comment"># --- Hubs (one per lane, each with its own bowden length) ---</span>
+<span class="cfg-section">[AFC_hub Hub_1]</span>
+<span class="cfg-key">afc_bowden_length</span>: <span class="cfg-val">1725</span>
+<span class="cfg-comment">#    Length of the Bowden tube from the hub to the toolhead sensor in mm.</span>
+
+<span class="cfg-section">[AFC_hub Hub_2]</span>
+<span class="cfg-key">afc_bowden_length</span>: <span class="cfg-val">1725</span>
+
+<span class="cfg-section">[AFC_hub Hub_3]</span>
+<span class="cfg-key">afc_bowden_length</span>: <span class="cfg-val">1725</span>
+
+<span class="cfg-section">[AFC_hub Hub_4]</span>
+<span class="cfg-key">afc_bowden_length</span>: <span class="cfg-val">1725</span>
 </code></pre>
 
 <div class="admonition tip">
