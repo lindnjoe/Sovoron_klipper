@@ -1536,6 +1536,17 @@ class afcACE(afcUnit):
                 self.logger.info(
                     "ACE smart load: skipping — FPS already latched during feed"
                 )
+            # U1 motion sensors detect filament via encoder rotation
+            # during extruder motor pulls, not ACE push.  Additional ACE
+            # feeds won't trigger the encoder — skip retries and let the
+            # AFC core's tool_stn engagement check verify the load.
+            elif self._is_u1_motion_sensor(cur_extruder):
+                if not cur_lane.get_toolhead_pre_sensor_state():
+                    self.logger.info(
+                        "ACE smart load: U1 motion sensor — skipping "
+                        "ACE push retries (engagement verified during "
+                        "tool_stn)"
+                    )
             # Standard toolhead sensor verification with retry.
             # When home_to_tool is active, scale retries using
             # tool_homing_distance so the ACE searches the same range
@@ -1893,6 +1904,10 @@ class afcACE(afcUnit):
             f"ACE: ACE did not become ready within {timeout:.0f}s, proceeding anyway"
         )
 
+    def _is_u1_motion_sensor(self, cur_extruder):
+        """Check if the extruder uses a U1 filament_motion_sensor."""
+        return self.afc.is_u1_motion_sensor(cur_extruder)
+
     def _feed_slot(self, slot_index, lane=None, feed_distance=None):
         """Feed filament from an ACE slot through to the toolhead.
 
@@ -1938,27 +1953,30 @@ class afcACE(afcUnit):
         # Phase 3 and the normal engagement path.
         early_engage = False
 
+        is_u1 = lane is not None and self._is_u1_motion_sensor(
+            lane.extruder_obj)
+
         if homing_active and lane is not None:
             # ── home_to_tool: feed bowden distance, then pulse extra if needed ──
             homing_dist = getattr(afc, 'tool_homing_distance', 200.0)
             pulse_step = 50.0
             max_pulses = int(homing_dist / pulse_step)
-            self.logger.info(
-                f"ACE feed: home_to_tool active — feeding "
-                f"{feed_length:.0f}mm, then up to "
-                f"{homing_dist:.0f}mm in {pulse_step:.0f}mm pulses"
-            )
 
             ace.feed_filament(slot_index, feed_length, feed_spd)
             sensor_hit = self._wait_for_feed_complete(
                 slot_index, feed_length, feed_spd, lane=lane,
-                poll_interval=0.1
+                poll_interval=0.1,
             )
 
-            sensor_triggered = sensor_hit or lane.get_toolhead_pre_sensor_state()
+            sensor_triggered = (sensor_hit
+                                or lane.get_toolhead_pre_sensor_state())
             total_fed = feed_length
 
-            if not sensor_triggered:
+            if not sensor_triggered and not is_u1:
+                self.logger.info(
+                    f"ACE feed: home_to_tool active — pulsing up to "
+                    f"{homing_dist:.0f}mm in {pulse_step:.0f}mm steps"
+                )
                 for pulse in range(1, max_pulses + 1):
                     self.logger.info(
                         f"ACE feed: sensor not triggered, pulsing "
@@ -1968,12 +1986,19 @@ class afcACE(afcUnit):
                     ace.feed_filament(slot_index, pulse_step, feed_spd)
                     sensor_hit = self._wait_for_feed_complete(
                         slot_index, pulse_step, feed_spd, lane=lane,
-                        poll_interval=0.1
+                        poll_interval=0.1,
                     )
                     total_fed += pulse_step
-                    if sensor_hit or lane.get_toolhead_pre_sensor_state():
+                    if (sensor_hit
+                            or lane.get_toolhead_pre_sensor_state()):
                         sensor_triggered = True
                         break
+            elif not sensor_triggered:
+                self.logger.info(
+                    f"ACE feed: U1 motion sensor — skipping homing "
+                    f"pulses (encoder detects during extruder pull, "
+                    f"not ACE push)"
+                )
 
             if sensor_triggered:
                 self.logger.info(
@@ -2004,7 +2029,7 @@ class afcACE(afcUnit):
             if bulk_distance > 0:
                 ace.feed_filament(slot_index, bulk_distance, feed_spd)
                 sensor_triggered_early = self._wait_for_feed_complete(
-                    slot_index, bulk_distance, feed_spd, lane=lane
+                    slot_index, bulk_distance, feed_spd, lane=lane,
                 )
             else:
                 sensor_triggered_early = False
@@ -2031,11 +2056,12 @@ class afcACE(afcUnit):
                 ace.feed_filament(slot_index, remaining, feed_spd)
                 sensor_hit = self._wait_for_feed_complete(
                     slot_index, remaining, feed_spd, lane=lane,
-                    poll_interval=0.1
+                    poll_interval=0.1,
                 )
                 total_fed = max_total
 
-                if sensor_hit or lane.get_toolhead_pre_sensor_state():
+                if (sensor_hit
+                        or lane.get_toolhead_pre_sensor_state()):
                     sensor_triggered = True
                     self.logger.info(
                         f"ACE feed: toolhead sensor triggered at ~{total_fed:.0f}mm"
@@ -2081,6 +2107,19 @@ class afcACE(afcUnit):
                 self.afc.gcode.run_script_from_command(
                     f"G92 E0\n"
                     f"G1 E{self.extruder_assist_length} F{ext_spd}"
+                )
+
+        # U1 motion sensors detect filament via encoder rotation during
+        # extruder motor pulls (Phase 3 above), not during ACE push.
+        # Re-check after extruder assist so the return value reflects
+        # actual detection.
+        if is_u1 and not sensor_triggered and lane is not None:
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            if lane.get_toolhead_pre_sensor_state():
+                sensor_triggered = True
+                self.logger.info(
+                    f"ACE feed: U1 sensor triggered after extruder "
+                    f"assist at ~{total_fed:.0f}mm"
                 )
 
         return total_fed, sensor_triggered, early_engage
@@ -2145,7 +2184,8 @@ class afcACE(afcUnit):
             )
 
             # Check toolhead sensor if available
-            if lane is not None and lane.get_toolhead_pre_sensor_state():
+            if (lane is not None
+                    and lane.get_toolhead_pre_sensor_state()):
                 sensor_triggered = True
                 self.logger.debug(
                     f"ACE wait: toolhead sensor triggered for slot {slot_index}"
@@ -3124,7 +3164,7 @@ class afcACE(afcUnit):
         if not success:
             return False, msg, distance
 
-        new_feed_length = round(distance + 50, 0)
+        new_feed_length = round(distance + 200, 0)
         new_retract_length = round(distance - 20, 0)
 
         # Update in-memory unit-level values
@@ -3147,7 +3187,7 @@ class afcACE(afcUnit):
 
         msg = (
             f"ACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
-            f"feed_length: {new_feed_length:.0f} ({distance:.0f} + 50mm margin) (was {old_feed:.0f})\n"
+            f"feed_length: {new_feed_length:.0f} ({distance:.0f} + 200mm margin) (was {old_feed:.0f})\n"
             f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
             f"Values saved to unit config [{unit_section}]."
         )
@@ -3298,7 +3338,7 @@ class afcACE(afcUnit):
 
         # _measure_bowden_distance already adds dist_hub when filament
         # starts at the hub, so 'distance' is the full ACE-to-extruder path.
-        new_feed_length = round(distance + 50, 0)
+        new_feed_length = round(distance + 200, 0)
         new_retract_length = round(distance - 20, 0)
 
         # Update in-memory per-lane overrides
@@ -3321,7 +3361,7 @@ class afcACE(afcUnit):
 
         msg = (
             f"ACE lane calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
-            f"feed_length: {new_feed_length:.0f} ({distance:.0f} + 50mm margin) (was {old_feed:.0f})\n"
+            f"feed_length: {new_feed_length:.0f} ({distance:.0f} + 200mm margin) (was {old_feed:.0f})\n"
             f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
             f"Values saved to lane config [{lane_section}]."
         )
@@ -3565,6 +3605,9 @@ class afcACE(afcUnit):
         When unload_on_runout is disabled, pauses the print and tells
         the user which commands to run to clear the filament path.
         """
+        if getattr(lane, '_ace_runout_triggered', False):
+            return
+        lane._ace_runout_triggered = True
         lane_name = getattr(lane, "name", "unknown")
 
         if self.unload_on_runout:
@@ -3572,8 +3615,7 @@ class afcACE(afcUnit):
                 f"ACE runout on {lane_name}: auto-unloading from "
                 f"toolhead and ejecting lane"
             )
-            self.afc.error.pause_resume.send_pause_command()
-            self.afc.save_pos()
+            self.afc.error.pause_print()
             self.afc.TOOL_UNLOAD(lane)
             if not self.afc.error_state:
                 self.afc.LANE_UNLOAD(lane)

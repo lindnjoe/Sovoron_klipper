@@ -1510,15 +1510,28 @@ class afcAMS(afcUnit):
             f"fps={getattr(buf, 'smoothed_fps', '?') if buf else 'N/A'}"
         )
         if not sensor_state and not on_shuttle:
-            message = (
-                "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
-                "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
-            )
-            message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
-            if afc.function.in_print():
-                message += "\nOnce filament is fully loaded click resume to continue printing"
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
+            if afc.is_u1_motion_sensor(cur_extruder):
+                # U1 motion sensor encoder only fires during extruder
+                # motor pulls.  The OAMS engagement verification already
+                # confirmed filament is engaged — set the sensor state
+                # so Klipper/Mainsail reports filament present.
+                helper = cur_extruder.filament_sensor_obj.runout_helper
+                if not helper.filament_present:
+                    helper.filament_present = True
+                cur_extruder.tool_start_state = True
+                self.logger.info(
+                    f"U1 motion sensor bypass for {cur_lane.name}: "
+                    f"engagement verified by OAMS, sensor state set")
+            else:
+                message = (
+                    "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
+                    "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
+                )
+                message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
+                if afc.function.in_print():
+                    message += "\nOnce filament is fully loaded click resume to continue printing"
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         return True
 
@@ -1539,7 +1552,9 @@ class afcAMS(afcUnit):
                     fps_state, self.oams, 1, 0, "before unload cut", force=True)
         self.lane_unloading(cur_lane)
 
-        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
 
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
@@ -4458,18 +4473,12 @@ class afcAMS(afcUnit):
             target_extruder = normalize_extruder_name(self._get_snapshot_lane_extruder(target_lane.name))
 
         if not source_extruder or (target_lane and not target_extruder):
-            self.logger.error(
+            msg = (
                 f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data "
-                f"(source={source_extruder}, target={target_extruder}); pausing for user intervention"
-            )
-            try:
-                self.gcode.run_script_from_command("PAUSE")
-            except Exception as e:
-                self.logger.error(f"Failed to issue PAUSE after runout classification failure: {e}")
-            self.logger.info(
-                f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data. "
+                f"(source={source_extruder}, target={target_extruder}).\n"
                 "Please check AFC.var.unit and lane mappings."
             )
+            self.afc.error.AFC_error(msg, pause=True)
             return
 
         self.logger.debug(
