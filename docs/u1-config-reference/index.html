@@ -391,12 +391,12 @@ ACE units communicate over a serial connection and support two operational modes
   stepper pin configuration (<code>step_pin</code>, <code>dir_pin</code>, <code>enable_pin</code>).</p>
 </div>
 
-<div class="admonition tip">
-  <p class="admonition-title">Tip</p>
-  <p>ACE units support both physical and virtual hub sensors. Using a virtual hub
-  (<code>switch_pin: virtual</code>) is recommended — it enables two-phase loading where filament
-  is pre-staged to the hub during prep and only the hub-to-toolhead distance is traveled
-  during a tool change, significantly reducing load and unload times.</p>
+<div class="admonition note">
+  <p class="admonition-title">Note</p>
+  <p>A virtual hub (<code>switch_pin: virtual</code>) is added to speed up tool change times by enabling
+  two-phase loading — filament is pre-staged to the hub during prep, so only the
+  hub-to-toolhead distance is traveled during a tool change. The <code>dist_hub</code> value defaults
+  to 250 and will need to be manually set in your configuration to match your setup.</p>
 </div>
 
 <pre><code><span class="cfg-section">[AFC_ACE Ace_1]</span>
@@ -404,9 +404,8 @@ ACE units communicate over a serial connection and support two operational modes
 <span class="cfg-comment">#    Serial port for ACE PRO hardware. This parameter must be provided.</span>
 <span class="cfg-comment">#    Use the output of `ls /dev/serial/by-id/` to find the correct port.</span>
 <span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
-<span class="cfg-comment">#    Hub that this unit belongs to. Can reference a physical or virtual</span>
-<span class="cfg-comment">#    [AFC_hub] section. A virtual hub (switch_pin: virtual) is recommended</span>
-<span class="cfg-comment">#    as it enables two-phase loading for faster tool changes.</span>
+<span class="cfg-comment">#    Hub that this unit belongs to. A virtual hub (switch_pin: virtual)</span>
+<span class="cfg-comment">#    enables two-phase loading to speed up tool changes.</span>
 <span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
 <span class="cfg-comment">#    AFC_extruder name that this unit feeds into.</span>
 <span class="cfg-key">mode</span>: <span class="cfg-val">combined</span>
@@ -773,10 +772,9 @@ A neutral state LED is also available (not present on TurtleNeck).</p>
 
 <h2 id="example-ace">Example — ACE Setup<a class="headerlink" href="#example-ace">&#182;</a></h2>
 
-<p>A minimal working ACE PRO setup. A virtual hub is recommended for two-phase loading,
-which pre-stages filament to the hub during prep and only travels the hub-to-toolhead
-distance during tool changes. The FPS buffer is optional but recommended for
-pressure-based toolhead sensing.</p>
+<p>A minimal working ACE PRO setup. The virtual hub enables two-phase loading to speed up
+tool changes. The <code>dist_hub</code> value defaults to 250 and should be adjusted to match your
+bowden path. The FPS buffer is optional but useful for pressure-based toolhead sensing.</p>
 
 <pre><code><span class="cfg-section">[AFC_hub ace_hub1]</span>
 <span class="cfg-key">switch_pin</span>: <span class="cfg-val">virtual</span>
