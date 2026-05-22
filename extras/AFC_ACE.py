@@ -1905,14 +1905,8 @@ class afcACE(afcUnit):
         )
 
     def _is_u1_motion_sensor(self, cur_extruder):
-        """Check if the extruder uses a U1 filament_motion_sensor.
-
-        U1 motion sensors expose runout_buttun_state (raw hardware switch)
-        which can diverge from filament_present during printing.  Regular
-        switch sensors don't have this attribute or this stale-state problem.
-        """
-        sensor_obj = getattr(cur_extruder, 'filament_sensor_obj', None)
-        return sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state')
+        """Check if the extruder uses a U1 filament_motion_sensor."""
+        return self.afc.is_u1_motion_sensor(cur_extruder)
 
     def _sync_toolhead_sensor(self, cur_extruder, cur_lane):
         """Sync the toolhead sensor's reported state with hardware reality.
