@@ -517,7 +517,7 @@ class AFCExtruder:
 
     def note_tool_start_callback(self, state, force=False):
         self.orig_note_filament_present(state, force)
-        if state and self._clog_timer is not None:
+        if state:
             self._clog_last_motion_time = self.reactor.monotonic()
             self._clog_fired = False
         self.tool_start_callback(0, state)
