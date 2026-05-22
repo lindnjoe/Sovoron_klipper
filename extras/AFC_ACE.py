@@ -3646,8 +3646,7 @@ class afcACE(afcUnit):
                 f"ACE runout on {lane_name}: auto-unloading from "
                 f"toolhead and ejecting lane"
             )
-            self.afc.error.pause_resume.send_pause_command()
-            self.afc.save_pos()
+            self.afc.error.pause_print()
             self.afc.TOOL_UNLOAD(lane)
             if not self.afc.error_state:
                 self.afc.LANE_UNLOAD(lane)
