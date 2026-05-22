@@ -75,10 +75,10 @@
       <main class="md-main" data-md-component="main">
         <div class="md-main__inner md-grid">
 
-            <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc">
+            <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation">
               <div class="md-sidebar__scrollwrap">
                 <div class="md-sidebar__inner">
-                  <nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+                  <nav class="md-nav md-nav--primary" aria-label="Table of contents">
                     <label class="md-nav__title" for="__toc">
                       <span class="md-nav__icon md-icon"></span>
                       Table of contents
@@ -533,6 +533,20 @@ values specific to OpenAMS.</p>
 <span class="cfg-comment">#    Clog detection sensitivity. Valid values: "low", "medium", "high".</span>
 <span class="cfg-comment">#    Higher sensitivity triggers clog detection more aggressively.</span>
 </code></pre>
+
+<div class="admonition tip">
+  <p class="admonition-title">Tip</p>
+  <p>OpenAMS provides several calibration commands:</p>
+  <ul>
+    <li><code>AFC_OAMS_CALIBRATE_PTFE UNIT=Oams_1 SPOOL=1</code> — Calibrate the PTFE tube length
+    from the unit to the hub. Any lane can be used since the distance to the hub is
+    identical for all bays. The result is saved to the <code>[oams]</code> config section.</li>
+    <li><code>AFC_OAMS_CALIBRATE_HUB_HES UNIT=Oams_1 SPOOL=1</code> — Calibrate the HUB Hall
+    Effect Sensor value for a specific lane.</li>
+    <li><code>AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT=Oams_1</code> — Calibrate the HUB HES value
+    for every loaded lane in the unit at once.</li>
+  </ul>
+</div>
 
 <!-- =====================================================================
      AFC_buffer (TurtleNeck) reference
