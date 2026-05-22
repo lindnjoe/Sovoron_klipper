@@ -250,6 +250,16 @@ def _make_afc_extruder(name="extruder"):
     ext.tool = None
     ext.toolhead_leds = None
     ext.mutex = MagicMock()
+    ext.park_detector = None
+    ext.park_detector_obj = None
+    ext.tc_unit_obj = None
+    ext.no_lanes = False
+    ext.load_active = False
+    ext.load_unload_sequence = MagicMock()
+    ext.tc_lane = MagicMock()
+    ext.common_error = "[{}] not found in config file for {}"
+    ext.filament_sensor_name = None
+    ext.filament_sensor_obj = None
     return ext
 
 
@@ -266,11 +276,13 @@ class TestAFCExtruderStr:
 class TestAFCExtruderHandleConnect:
     def test_handle_connect_stores_self_in_afc_tools(self):
         ext = _make_afc_extruder("extruder")
+        ext.printer._objects["extruder"] = MagicMock()
         ext.handle_connect()
         assert ext.afc.tools["extruder"] is ext
 
     def test_handle_connect_sets_reactor(self):
         ext = _make_afc_extruder()
+        ext.printer._objects[ext.name] = MagicMock()
         ext.reactor = None
         ext.handle_connect()
         assert ext.reactor is ext.afc.reactor
@@ -977,3 +989,61 @@ class TestToolStartCallback_StateChanged_WithToolchanger:
         ext = self._make_tc_ext(printer_ready=True, prep_done=True, state=False)
         ext.tool_start_callback(100.0, False)
         ext.load_unload_sequence.assert_not_called()
+
+
+# ── clear_toolhead_sensor (U1 motion sensor cleanup) ─────────────────────────
+
+class TestClearToolheadSensor:
+    """Tests for AFCExtruder.clear_toolhead_sensor()."""
+
+    def _make_ext_with_sensor(self, is_u1=True, filament_present=True):
+        ext = _make_afc_extruder()
+        ext.filament_sensor_name = "filament_sensor toolhead"
+        ext.filament_sensor_obj = MagicMock()
+        ext.filament_sensor_obj.runout_helper = MagicMock()
+        ext.filament_sensor_obj.runout_helper.filament_present = filament_present
+        ext.tool_start_state = True
+        ext.afc.is_u1_motion_sensor = MagicMock(return_value=is_u1)
+        return ext
+
+    def test_clears_filament_present_for_u1_sensor(self):
+        ext = self._make_ext_with_sensor(is_u1=True, filament_present=True)
+        ext.clear_toolhead_sensor()
+        assert ext.filament_sensor_obj.runout_helper.filament_present is False
+
+    def test_clears_tool_start_state_for_u1_sensor(self):
+        ext = self._make_ext_with_sensor(is_u1=True, filament_present=True)
+        ext.clear_toolhead_sensor()
+        assert ext.tool_start_state is False
+
+    def test_noop_when_not_u1_sensor(self):
+        ext = self._make_ext_with_sensor(is_u1=False, filament_present=True)
+        ext.clear_toolhead_sensor()
+        assert ext.filament_sensor_obj.runout_helper.filament_present is True
+        assert ext.tool_start_state is True
+
+    def test_noop_when_no_sensor_name(self):
+        ext = _make_afc_extruder()
+        ext.tool_start_state = True
+        ext.clear_toolhead_sensor()
+        assert ext.tool_start_state is True
+
+    def test_noop_when_sensor_obj_is_none(self):
+        ext = _make_afc_extruder()
+        ext.filament_sensor_name = "some_sensor"
+        ext.tool_start_state = True
+        ext.clear_toolhead_sensor()
+        assert ext.tool_start_state is True
+
+    def test_skips_clear_when_already_false(self):
+        ext = self._make_ext_with_sensor(is_u1=True, filament_present=False)
+        ext.clear_toolhead_sensor()
+        assert ext.filament_sensor_obj.runout_helper.filament_present is False
+        info_msgs = [m for lvl, m in ext.logger.messages if lvl == "info"]
+        assert not any("Cleared" in m for m in info_msgs)
+
+    def test_logs_info_when_clearing_stale_state(self):
+        ext = self._make_ext_with_sensor(is_u1=True, filament_present=True)
+        ext.clear_toolhead_sensor()
+        info_msgs = [m for lvl, m in ext.logger.messages if lvl == "info"]
+        assert any("Cleared" in m for m in info_msgs)

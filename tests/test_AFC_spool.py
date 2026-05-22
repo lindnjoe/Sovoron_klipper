@@ -43,6 +43,7 @@ def _make_spool():
     spool.logger = afc.logger
     spool.disable_weight_check = False
     spool.next_spool_id = None
+    spool.next_spool_info = None
     spool.SPOOLMAN_REMOTE_METHOD = 'spoolman_set_active_spool'
 
     return spool
@@ -653,6 +654,38 @@ class TestSetValues:
         spool._set_values(lane)
         spool.set_spoolID.assert_called_once_with(lane, 42)
         assert spool.next_spool_id is None  # consumed after use
+
+    def test_applies_next_spool_info_when_spool_id_none(self):
+        """next_spool_info is applied to a lane with no spool_id."""
+        spool = _make_spool()
+        lane = _make_lane()
+        lane.remember_spool = False
+        lane.spool_id = None
+        spool.afc.default_material_type = "PLA"
+        spool.next_spool_info = {
+            "material": "PETG",
+            "color_hex": "00FF00",
+            "extruder_temp": "230",
+            "bed_temp": "70",
+        }
+        spool._set_values(lane)
+        assert lane.material == "PETG"
+        assert lane.color == "#00FF00"
+        assert lane.extruder_temp == 230.0
+        assert lane.bed_temp == 70.0
+        assert spool.next_spool_info is None
+
+    def test_next_spool_info_skipped_when_spool_id_set(self):
+        """next_spool_info is not applied when lane already has a spool_id."""
+        spool = _make_spool()
+        lane = _make_lane()
+        lane.remember_spool = False
+        lane.spool_id = 42
+        spool.afc.default_material_type = "PLA"
+        spool.next_spool_info = {"material": "ABS"}
+        spool.set_spoolID = MagicMock()
+        spool._set_values(lane)
+        assert lane.material != "ABS"
 
 
 # ── set_spoolID ───────────────────────────────────────────────────────────────

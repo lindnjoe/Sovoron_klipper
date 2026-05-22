@@ -69,6 +69,7 @@ def _make_lane(name="lane1", hub="hub1", extruder="ext1", buffer_name="buf1"):
     lane.led_index = "1"
     lane.led_spool_illum = "1,1,1,0"
     lane.led_use_filament_color = False
+    lane.led_spool_index = None
     lane._load_state = True
     lane.short_moves_speed = 50
     lane.short_moves_accel = 50
@@ -226,26 +227,26 @@ class TestLaneStatusLeds:
         unit = _make_unit()
         lane = _make_lane()
         unit.lane_loaded(lane)
-        unit.afc.function.afc_led.assert_called_once_with(lane.led_ready, lane.led_index)
+        unit.afc.function.afc_led.assert_called_with(lane.led_ready, lane.led_index)
 
     def test_lane_unloaded_calls_afc_led_with_not_ready_color(self):
         unit = _make_unit()
         lane = _make_lane()
         unit.lane_unloaded(lane)
-        unit.afc.function.afc_led.assert_called_once_with(lane.led_not_ready, lane.led_index)
+        unit.afc.function.afc_led.assert_called_with(lane.led_not_ready, lane.led_index)
 
     def test_lane_loading_calls_afc_led_with_loading_color(self):
         unit = _make_unit()
         lane = _make_lane()
         unit.lane_loading(lane)
-        unit.afc.function.afc_led.assert_called_once_with(lane.led_loading, lane.led_index)
+        unit.afc.function.afc_led.assert_called_with(lane.led_loading, lane.led_index)
 
     def test_lane_tool_loaded_calls_afc_led_with_tool_loaded_color(self):
         unit = _make_unit()
         lane = _make_lane()
         lane.extruder_obj = MagicMock()
         unit.lane_tool_loaded(lane)
-        unit.afc.function.afc_led.assert_called_once_with(lane.led_tool_loaded, lane.led_index)
+        unit.afc.function.afc_led.assert_called_with(lane.led_tool_loaded, lane.led_index)
         lane.extruder_obj.set_status_led.assert_called_once_with(lane.led_tool_loaded)
 
     def test_lane_tool_unloaded_calls_afc_led_with_ready_color(self):
@@ -253,41 +254,41 @@ class TestLaneStatusLeds:
         lane = _make_lane()
         lane.extruder_obj = MagicMock()
         unit.lane_tool_unloaded(lane)
-        unit.afc.function.afc_led.assert_called_once_with(lane.led_ready, lane.led_index)
+        unit.afc.function.afc_led.assert_called_with(lane.led_ready, lane.led_index)
         lane.extruder_obj.set_status_led.assert_called_once_with(lane.led_tool_unloaded)
 
 
-# ── led_use_filament_color ─────────────────────────────────────────────────────
+# ── _get_lane_color (filament color override) ────────────────────────────────
 
-class TestLedUseFilamentColor:
+class TestGetLaneColor:
     def test_filament_color_used_when_enabled_and_color_set(self):
-        """When led_use_filament_color=True and lane has a color, LED uses the filament color."""
+        """When led_use_filament_color=True and lane has a color, returns filament color."""
         unit = _make_unit()
         lane = _make_lane()
         lane.led_use_filament_color = True
         lane.color = "#FF0000"
         unit.afc.function.HexToLedString.return_value = "1,0,0,0"
-        unit.lane_loaded(lane)
+        result = unit._get_lane_color(lane, lane.led_ready)
         unit.afc.function.HexToLedString.assert_called_once_with("FF0000")
-        unit.afc.function.afc_led.assert_called_once_with("1,0,0,0", lane.led_index)
+        assert result == "1,0,0,0"
 
     def test_fallback_to_state_color_when_enabled_but_no_color(self):
-        """When led_use_filament_color=True but lane has no color, falls back to state color."""
+        """When led_use_filament_color=True but lane has no color, falls back to fallback."""
         unit = _make_unit()
         lane = _make_lane()
         lane.led_use_filament_color = True
         lane.color = ""
-        unit.lane_loaded(lane)
-        unit.afc.function.afc_led.assert_called_once_with(lane.led_ready, lane.led_index)
+        result = unit._get_lane_color(lane, lane.led_ready)
+        assert result == lane.led_ready
 
     def test_state_color_used_when_disabled(self):
-        """When led_use_filament_color=False, LED uses the configured state color."""
+        """When led_use_filament_color=False, returns fallback."""
         unit = _make_unit()
         lane = _make_lane()
         lane.led_use_filament_color = False
         lane.color = "#FF0000"
-        unit.lane_loaded(lane)
-        unit.afc.function.afc_led.assert_called_once_with(lane.led_ready, lane.led_index)
+        result = unit._get_lane_color(lane, lane.led_ready)
+        assert result == lane.led_ready
 
     def test_filament_color_with_hash_prefix(self):
         """Color with # prefix is handled correctly."""
@@ -296,17 +297,17 @@ class TestLedUseFilamentColor:
         lane.led_use_filament_color = True
         lane.color = "#00FF00"
         unit.afc.function.HexToLedString.return_value = "0,1,0,0"
-        unit.lane_loaded(lane)
+        result = unit._get_lane_color(lane, lane.led_ready)
         unit.afc.function.HexToLedString.assert_called_once_with("00FF00")
 
     def test_filament_color_invalid_hex_falls_back(self):
-        """Invalid hex color falls back to state color."""
+        """Invalid hex color falls back to fallback."""
         unit = _make_unit()
         lane = _make_lane()
         lane.led_use_filament_color = True
         lane.color = "not-a-color"
-        unit.lane_loaded(lane)
-        unit.afc.function.afc_led.assert_called_once_with(lane.led_ready, lane.led_index)
+        result = unit._get_lane_color(lane, lane.led_ready)
+        assert result == lane.led_ready
 
 
 # ── set_logo_color ────────────────────────────────────────────────────────────
@@ -387,3 +388,52 @@ class TestBufferToolheadLoadCheck:
         call_args = lane.move.call_args[0]
         assert result is True
         assert call_args[0] == (SIDE_EFFECT_DIST * MoveDirection.NEG)
+
+
+# ── Unit base class hooks (added for u1_AFC_Extra) ───────────────────────────
+
+class TestUnitBaseClassHooks:
+    """Tests for the unit base class hook methods that subclasses override."""
+
+    def test_abort_load_does_nothing(self):
+        unit = _make_unit()
+        lane = _make_lane()
+        unit.abort_load(lane)
+
+    def test_lane_move_delegates_to_move_advanced(self):
+        from extras.AFC_lane import SpeedMode, AssistActive
+        unit = _make_unit()
+        lane = _make_lane()
+        lane.move_advanced = MagicMock()
+        unit.lane_move(lane, 100, SpeedMode.LONG)
+        lane.move_advanced.assert_called_once_with(100, SpeedMode.LONG, assist_active=AssistActive.YES)
+
+    def test_lane_unload_returns_none(self):
+        unit = _make_unit()
+        lane = _make_lane()
+        assert unit.lane_unload(lane) is None
+
+    def test_on_lane_unset_loaded_does_nothing(self):
+        unit = _make_unit()
+        lane = _make_lane()
+        unit.on_lane_unset_loaded(lane, "extruder")
+
+    def test_prep_capture_td1_returns_none(self):
+        unit = _make_unit()
+        lane = _make_lane()
+        assert unit.prep_capture_td1(lane) is None
+
+    def test_capture_td1_data_returns_none(self):
+        unit = _make_unit()
+        lane = _make_lane()
+        assert unit.capture_td1_data(lane) is None
+
+    def test_get_lane_reset_command_returns_none(self):
+        unit = _make_unit()
+        lane = _make_lane()
+        assert unit.get_lane_reset_command(lane, 50) is None
+
+    def test_get_current_lane_fallback_returns_none(self):
+        unit = _make_unit()
+        tool_obj = MagicMock()
+        assert unit.get_current_lane_fallback(tool_obj) is None

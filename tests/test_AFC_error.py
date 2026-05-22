@@ -308,6 +308,27 @@ class TestHandleLaneFailure:
         assert "lane2" in called_msg
         assert "overheated" in called_msg
 
+    def test_calls_abort_load_on_unit_obj(self):
+        """handle_lane_failure should call unit_obj.abort_load before disabling."""
+        err, afc = _make_afc_error()
+        err.AFC_error = MagicMock()
+        cur_lane = MagicMock()
+        cur_lane.name = "lane1"
+        cur_lane.led_index = "1"
+        err.handle_lane_failure(cur_lane, "jammed", pause=False)
+        cur_lane.unit_obj.abort_load.assert_called_once_with(cur_lane)
+
+    def test_abort_load_exception_is_swallowed(self):
+        """If abort_load raises, handle_lane_failure continues without error."""
+        err, afc = _make_afc_error()
+        err.AFC_error = MagicMock()
+        cur_lane = MagicMock()
+        cur_lane.name = "lane1"
+        cur_lane.led_index = "1"
+        cur_lane.unit_obj.abort_load.side_effect = RuntimeError("hardware fail")
+        err.handle_lane_failure(cur_lane, "jammed", pause=False)
+        cur_lane.do_enable.assert_called_once_with(False)
+
 
 # ── AFC_error (the method) ────────────────────────────────────────────────────
 

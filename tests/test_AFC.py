@@ -2160,3 +2160,64 @@ class TestGetDefaultMaterialTemps:
             temp, using_min = obj._get_default_material_temps(lane)
             assert temp == expected, f"Expected {expected} for {material}, got {temp}"
             assert using_min is False
+
+
+# ── is_u1_motion_sensor (U1 sensor detection utility) ────────────────────────
+
+class TestIsU1MotionSensor:
+    """Tests for the afc.is_u1_motion_sensor static method."""
+
+    def test_returns_true_for_motion_sensor(self):
+        """Returns True when extruder has a filament_sensor_obj with runout_buttun_state."""
+        extruder = MagicMock()
+        extruder.filament_sensor_obj = MagicMock()
+        extruder.filament_sensor_obj.runout_buttun_state = True
+        assert afc.is_u1_motion_sensor(extruder) is True
+
+    def test_returns_false_when_no_sensor_obj(self):
+        """Returns False when filament_sensor_obj is None."""
+        extruder = MagicMock()
+        extruder.filament_sensor_obj = None
+        assert afc.is_u1_motion_sensor(extruder) is False
+
+    def test_returns_false_when_no_filament_sensor_attr(self):
+        """Returns False when extruder has no filament_sensor_obj attribute."""
+        extruder = MagicMock(spec=[])
+        assert afc.is_u1_motion_sensor(extruder) is False
+
+    def test_returns_false_for_switch_sensor(self):
+        """Returns False for a regular switch sensor (no runout_buttun_state)."""
+        extruder = MagicMock()
+        extruder.filament_sensor_obj = MagicMock(spec=[])
+        assert afc.is_u1_motion_sensor(extruder) is False
+
+
+# ── _cmd_U1_RFID_READ ────────────────────────────────────────────────────────
+
+class TestCmdU1RfidRead:
+    """Tests for the AFC_RFID_READ command handler."""
+
+    def test_responds_when_u1_rfid_not_configured(self):
+        obj = _make_afc()
+        obj.u1_rfid = None
+        gcmd = MagicMock()
+        obj._cmd_U1_RFID_READ(gcmd)
+        gcmd.respond_info.assert_called()
+        assert "not configured" in gcmd.respond_info.call_args[0][0].lower()
+
+    def test_responds_when_no_lane_parameter(self):
+        obj = _make_afc()
+        obj.u1_rfid = MagicMock()
+        gcmd = MagicMock()
+        gcmd.get.return_value = None
+        obj._cmd_U1_RFID_READ(gcmd)
+        gcmd.respond_info.assert_called()
+        assert "LANE" in gcmd.respond_info.call_args[0][0]
+
+    def test_calls_force_read_with_lane_name(self):
+        obj = _make_afc()
+        obj.u1_rfid = MagicMock()
+        gcmd = MagicMock()
+        gcmd.get.return_value = "lane1"
+        obj._cmd_U1_RFID_READ(gcmd)
+        obj.u1_rfid.force_read.assert_called_once_with("lane1")

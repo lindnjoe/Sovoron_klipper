@@ -72,6 +72,7 @@ def _make_buffer(name="TN", error_sensitivity=0.0):
     buf.led_buffer_disabled = "0,0,0,0.25"
 
     buf.min_event_systime = 0.0
+    buf.current_lane = None
 
     return buf
 
@@ -334,6 +335,32 @@ class TestExtruderPosUpdateEvent:
         buf.afc.function.is_printing.return_value = False
         result = buf.extruder_pos_update_event(50.0)
         assert result == 50.0 + CHECK_RUNOUT_TIMEOUT
+
+    def test_skips_fault_check_for_stepperless_lane(self):
+        """When current_lane has no extruder_stepper, fault check is skipped."""
+        buf = _make_buffer(error_sensitivity=5.0)
+        lane = _make_lane(buf)
+        lane.extruder_stepper = None
+        buf.current_lane = lane
+        buf.get_extruder_pos = MagicMock(return_value=55.0)
+        buf.afc.function.is_printing.return_value = True
+        buf.filament_error_pos = 50.0
+        buf.afc.error = MagicMock()
+        result = buf.extruder_pos_update_event(100.0)
+        assert result == 100.0 + CHECK_RUNOUT_TIMEOUT
+        buf.get_extruder_pos.assert_not_called()
+
+    def test_normal_lane_still_checks_faults(self):
+        """When current_lane has extruder_stepper, fault check proceeds normally."""
+        buf = _make_buffer()
+        lane = _make_lane(buf)
+        lane.extruder_stepper = MagicMock()
+        buf.current_lane = lane
+        buf.get_extruder_pos = MagicMock(return_value=None)
+        buf.afc.function.is_printing.return_value = False
+        result = buf.extruder_pos_update_event(100.0)
+        assert result == 100.0 + CHECK_RUNOUT_TIMEOUT
+        buf.get_extruder_pos.assert_called_once()
 
     def test_triggers_pause_when_extruder_pos_exceeds_threshold(self):
         buf = _make_buffer(error_sensitivity=5.0)
