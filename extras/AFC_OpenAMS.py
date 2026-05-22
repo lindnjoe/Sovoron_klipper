@@ -1510,15 +1510,28 @@ class afcAMS(afcUnit):
             f"fps={getattr(buf, 'smoothed_fps', '?') if buf else 'N/A'}"
         )
         if not sensor_state and not on_shuttle:
-            message = (
-                "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
-                "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
-            )
-            message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
-            if afc.function.in_print():
-                message += "\nOnce filament is fully loaded click resume to continue printing"
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
+            if afc.is_u1_motion_sensor(cur_extruder):
+                # U1 motion sensor encoder only fires during extruder
+                # motor pulls.  The OAMS engagement verification already
+                # confirmed filament is engaged — set the sensor state
+                # so Klipper/Mainsail reports filament present.
+                helper = cur_extruder.filament_sensor_obj.runout_helper
+                if not helper.filament_present:
+                    helper.filament_present = True
+                cur_extruder.tool_start_state = True
+                self.logger.info(
+                    f"U1 motion sensor bypass for {cur_lane.name}: "
+                    f"engagement verified by OAMS, sensor state set")
+            else:
+                message = (
+                    "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
+                    "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
+                )
+                message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
+                if afc.function.in_print():
+                    message += "\nOnce filament is fully loaded click resume to continue printing"
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         return True
 
