@@ -735,12 +735,13 @@ A neutral state LED is also available (not present on TurtleNeck).</p>
 <h2 id="auto-spoolman-create">auto_spoolman_create<a class="headerlink" href="#auto-spoolman-create">&#182;</a></h2>
 
 <p>The <code>auto_spoolman_create</code> feature bridges RFID tag data with
-<a href="https://github.com/Donkie/Spoolman">Spoolman</a> inventory management. When a spool with
-an RFID tag is loaded, AFC reads the tag's embedded data — material type, color, brand,
-SKU, diameter, and temperature settings — then searches Spoolman for a matching filament
-and spool. If no match is found and <code>auto_spoolman_create</code> is enabled, AFC automatically
-creates the filament and spool entries in Spoolman so your inventory stays in sync
-without manual data entry.</p>
+<a href="https://github.com/Donkie/Spoolman">Spoolman</a> inventory management. It works with
+ACE units (which have built-in RFID readers) and U1 lane scanners (which use external
+RFID hardware). When a spool with an RFID tag is loaded or scanned, AFC reads the tag's
+embedded data — material type, color, brand, SKU, diameter, and temperature settings —
+then searches Spoolman for a matching filament and spool. If no match is found and
+<code>auto_spoolman_create</code> is enabled, AFC automatically creates the filament and spool
+entries in Spoolman so your inventory stays in sync without manual data entry.</p>
 
 <h3>How Matching Works</h3>
 
@@ -793,11 +794,12 @@ per-lane setting takes priority when present.</p>
 
 <h2 id="spool-scanner">spool_scanner<a class="headerlink" href="#spool-scanner">&#182;</a></h2>
 
-<p>The <code>spool_scanner</code> feature turns a lane into a dedicated RFID scanning station. Instead
-of loading filament, a scanner lane reads the RFID tag on a spool placed in it and stages
-that spool's data for the next filament load operation on any lane. This lets you scan a
-spool before loading it — the AFC system will know what material, color, and Spoolman
-spool ID to assign when the filament is actually loaded.</p>
+<p>The <code>spool_scanner</code> feature turns a U1 lane into a dedicated RFID scanning station.
+Instead of loading filament, a scanner lane reads the RFID tag on a spool placed in it
+and stages that spool's data for the next filament load operation on any lane. This lets
+you scan a spool before loading it — the AFC system will know what material, color, and
+Spoolman spool ID to assign when the filament is actually loaded. This feature requires
+U1 RFID hardware.</p>
 
 <h3>How It Works</h3>
 
