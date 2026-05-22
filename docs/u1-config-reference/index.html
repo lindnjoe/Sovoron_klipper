@@ -209,6 +209,11 @@
         <li><a href="#afc_buffer-buffer_name-section">AFC_buffer (TurtleNeck)</a></li>
         <li><a href="#afc_fps-buffer_name-section">AFC_FPS</a></li>
       </ul>
+      <div class="section-label">Features</div>
+      <ul>
+        <li><a href="#auto-spoolman-create">auto_spoolman_create</a></li>
+        <li><a href="#spool-scanner">spool_scanner</a></li>
+      </ul>
       <div class="section-label">Examples</div>
       <ul>
         <li><a href="#example-ace">ACE Setup</a></li>
@@ -766,6 +771,133 @@ A neutral state LED is also available (not present on TurtleNeck).</p>
 <span class="cfg-comment">#    Default: 0,0,0,0.25</span>
 <span class="cfg-comment">#    LED color when buffer is disabled.</span>
 </code></pre>
+
+<!-- =====================================================================
+     FEATURES
+     ===================================================================== -->
+
+<h2 id="auto-spoolman-create">auto_spoolman_create<a class="headerlink" href="#auto-spoolman-create">&#182;</a></h2>
+
+<p>The <code>auto_spoolman_create</code> feature bridges RFID tag data with
+<a href="https://github.com/Donkie/Spoolman">Spoolman</a> inventory management. When a spool with
+an RFID tag is loaded, AFC reads the tag's embedded data — material type, color, brand,
+SKU, diameter, and temperature settings — then searches Spoolman for a matching filament
+and spool. If no match is found and <code>auto_spoolman_create</code> is enabled, AFC automatically
+creates the filament and spool entries in Spoolman so your inventory stays in sync
+without manual data entry.</p>
+
+<h3>How Matching Works</h3>
+
+<p>AFC uses a two-phase search to find existing Spoolman entries:</p>
+
+<ol>
+  <li><strong>SKU match</strong> — If the RFID tag contains a SKU (article number), AFC searches
+  Spoolman for a filament with that exact SKU. An exact match is used immediately.</li>
+  <li><strong>Scored fallback</strong> — If no SKU match is found, AFC searches by brand and/or
+  material and scores each candidate:
+    <ul>
+      <li>+3 points for matching material</li>
+      <li>+3 points for matching brand/vendor</li>
+      <li>+5 points for a close color match (color distance &lt; 10), −6 for a poor match</li>
+      <li>+1 point for matching diameter (within 0.05mm)</li>
+    </ul>
+  The highest-scoring candidate above a threshold of 4 is used.
+  </li>
+</ol>
+
+<p>When no suitable match exists and <code>auto_spoolman_create: True</code>, AFC creates
+a new filament entry (with vendor, material, density, diameter, color, and temperature
+settings from the tag) and a new spool entry linked to it. If the filament already
+exists but no spool is assigned, a new spool is created for that filament.</p>
+
+<h3>Configuration</h3>
+
+<p><code>auto_spoolman_create</code> can be set at the unit level or overridden per-lane. The
+per-lane setting takes priority when present.</p>
+
+<pre><code><span class="cfg-comment"># Enable at the unit level (applies to all lanes in this unit)</span>
+<span class="cfg-section">[AFC_ACE ACE_1]</span>
+<span class="cfg-key">auto_spoolman_create</span>: <span class="cfg-val">True</span>
+
+<span class="cfg-comment"># Or override per-lane</span>
+<span class="cfg-section">[AFC_lane lane0]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">ACE_1:1</span>
+<span class="cfg-key">auto_spoolman_create</span>: <span class="cfg-val">False</span>
+<span class="cfg-comment">#    Disables auto-creation for this specific lane,</span>
+<span class="cfg-comment">#    even though the unit has it enabled.</span>
+</code></pre>
+
+<div class="admonition note">
+  <p class="admonition-title">Note</p>
+  <p>This feature requires a working Spoolman instance connected through Moonraker.
+  Without Spoolman configured, RFID tag data is still applied to the lane (material,
+  color, temperatures) but no inventory entries are created.</p>
+</div>
+
+
+<h2 id="spool-scanner">spool_scanner<a class="headerlink" href="#spool-scanner">&#182;</a></h2>
+
+<p>The <code>spool_scanner</code> feature turns a lane into a dedicated RFID scanning station. Instead
+of loading filament, a scanner lane reads the RFID tag on a spool placed in it and stages
+that spool's data for the next filament load operation on any lane. This lets you scan a
+spool before loading it — the AFC system will know what material, color, and Spoolman
+spool ID to assign when the filament is actually loaded.</p>
+
+<h3>How It Works</h3>
+
+<ol>
+  <li>A lane is configured with <code>spool_scanner: true</code>. AFC marks this lane as a scanner
+  during initialization and begins actively polling its RFID reader.</li>
+  <li>When a spool is placed on the scanner lane, AFC reads the RFID tag and extracts
+  material, color, brand, SKU, and temperature data.</li>
+  <li>If Spoolman is connected, AFC runs the standard matching logic (see
+  <a href="#auto-spoolman-create">auto_spoolman_create</a>) and stages the matched or newly
+  created spool ID as <code>next_spool_id</code>.</li>
+  <li>If Spoolman is not connected, the raw tag data (material, color, temperatures) is
+  stored as <code>next_spool_info</code>.</li>
+  <li>When filament is next loaded into any lane, AFC automatically consumes the staged
+  data — assigning the spool ID, material, color, and temperatures to that lane. The
+  staged data is then cleared.</li>
+</ol>
+
+<p>The scanner lane itself never loads filament. It exists solely to read tags and stage
+spool data for the next load.</p>
+
+<h3>Configuration</h3>
+
+<pre><code><span class="cfg-comment"># Designate a lane as a spool scanner</span>
+<span class="cfg-section">[AFC_lane scanner_lane]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Turtle_1:1</span>
+<span class="cfg-key">spool_scanner</span>: <span class="cfg-val">true</span>
+<span class="cfg-key">map</span>: <span class="cfg-val">T0</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">Hub_1</span>
+</code></pre>
+
+<h3>SET_NEXT_SPOOL_ID Command</h3>
+
+<p>The <code>SET_NEXT_SPOOL_ID</code> G-code command provides manual control over the staged spool.
+This can be used in scanning macros, QR code workflows, or any automation that knows the
+Spoolman spool ID ahead of time.</p>
+
+<pre><code><span class="cfg-comment"># Stage a spool ID for the next load</span>
+SET_NEXT_SPOOL_ID SPOOL_ID=12345
+
+<span class="cfg-comment"># Clear the staged spool ID</span>
+SET_NEXT_SPOOL_ID
+</code></pre>
+
+<p>When a spool ID is staged via either the scanner lane or <code>SET_NEXT_SPOOL_ID</code>, it is
+consumed on the very next filament load and then cleared — subsequent loads are not
+affected unless a new spool is scanned or staged.</p>
+
+<div class="admonition tip">
+  <p class="admonition-title">Tip</p>
+  <p>The spool scanner requires U1-compatible RFID hardware. If the scanned tag matches
+  an existing spool in Spoolman, that spool is staged directly. If
+  <code>auto_spoolman_create</code> is enabled on the scanner lane, new entries are created
+  automatically when no match is found.</p>
+</div>
+
 
 <!-- =====================================================================
      EXAMPLE CONFIGS
