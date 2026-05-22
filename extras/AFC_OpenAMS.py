@@ -4460,18 +4460,12 @@ class afcAMS(afcUnit):
             target_extruder = normalize_extruder_name(self._get_snapshot_lane_extruder(target_lane.name))
 
         if not source_extruder or (target_lane and not target_extruder):
-            self.logger.error(
+            msg = (
                 f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data "
-                f"(source={source_extruder}, target={target_extruder}); pausing for user intervention"
-            )
-            try:
-                self.gcode.run_script_from_command("PAUSE")
-            except Exception as e:
-                self.logger.error(f"Failed to issue PAUSE after runout classification failure: {e}")
-            self.logger.info(
-                f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data. "
+                f"(source={source_extruder}, target={target_extruder}).\n"
                 "Please check AFC.var.unit and lane mappings."
             )
+            self.afc.error.AFC_error(msg, pause=True)
             return
 
         self.logger.debug(
