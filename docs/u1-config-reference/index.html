@@ -969,9 +969,9 @@ supports a built-in temperature sensor and dryer control macros.</p>
 
 <h2 id="example-openams">Example — OpenAMS Setup<a class="headerlink" href="#example-openams">&#182;</a></h2>
 
-<p>A working OpenAMS setup with per-lane hubs and custom load/unload commands. Each lane
-gets its own physical hub with an independent bowden length, allowing different tube
-routing per bay. The FPS buffer provides filament pressure sensing for the unit.</p>
+<p>A working OpenAMS setup with per-lane hubs. Each lane gets its own physical hub with an
+independent bowden length, allowing different tube routing per bay. The FPS buffer
+provides filament pressure sensing for the unit.</p>
 
 <pre><code><span class="cfg-comment"># --- FPS buffer for the OpenAMS unit ---</span>
 <span class="cfg-section">[AFC_FPS FPS_buffer1]</span>
@@ -993,8 +993,6 @@ routing per bay. The FPS buffer provides filament pressure sensing for the unit.
 <span class="cfg-key">load_to_hub</span>: <span class="cfg-val">False</span>
 <span class="cfg-key">hub</span>: <span class="cfg-val">Hub_1</span>
 <span class="cfg-key">map</span>: <span class="cfg-val">T0</span>
-<span class="cfg-key">custom_load_cmd</span>: <span class="cfg-val">_TX1 GROUP=T0</span>
-<span class="cfg-key">custom_unload_cmd</span>: <span class="cfg-val">SAFE_UNLOAD_FILAMENT1</span>
 
 <span class="cfg-section">[AFC_lane lane1]</span>
 <span class="cfg-key">unit</span>: <span class="cfg-val">AMS_1:2</span>
