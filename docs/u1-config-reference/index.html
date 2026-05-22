@@ -1,0 +1,884 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AFC Configuration — U1 Extended Units &amp; FPS Buffer</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+  <style>
+    :root {
+      --md-primary-fg-color: #4051b5;
+      --md-primary-bg-color: #fff;
+      --md-accent-fg-color: #526cfe;
+      --md-default-fg-color: rgba(0,0,0,.87);
+      --md-default-bg-color: #fff;
+      --md-code-bg-color: #f5f5f5;
+      --md-code-fg-color: #36464e;
+      --md-typeset-color: rgba(0,0,0,.87);
+      --md-typeset-a-color: #4051b5;
+      --md-admonition-fg-color: rgba(0,0,0,.87);
+      --md-text-font: "Roboto";
+      --md-code-font: "Roboto Mono";
+      --md-shadow-z1: 0 0.2rem 0.5rem rgba(0,0,0,.05), 0 0 0.05rem rgba(0,0,0,.1);
+      --md-shadow-z2: 0 0.2rem 0.5rem rgba(0,0,0,.1), 0 0 0.05rem rgba(0,0,0,.25);
+    }
+
+    [data-theme="dark"] {
+      --md-default-fg-color: rgba(255,255,255,.87);
+      --md-default-bg-color: #1e1e1e;
+      --md-code-bg-color: #282828;
+      --md-code-fg-color: #d4d4d4;
+      --md-typeset-color: rgba(255,255,255,.87);
+      --md-typeset-a-color: #82b1ff;
+      --md-primary-fg-color: #82b1ff;
+      --md-accent-fg-color: #82b1ff;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--md-text-font), -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
+      font-size: .8rem;
+      line-height: 1.6;
+      color: var(--md-default-fg-color);
+      background: var(--md-default-bg-color);
+    }
+
+    /* Header */
+    .header {
+      position: sticky; top: 0; z-index: 100;
+      background: var(--md-primary-fg-color);
+      color: var(--md-primary-bg-color);
+      box-shadow: var(--md-shadow-z2);
+      padding: 0.6rem 1.5rem;
+      display: flex; align-items: center; gap: 1rem;
+    }
+    .header h1 { font-size: 1.1rem; font-weight: 400; }
+    .header .subtitle { opacity: 0.7; font-size: 0.85rem; }
+    .theme-toggle {
+      margin-left: auto; background: none; border: none; color: inherit;
+      cursor: pointer; font-size: 1.2rem; padding: 0.3rem;
+    }
+
+    /* Layout */
+    .layout { display: flex; max-width: 1400px; margin: 0 auto; }
+
+    /* Sidebar / TOC */
+    .sidebar {
+      width: 280px; flex-shrink: 0;
+      position: sticky; top: 3.2rem; height: calc(100vh - 3.2rem);
+      overflow-y: auto; padding: 1.2rem 0.8rem;
+      border-right: 1px solid rgba(0,0,0,.07);
+      font-size: 0.78rem;
+    }
+    [data-theme="dark"] .sidebar { border-right-color: rgba(255,255,255,.07); }
+    .sidebar h3 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(0,0,0,.54); margin: 1rem 0 0.4rem; }
+    [data-theme="dark"] .sidebar h3 { color: rgba(255,255,255,.54); }
+    .sidebar ul { list-style: none; }
+    .sidebar li { margin: 0.15rem 0; }
+    .sidebar a {
+      color: var(--md-default-fg-color); text-decoration: none;
+      display: block; padding: 0.25rem 0.5rem; border-radius: 4px;
+      transition: background 0.15s;
+    }
+    .sidebar a:hover { background: rgba(0,0,0,.04); }
+    [data-theme="dark"] .sidebar a:hover { background: rgba(255,255,255,.04); }
+    .sidebar a.active { color: var(--md-typeset-a-color); font-weight: 500; }
+
+    .sidebar .section-label {
+      font-weight: 500; font-size: 0.82rem;
+      margin-top: 0.8rem; padding: 0.25rem 0.5rem;
+      color: var(--md-default-fg-color);
+    }
+
+    /* Main content */
+    .content {
+      flex: 1; min-width: 0;
+      padding: 2rem 2.5rem 4rem;
+      max-width: 900px;
+    }
+
+    /* Typography */
+    h1 { font-size: 1.6rem; font-weight: 300; margin-bottom: 1rem; border-bottom: 1px solid rgba(0,0,0,.07); padding-bottom: 0.6rem; }
+    [data-theme="dark"] h1 { border-bottom-color: rgba(255,255,255,.07); }
+    h2 {
+      font-size: 1.25rem; font-weight: 400; margin: 2.5rem 0 0.8rem;
+      padding-bottom: 0.4rem; border-bottom: 1px solid rgba(0,0,0,.07);
+    }
+    [data-theme="dark"] h2 { border-bottom-color: rgba(255,255,255,.07); }
+    h2 .headerlink { color: var(--md-typeset-a-color); text-decoration: none; margin-left: 0.3rem; opacity: 0; transition: opacity 0.15s; }
+    h2:hover .headerlink { opacity: 1; }
+    h3 { font-size: 1rem; font-weight: 500; margin: 1.5rem 0 0.5rem; }
+    p { margin: 0.6rem 0; }
+    code {
+      font-family: var(--md-code-font), SFMono-Regular, Consolas, monospace;
+      font-size: 0.85em; padding: 0 0.3em;
+      background: var(--md-code-bg-color); border-radius: 3px;
+    }
+
+    /* Code blocks */
+    pre {
+      background: var(--md-code-bg-color);
+      border-radius: 4px;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      margin: 0.8rem 0;
+    }
+    pre code { padding: 0; background: none; }
+    .cfg-key { color: #905; }
+    .cfg-val { color: #07a; }
+    .cfg-comment { color: #998; font-style: italic; }
+    [data-theme="dark"] .cfg-key { color: #ce9178; }
+    [data-theme="dark"] .cfg-val { color: #9cdcfe; }
+    [data-theme="dark"] .cfg-comment { color: #6a9955; }
+
+    /* Section header */
+    .cfg-section { color: #4051b5; font-weight: 700; }
+    [data-theme="dark"] .cfg-section { color: #82b1ff; }
+
+    /* Admonitions */
+    .admonition {
+      border-left: 4px solid; border-radius: 4px;
+      padding: 0.8rem 1rem; margin: 1rem 0;
+      font-size: 0.82rem;
+    }
+    .admonition-title {
+      font-weight: 700; margin-bottom: 0.4rem; font-size: 0.78rem;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .admonition.note { border-color: #448aff; background: rgba(68,138,255,.05); }
+    .admonition.note .admonition-title { color: #448aff; }
+    .admonition.warning { border-color: #ff9100; background: rgba(255,145,0,.05); }
+    .admonition.warning .admonition-title { color: #ff9100; }
+    .admonition.tip { border-color: #00bfa5; background: rgba(0,191,165,.05); }
+    .admonition.tip .admonition-title { color: #00bfa5; }
+    .admonition.danger { border-color: #ff1744; background: rgba(255,23,68,.05); }
+    .admonition.danger .admonition-title { color: #ff1744; }
+    .admonition.info { border-color: #2979ff; background: rgba(41,121,255,.05); }
+    .admonition.info .admonition-title { color: #2979ff; }
+
+    /* Badge */
+    .badge {
+      display: inline-block; font-size: 0.65rem; font-weight: 700;
+      padding: 0.15em 0.5em; border-radius: 3px; vertical-align: middle;
+      margin-left: 0.5rem; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .badge-new { background: #00c853; color: #fff; }
+    .badge-u1 { background: #7c4dff; color: #fff; }
+
+    /* Tables */
+    table {
+      width: 100%; border-collapse: collapse; margin: 1rem 0;
+      font-size: 0.8rem;
+    }
+    th, td { padding: 0.5rem 0.8rem; text-align: left; border-bottom: 1px solid rgba(0,0,0,.07); }
+    [data-theme="dark"] th, [data-theme="dark"] td { border-bottom-color: rgba(255,255,255,.07); }
+    th { font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: rgba(0,0,0,.54); }
+    [data-theme="dark"] th { color: rgba(255,255,255,.54); }
+
+    /* Mobile */
+    @media (max-width: 960px) {
+      .sidebar { display: none; }
+      .content { padding: 1.5rem 1rem; }
+    }
+
+    /* Scroll margin for anchors */
+    [id] { scroll-margin-top: 4rem; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>AFC Configuration</h1>
+    <span class="subtitle">U1 Extended — ACE, OpenAMS &amp; FPS Buffer</span>
+    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
+  </div>
+
+  <div class="layout">
+    <!-- Sidebar / TOC -->
+    <nav class="sidebar">
+      <div class="section-label">Unit Types</div>
+      <ul>
+        <li><a href="#afc_ace-unit_name-section">AFC_ACE</a></li>
+        <li><a href="#ace-lane-overrides">ACE Lane Overrides</a></li>
+        <li><a href="#afc_openams-unit_name-section">AFC_OpenAMS</a></li>
+      </ul>
+      <div class="section-label">Buffer</div>
+      <ul>
+        <li><a href="#afc_fps-buffer_name-section">AFC_FPS (Filament Position Sensor)</a></li>
+        <li><a href="#fps-adc-configuration">ADC Configuration</a></li>
+        <li><a href="#fps-buffer-tuning">Buffer Tuning</a></li>
+        <li><a href="#fps-led-settings">LED Settings</a></li>
+      </ul>
+      <div class="section-label">Examples</div>
+      <ul>
+        <li><a href="#example-ace">ACE Minimal Setup</a></li>
+        <li><a href="#example-openams">OpenAMS Minimal Setup</a></li>
+        <li><a href="#example-fps">FPS Buffer Setup</a></li>
+      </ul>
+      <div class="section-label">Reference</div>
+      <ul>
+        <li><a href="#existing-units">Existing Unit Types</a></li>
+        <li><a href="#config-hierarchy">Config Hierarchy</a></li>
+      </ul>
+    </nav>
+
+    <!-- Main content -->
+    <div class="content">
+
+<h1 id="u1-extended-configuration">AFC U1 Extended Configuration<span class="badge badge-new">New</span></h1>
+
+<p>This page documents the configuration sections added by the <strong>u1_AFC_Extra</strong> branch for
+ACE PRO, OpenAMS, and FPS (Filament Position Sensor) buffer hardware. These units extend
+the AFC system beyond the standard BoxTurtle / NightOwl / QuattroBox / HTLF / ViViD units.</p>
+
+<div class="admonition note">
+  <p class="admonition-title">Note</p>
+  <p>ACE and OpenAMS units are <strong>stepperless</strong> — they use their own internal firmware for filament
+  movement instead of Klipper-controlled stepper motors. Lane sections for these units omit
+  stepper pin configuration (<code>step_pin</code>, <code>dir_pin</code>, <code>enable_pin</code>).</p>
+</div>
+
+<!-- =====================================================================
+     AFC_ACE SECTION
+     ===================================================================== -->
+
+<h2 id="afc_ace-unit_name-section">[AFC_ACE unit_name] Section<a class="headerlink" href="#afc_ace-unit_name-section">&#182;</a></h2>
+
+<p>The following options are available in the <code>[AFC_ACE unit_name]</code> section. These
+control the configuration of the AFC system when interfacing with Anycubic ACE PRO hardware.
+ACE units communicate over a serial connection and support two operational modes:
+<strong>combined</strong> (multiple slots share one toolhead path via a combiner) and
+<strong>direct</strong> (each slot feeds its own extruder independently).</p>
+
+<div class="admonition warning">
+  <p class="admonition-title">Warning</p>
+  <p>ACE units require a virtual hub sensor. You must configure an <code>[AFC_hub]</code> section with
+  <code>switch_pin: virtual</code> for the ACE hub, since there is no physical hub sensor on ACE hardware.</p>
+</div>
+
+<pre><code><span class="cfg-section">[AFC_ACE Ace_1]</span>
+<span class="cfg-key">serial_port</span>: <span class="cfg-val">/dev/ttyACM0</span>
+<span class="cfg-comment">#    Serial port for ACE PRO hardware. This parameter must be provided.</span>
+<span class="cfg-comment">#    Use the output of `ls /dev/serial/by-id/` to find the correct port.</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
+<span class="cfg-comment">#    Hub that this unit belongs to. Must reference an [AFC_hub] section</span>
+<span class="cfg-comment">#    with switch_pin: virtual.</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-comment">#    AFC_extruder name that this unit feeds into.</span>
+<span class="cfg-key">mode</span>: <span class="cfg-val">combined</span>
+<span class="cfg-comment">#    Default: combined</span>
+<span class="cfg-comment">#    Operational mode. "combined" means multiple ACE slots share one</span>
+<span class="cfg-comment">#    toolhead path (must retract current slot before feeding new one).</span>
+<span class="cfg-comment">#    "direct" means each ACE slot feeds its own extruder independently.</span>
+<span class="cfg-key">baud_rate</span>: <span class="cfg-val">115200</span>
+<span class="cfg-comment">#    Default: 115200</span>
+<span class="cfg-comment">#    Serial baud rate for ACE communication.</span>
+<span class="cfg-key">feed_speed</span>: <span class="cfg-val">60</span>
+<span class="cfg-comment">#    Default: 60</span>
+<span class="cfg-comment">#    Feed speed in mm/s. ACE firmware expects mm/s natively.</span>
+<span class="cfg-key">retract_speed</span>: <span class="cfg-val">50</span>
+<span class="cfg-comment">#    Default: 50</span>
+<span class="cfg-comment">#    Retract speed in mm/s.</span>
+<span class="cfg-key">feed_length</span>: <span class="cfg-val">500</span>
+<span class="cfg-comment">#    Default: 500</span>
+<span class="cfg-comment">#    Distance in mm from ACE unit to toolhead. Used for feed moves.</span>
+<span class="cfg-comment">#    Can be overridden per-lane in [AFC_lane] sections.</span>
+<span class="cfg-key">retract_length</span>: <span class="cfg-val">500</span>
+<span class="cfg-comment">#    Default: 500</span>
+<span class="cfg-comment">#    Distance in mm to retract filament back to ACE. Usually matches</span>
+<span class="cfg-comment">#    feed_length. Can be overridden per-lane.</span>
+<span class="cfg-key">unload_preretract</span>: <span class="cfg-val">50</span>
+<span class="cfg-comment">#    Default: 50</span>
+<span class="cfg-comment">#    Distance in mm for ACE rewind before cut, to tighten the spool</span>
+<span class="cfg-comment">#    and prevent loose loops.</span>
+<span class="cfg-key">dist_hub</span>: <span class="cfg-val">200</span>
+<span class="cfg-comment">#    Default: 200</span>
+<span class="cfg-comment">#    Slot-to-hub/combiner distance in mm. Used for two-phase loading</span>
+<span class="cfg-comment">#    (prep feeds to hub, load feeds hub-to-toolhead).</span>
+<span class="cfg-comment">#    Calibrate with ACE_CALIBRATE_HUB. Can be overridden per-lane.</span>
+<span class="cfg-key">load_to_hub</span>:
+<span class="cfg-comment">#    Default: &lt;none&gt; (inherits from AFC global)</span>
+<span class="cfg-comment">#    Unit-level override for load-to-hub behavior.</span>
+<span class="cfg-comment">#    Can also be overridden per-lane.</span>
+<span class="cfg-key">use_feed_assist</span>: <span class="cfg-val">True</span>
+<span class="cfg-comment">#    Default: True</span>
+<span class="cfg-comment">#    Enable/disable extruder motor feed assist for all slots in this</span>
+<span class="cfg-comment">#    unit. When enabled, the extruder motor helps pull filament during</span>
+<span class="cfg-comment">#    loading. Can be overridden per-lane.</span>
+<span class="cfg-key">extruder_assist_length</span>: <span class="cfg-val">50</span>
+<span class="cfg-comment">#    Default: 50</span>
+<span class="cfg-comment">#    Distance in mm to advance with extruder motor during feed assist.</span>
+<span class="cfg-key">extruder_assist_speed</span>: <span class="cfg-val">300</span>
+<span class="cfg-comment">#    Default: 300</span>
+<span class="cfg-comment">#    Extruder assist speed in mm/min.</span>
+<span class="cfg-key">sensor_approach_margin</span>: <span class="cfg-val">30</span>
+<span class="cfg-comment">#    Default: 30</span>
+<span class="cfg-comment">#    Distance in mm before the expected sensor position to switch from</span>
+<span class="cfg-comment">#    full-speed feeding to incremental sensor-checking mode.</span>
+<span class="cfg-key">sensor_step</span>: <span class="cfg-val">40</span>
+<span class="cfg-comment">#    Default: 40</span>
+<span class="cfg-comment">#    Distance in mm per check during sensor approach.</span>
+<span class="cfg-key">calibration_step</span>: <span class="cfg-val">50</span>
+<span class="cfg-comment">#    Default: 50</span>
+<span class="cfg-comment">#    Distance in mm per check during calibration.</span>
+<span class="cfg-key">max_feed_overshoot</span>: <span class="cfg-val">100</span>
+<span class="cfg-comment">#    Default: 100</span>
+<span class="cfg-comment">#    Extra distance in mm to try past feed_length before giving up.</span>
+<span class="cfg-key">auto_spoolman_create</span>: <span class="cfg-val">False</span>
+<span class="cfg-comment">#    Default: False</span>
+<span class="cfg-comment">#    When True, automatically create filaments and spools in Spoolman</span>
+<span class="cfg-comment">#    from RFID data read by ACE. When False, RFID data still matches</span>
+<span class="cfg-comment">#    to existing filaments/spools but won't create new ones.</span>
+<span class="cfg-comment">#    Can be overridden per-lane.</span>
+<span class="cfg-key">poll_interval</span>: <span class="cfg-val">1.0</span>
+<span class="cfg-comment">#    Default: 1.0</span>
+<span class="cfg-comment">#    Sensor polling interval in seconds for status and runout monitoring.</span>
+</code></pre>
+
+<h3 id="ace-fps-integration">FPS Integration Settings</h3>
+
+<p>When the extruder uses an <code>AFC_FPS</code> buffer as <code>pin_tool_start</code>, the FPS ADC value
+serves as the toolhead sensor. These thresholds control when ACE considers filament
+to have reached the extruder.</p>
+
+<pre><code><span class="cfg-comment"># FPS (Filament Pressure Sensor) integration thresholds</span>
+<span class="cfg-key">fps_threshold</span>: <span class="cfg-val">0.9</span>
+<span class="cfg-comment">#    Default: 0.9</span>
+<span class="cfg-comment">#    FPS pressure threshold for toolhead sensor (0.0-1.0).</span>
+<span class="cfg-comment">#    Above this value, the sensor is considered triggered.</span>
+<span class="cfg-key">fps_load_threshold</span>: <span class="cfg-val">0.65</span>
+<span class="cfg-comment">#    Default: 0.65</span>
+<span class="cfg-comment">#    Lower threshold used during active operations (loading/calibration).</span>
+<span class="cfg-comment">#    The latch mechanism prevents false clears, so we can trigger earlier</span>
+<span class="cfg-comment">#    to catch brief pressure spikes during filament engagement.</span>
+<span class="cfg-key">fps_delta_threshold</span>: <span class="cfg-val">0.15</span>
+<span class="cfg-comment">#    Default: 0.15</span>
+<span class="cfg-comment">#    Minimum jump between consecutive FPS readings for filament</span>
+<span class="cfg-comment">#    engagement detection during active operations.</span>
+<span class="cfg-key">fps_confirm_count</span>: <span class="cfg-val">3</span>
+<span class="cfg-comment">#    Default: 3 (minval: 1)</span>
+<span class="cfg-comment">#    Consecutive ADC readings above threshold required before the sensor</span>
+<span class="cfg-comment">#    is considered triggered. ACE pulsed feeding can cause brief spikes;</span>
+<span class="cfg-comment">#    requiring multiple consecutive readings filters these out.</span>
+<span class="cfg-comment">#    At ~100ms per ADC callback, 3 readings adds ~200ms confirmation delay.</span>
+</code></pre>
+
+<!-- ACE Lane Overrides -->
+<h2 id="ace-lane-overrides">ACE Lane Configuration<a class="headerlink" href="#ace-lane-overrides">&#182;</a></h2>
+
+<p>ACE lanes are configured with standard <code>[AFC_lane]</code> sections but use a slot-based
+<code>unit</code> reference. Stepper pins are not needed. Several unit-level parameters can be
+overridden per-lane.</p>
+
+<pre><code><span class="cfg-section">[AFC_lane lane1]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Ace_1:1</span>
+<span class="cfg-comment">#    Unit:Slot reference. Slot numbers are 1-based in config</span>
+<span class="cfg-comment">#    (converted to 0-based internally). ACE PRO has 4 slots.</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-key">feed_length</span>: <span class="cfg-val">2800</span>
+<span class="cfg-comment">#    Optional: per-lane override for feed_length (mm).</span>
+<span class="cfg-key">retract_length</span>: <span class="cfg-val">2500</span>
+<span class="cfg-comment">#    Optional: per-lane override for retract_length (mm).</span>
+<span class="cfg-key">dist_hub</span>: <span class="cfg-val">200</span>
+<span class="cfg-comment">#    Optional: per-lane override for dist_hub (mm).</span>
+<span class="cfg-key">use_feed_assist</span>: <span class="cfg-val">True</span>
+<span class="cfg-comment">#    Optional: per-lane override for feed assist enable/disable.</span>
+<span class="cfg-key">auto_spoolman_create</span>: <span class="cfg-val">False</span>
+<span class="cfg-comment">#    Optional: per-lane override for auto Spoolman spool creation.</span>
+</code></pre>
+
+<div class="admonition tip">
+  <p class="admonition-title">Tip</p>
+  <p>Run <code>ACE_CALIBRATE_HUB LANE=lane1</code> to automatically calibrate <code>feed_length</code> and
+  <code>dist_hub</code> for a lane. The calibration uses incremental sensor-based feeding to measure
+  the exact distance from the ACE slot to the toolhead sensor.</p>
+</div>
+
+<!-- =====================================================================
+     AFC_OpenAMS SECTION
+     ===================================================================== -->
+
+<h2 id="afc_openams-unit_name-section">[AFC_OpenAMS unit_name] Section<a class="headerlink" href="#afc_openams-unit_name-section">&#182;</a></h2>
+
+<p>The following options are available in the <code>[AFC_OpenAMS unit_name]</code> section. These
+control the configuration of the AFC system when interfacing with OpenAMS (Open Automatic
+Material System) hardware. OpenAMS units communicate with their own firmware and use an
+AFC_FPS buffer for filament pressure sensing.</p>
+
+<p>OpenAMS inherits base unit configuration options (hub, extruder, buffer, LED colors, speeds)
+from the <code>afcUnit</code> base class, the same as BoxTurtle/NightOwl. Below are configuration
+values specific to OpenAMS.</p>
+
+<div class="admonition info">
+  <p class="admonition-title">Info</p>
+  <p>OpenAMS units do <strong>not</strong> support TurtleNeck-style (stepper-based) buffers. Only <code>AFC_FPS</code>
+  buffers are compatible. If a non-FPS buffer is configured, it will be automatically disabled.</p>
+</div>
+
+<pre><code><span class="cfg-section">[AFC_OpenAMS Oams_1]</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
+<span class="cfg-comment">#    Hub that this unit belongs to.</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-comment">#    AFC_extruder name that this unit feeds into.</span>
+<span class="cfg-key">buffer</span>: <span class="cfg-val">FPS_1</span>
+<span class="cfg-comment">#    AFC_FPS buffer name. Only FPS buffers are supported for OpenAMS.</span>
+<span class="cfg-key">oams</span>: <span class="cfg-val">oams1</span>
+<span class="cfg-comment">#    Default: oams1</span>
+<span class="cfg-comment">#    OpenAMS hardware name/instance identifier. Used to distinguish</span>
+<span class="cfg-comment">#    multiple OpenAMS units.</span>
+<span class="cfg-key">stuck_spool_auto_recovery</span>: <span class="cfg-val">False</span>
+<span class="cfg-comment">#    Default: False</span>
+<span class="cfg-comment">#    When True, a stuck spool detected during printing triggers an</span>
+<span class="cfg-comment">#    automatic unload + reload + resume cycle instead of just pausing.</span>
+<span class="cfg-comment">#    When False (default), the printer pauses for user intervention.</span>
+<span class="cfg-key">stuck_spool_load_grace</span>: <span class="cfg-val">8.0</span>
+<span class="cfg-comment">#    Default: 8.0 (minval: 0.0)</span>
+<span class="cfg-comment">#    Grace period in seconds after load before stuck spool detection</span>
+<span class="cfg-comment">#    begins. Prevents false triggers during initial filament engagement.</span>
+<span class="cfg-key">stuck_spool_pressure_threshold</span>: <span class="cfg-val">0.08</span>
+<span class="cfg-comment">#    Default: 0.08 (minval: 0.0)</span>
+<span class="cfg-comment">#    FPS pressure threshold for stuck spool detection. When pressure</span>
+<span class="cfg-comment">#    stays below this value during printing, the spool may be stuck.</span>
+<span class="cfg-key">engagement_pressure_threshold</span>: <span class="cfg-val">0.6</span>
+<span class="cfg-comment">#    Default: 0.6 (minval: 0.0)</span>
+<span class="cfg-comment">#    Maximum engagement pressure threshold. FPS readings above this</span>
+<span class="cfg-comment">#    value during loading indicate successful filament engagement.</span>
+<span class="cfg-key">engagement_min_pressure</span>: <span class="cfg-val">0.25</span>
+<span class="cfg-comment">#    Default: 0.25 (minval: 0.0)</span>
+<span class="cfg-comment">#    Minimum engagement pressure threshold.</span>
+<span class="cfg-key">clog_sensitivity</span>: <span class="cfg-val">medium</span>
+<span class="cfg-comment">#    Default: medium</span>
+<span class="cfg-comment">#    Clog detection sensitivity. Valid values: "low", "medium", "high".</span>
+<span class="cfg-comment">#    Higher sensitivity triggers clog detection more aggressively.</span>
+</code></pre>
+
+<h3>OpenAMS Lane Configuration</h3>
+
+<p>OpenAMS lanes are configured like standard <code>[AFC_lane]</code> sections but, like ACE,
+do not require stepper pin configuration.</p>
+
+<pre><code><span class="cfg-section">[AFC_lane oams_lane1]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:1</span>
+<span class="cfg-comment">#    Unit:Slot reference for this lane.</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+</code></pre>
+
+<!-- =====================================================================
+     AFC_FPS SECTION
+     ===================================================================== -->
+
+<h2 id="afc_fps-buffer_name-section">[AFC_FPS buffer_name] Section<a class="headerlink" href="#afc_fps-buffer_name-section">&#182;</a></h2>
+
+<p>The Filament Position Sensor (FPS) is a software-based buffer driver that uses an ADC
+(analog-to-digital converter) pin to read filament pressure. Unlike TurtleNeck buffers that
+use physical advance/trailing switches, FPS uses continuous analog readings to determine
+filament buffer state and adjust extruder rotation distance multipliers for smooth printing.</p>
+
+<p>FPS buffers are used by ACE and OpenAMS units, and can also be used with stepper-based
+units as an alternative to TurtleNeck buffers.</p>
+
+<div class="admonition note">
+  <p class="admonition-title">Note</p>
+  <p>FPS has PSF (Pressure Sensor Filament) compatibility aliases: <code>neutral_point</code> maps to
+  <code>set_point</code>, <code>max_tension</code> maps to <code>low_point</code>, and <code>max_compression</code> maps to <code>high_point</code>.
+  You can use either naming convention.</p>
+</div>
+
+<h3 id="fps-adc-configuration">ADC Configuration</h3>
+
+<pre><code><span class="cfg-section">[AFC_FPS FPS_1]</span>
+<span class="cfg-key">adc_pin</span>: <span class="cfg-val">PA5</span>
+<span class="cfg-comment">#    ADC pin for the FPS sensor. This parameter must be provided.</span>
+<span class="cfg-comment">#    Use your MCU's ADC-capable pin (e.g. PA5, PC0, etc).</span>
+<span class="cfg-key">sample_count</span>: <span class="cfg-val">5</span>
+<span class="cfg-comment">#    Default: 5</span>
+<span class="cfg-comment">#    Number of ADC samples per measurement for noise averaging.</span>
+<span class="cfg-key">sample_time</span>: <span class="cfg-val">0.005</span>
+<span class="cfg-comment">#    Default: 0.005</span>
+<span class="cfg-comment">#    Time in seconds between ADC samples.</span>
+<span class="cfg-key">report_time</span>: <span class="cfg-val">0.100</span>
+<span class="cfg-comment">#    Default: 0.100</span>
+<span class="cfg-comment">#    ADC callback interval in seconds. Controls how often the FPS</span>
+<span class="cfg-comment">#    value is updated.</span>
+<span class="cfg-key">reversed</span>: <span class="cfg-val">False</span>
+<span class="cfg-comment">#    Default: False</span>
+<span class="cfg-comment">#    When True, reverses the ADC reading (1.0 - value). Use if your</span>
+<span class="cfg-comment">#    sensor reads high when buffer is empty and low when compressed.</span>
+</code></pre>
+
+<h3 id="fps-buffer-tuning">Buffer Tuning Parameters</h3>
+
+<pre><code><span class="cfg-comment"># Buffer state thresholds</span>
+<span class="cfg-key">set_point</span>: <span class="cfg-val">0.5</span>
+<span class="cfg-comment">#    Default: 0.5 (range: 0.1-0.9)</span>
+<span class="cfg-comment">#    Target FPS reading — the ideal operating point. Buffer corrections</span>
+<span class="cfg-comment">#    push the reading toward this value.</span>
+<span class="cfg-comment">#    PSF alias: neutral_point</span>
+<span class="cfg-key">low_point</span>: <span class="cfg-val">0.1</span>
+<span class="cfg-comment">#    Default: 0.1 (range: 0.0-0.5)</span>
+<span class="cfg-comment">#    Threshold for buffer stretched / not feeding. Below this value,</span>
+<span class="cfg-comment">#    the buffer is considered to be in tension (filament being pulled</span>
+<span class="cfg-comment">#    faster than it's being supplied).</span>
+<span class="cfg-comment">#    PSF alias: max_tension</span>
+<span class="cfg-key">high_point</span>: <span class="cfg-val">0.9</span>
+<span class="cfg-comment">#    Default: 0.9 (range: 0.5-1.0)</span>
+<span class="cfg-comment">#    Threshold for buffer compressed / filament loaded. Above this</span>
+<span class="cfg-comment">#    value, the buffer is considered fully compressed.</span>
+<span class="cfg-comment">#    PSF alias: max_compression</span>
+
+<span class="cfg-comment"># Multiplier settings</span>
+<span class="cfg-key">multiplier_high</span>: <span class="cfg-val">1.15</span>
+<span class="cfg-comment">#    Default: 1.15 (minval: 1.0)</span>
+<span class="cfg-comment">#    Rotation distance multiplier when buffer is above set_point</span>
+<span class="cfg-comment">#    (compressed state). Increases effective extrusion to relieve</span>
+<span class="cfg-comment">#    buffer pressure.</span>
+<span class="cfg-key">multiplier_low</span>: <span class="cfg-val">0.85</span>
+<span class="cfg-comment">#    Default: 0.85 (range: 0.0-1.0)</span>
+<span class="cfg-comment">#    Rotation distance multiplier when buffer is below set_point</span>
+<span class="cfg-comment">#    (stretched state). Decreases effective extrusion to let buffer</span>
+<span class="cfg-comment">#    recover.</span>
+<span class="cfg-key">trailing_min_multiplier</span>: <span class="cfg-val">1.05</span>
+<span class="cfg-comment">#    Default: 1.05 (minval: 1.0)</span>
+<span class="cfg-comment">#    Minimum multiplier during trailing (compressed) state.</span>
+
+<span class="cfg-comment"># Deadband and smoothing</span>
+<span class="cfg-key">deadband</span>: <span class="cfg-val">0.30</span>
+<span class="cfg-comment">#    Default: 0.30 (range: 0.0-0.6)</span>
+<span class="cfg-comment">#    Neutral window width centered on set_point. Within this band,</span>
+<span class="cfg-comment">#    no correction is applied (multiplier stays at 1.0).</span>
+<span class="cfg-key">smoothing</span>: <span class="cfg-val">0.3</span>
+<span class="cfg-comment">#    Default: 0.3 (range: 0.0-0.95)</span>
+<span class="cfg-comment">#    Exponential moving average factor. Higher values give smoother</span>
+<span class="cfg-comment">#    but slower response to changes.</span>
+
+<span class="cfg-comment"># Timing</span>
+<span class="cfg-key">update_interval</span>: <span class="cfg-val">0.25</span>
+<span class="cfg-comment">#    Default: 0.25 (minval: 0.05)</span>
+<span class="cfg-comment">#    Correction timer interval in seconds. How often the multiplier</span>
+<span class="cfg-comment">#    is recalculated based on the current FPS reading.</span>
+<span class="cfg-key">flip_cooldown</span>: <span class="cfg-val">180.0</span>
+<span class="cfg-comment">#    Default: 180.0 (minval: 0.0)</span>
+<span class="cfg-comment">#    Cooldown in seconds to suppress rapid direction changes between</span>
+<span class="cfg-comment">#    advancing and trailing states.</span>
+
+<span class="cfg-comment"># Error detection</span>
+<span class="cfg-key">filament_error_sensitivity</span>: <span class="cfg-val">0</span>
+<span class="cfg-comment">#    Default: 0 (range: 0-10)</span>
+<span class="cfg-comment">#    Error detection sensitivity. 0 = disabled. Higher values make</span>
+<span class="cfg-comment">#    the buffer more aggressive at detecting filament errors.</span>
+
+<span class="cfg-comment"># Misc</span>
+<span class="cfg-key">debug</span>: <span class="cfg-val">False</span>
+<span class="cfg-comment">#    Default: False</span>
+<span class="cfg-comment">#    Enable debug logging for buffer state changes.</span>
+<span class="cfg-key">enable_sensors_in_gui</span>: <span class="cfg-val">True</span>
+<span class="cfg-comment">#    Default: (inherits from AFC global setting)</span>
+<span class="cfg-comment">#    Show FPS buffer sensor in Mainsail/Fluidd GUI.</span>
+</code></pre>
+
+<h3 id="fps-led-settings">LED Settings</h3>
+
+<p>FPS buffers support LED indicators to show buffer state, similar to TurtleNeck buffers.
+A neutral state LED is also available (not present on TurtleNeck).</p>
+
+<pre><code><span class="cfg-comment"># LED configuration</span>
+<span class="cfg-key">led_index</span>:
+<span class="cfg-comment">#    Default: None</span>
+<span class="cfg-comment">#    LED index for buffer state indication. Reference a defined LED</span>
+<span class="cfg-comment">#    in the [AFC_led] section.</span>
+<span class="cfg-key">led_buffer_advancing</span>: <span class="cfg-val">0,0,1,0</span>
+<span class="cfg-comment">#    Default: 0,0,1,0</span>
+<span class="cfg-comment">#    LED color (R,G,B,W) when buffer is expanding (advancing state).</span>
+<span class="cfg-key">led_buffer_trailing</span>: <span class="cfg-val">0,1,0,0</span>
+<span class="cfg-comment">#    Default: 0,1,0,0</span>
+<span class="cfg-comment">#    LED color when buffer is compressed (trailing state).</span>
+<span class="cfg-key">led_buffer_neutral</span>: <span class="cfg-val">0,0.5,0.5,0</span>
+<span class="cfg-comment">#    Default: 0,0.5,0.5,0</span>
+<span class="cfg-comment">#    LED color when buffer is in neutral/deadband zone.</span>
+<span class="cfg-comment">#    (FPS-specific — not available on TurtleNeck buffers.)</span>
+<span class="cfg-key">led_buffer_disable</span>: <span class="cfg-val">0,0,0,0.25</span>
+<span class="cfg-comment">#    Default: 0,0,0,0.25</span>
+<span class="cfg-comment">#    LED color when buffer is disabled.</span>
+</code></pre>
+
+<!-- =====================================================================
+     COMPARISON / REFERENCE
+     ===================================================================== -->
+
+<h2 id="existing-units">Existing Unit Types (Reference)<a class="headerlink" href="#existing-units">&#182;</a></h2>
+
+<p>For comparison, these are the unit types documented on the
+<a href="https://dev.armoredturtle.xyz/docs/afc-klipper-add-on/configuration/AFC_UnitType_1.cfg.html" target="_blank">upstream AFC documentation site</a>:</p>
+
+<table>
+  <thead>
+    <tr><th>Unit Type</th><th>Section Name</th><th>Stepper</th><th>Hub</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>BoxTurtle</td><td><code>[AFC_BoxTurtle]</code></td><td>Yes</td><td>Physical</td><td>Base unit type. All others inherit from it.</td></tr>
+    <tr><td>NightOwl</td><td><code>[AFC_NightOwl]</code></td><td>Yes</td><td>Physical</td><td>Inherits BoxTurtle config, no extra options.</td></tr>
+    <tr><td>QuattroBox</td><td><code>[AFC_QuattroBox]</code></td><td>Yes</td><td>Physical</td><td>Adds logo LED &amp; spool LED options.</td></tr>
+    <tr><td>HTLF</td><td><code>[AFC_HTLF]</code></td><td>Yes</td><td>Physical</td><td>Adds selector stepper &amp; cam angle config.</td></tr>
+    <tr><td>ViViD</td><td><code>[AFC_vivid]</code></td><td>Yes</td><td>Physical</td><td>Adds selector stepper config.</td></tr>
+    <tr><td><strong>ACE</strong></td><td><code>[AFC_ACE]</code></td><td>No</td><td>Virtual</td><td><span class="badge badge-new">New</span> Serial ACE PRO integration.</td></tr>
+    <tr><td><strong>OpenAMS</strong></td><td><code>[AFC_OpenAMS]</code></td><td>No</td><td>Physical</td><td><span class="badge badge-new">New</span> FPS-based pressure sensing.</td></tr>
+  </tbody>
+</table>
+
+<h3>Buffer Type Comparison</h3>
+
+<table>
+  <thead>
+    <tr><th>Buffer Type</th><th>Section Name</th><th>Sensor</th><th>States</th><th>Compatible Units</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>TurtleNeck</td><td><code>[AFC_buffer]</code></td><td>2 GPIO switches</td><td>Advance / Trail / Disable</td><td>BoxTurtle, NightOwl, QuattroBox, HTLF, ViViD</td></tr>
+    <tr><td><strong>FPS</strong></td><td><code>[AFC_FPS]</code></td><td>1 ADC pin</td><td>Advance / Neutral / Trail / Disable</td><td>All units (required for OpenAMS) <span class="badge badge-new">New</span></td></tr>
+  </tbody>
+</table>
+
+<h2 id="config-hierarchy">Configuration Hierarchy<a class="headerlink" href="#config-hierarchy">&#182;</a></h2>
+
+<p>Configuration values cascade through multiple levels. More specific settings override
+broader ones:</p>
+
+<pre><code><span class="cfg-comment"># ACE Configuration Hierarchy (most specific wins)</span>
+<span class="cfg-comment">#</span>
+<span class="cfg-comment">#   1. Per-lane override    [AFC_lane lane1] feed_length: 2800</span>
+<span class="cfg-comment">#   2. Per-unit setting     [AFC_ACE Ace_1]  feed_length: 500</span>
+<span class="cfg-comment">#   3. Hard-coded default                    feed_length = 500.0</span>
+<span class="cfg-comment">#</span>
+<span class="cfg-comment"># OpenAMS Configuration Hierarchy</span>
+<span class="cfg-comment">#</span>
+<span class="cfg-comment">#   1. Per-unit setting     [AFC_OpenAMS Oams_1] stuck_spool_load_grace: 10</span>
+<span class="cfg-comment">#   2. Hard-coded default                        stuck_spool_load_grace = 8.0</span>
+<span class="cfg-comment">#</span>
+<span class="cfg-comment"># FPS Buffer — PSF Alias Resolution</span>
+<span class="cfg-comment">#</span>
+<span class="cfg-comment">#   neutral_point  -->  set_point     (neutral_point is checked first as default)</span>
+<span class="cfg-comment">#   max_tension    -->  low_point     (max_tension is checked first as default)</span>
+<span class="cfg-comment">#   max_compression --> high_point    (max_compression is checked first as default)</span>
+</code></pre>
+
+<!-- =====================================================================
+     COMPLETE EXAMPLES
+     ===================================================================== -->
+
+<h2 id="example-ace">Complete Example — ACE Minimal Setup<a class="headerlink" href="#example-ace">&#182;</a></h2>
+
+<p>A minimal working ACE PRO setup. The virtual hub is required because ACE has no
+physical hub sensor. The FPS buffer is optional but recommended for pressure-based
+toolhead sensing.</p>
+
+<pre><code><span class="cfg-comment"># =============================================================================</span>
+<span class="cfg-comment"># ACE PRO Minimal Configuration</span>
+<span class="cfg-comment"># =============================================================================</span>
+
+<span class="cfg-comment"># --- Virtual hub (ACE has no physical hub sensor) ---</span>
+<span class="cfg-section">[AFC_hub ace_hub1]</span>
+<span class="cfg-key">switch_pin</span>: <span class="cfg-val">virtual</span>
+
+<span class="cfg-comment"># --- ACE unit ---</span>
+<span class="cfg-section">[AFC_ACE Ace_1]</span>
+<span class="cfg-key">serial_port</span>: <span class="cfg-val">/dev/ttyACM0</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-key">feed_length</span>: <span class="cfg-val">500</span>
+<span class="cfg-key">retract_length</span>: <span class="cfg-val">500</span>
+
+<span class="cfg-comment"># --- FPS buffer (optional — enables pressure-based toolhead sensing) ---</span>
+<span class="cfg-section">[AFC_FPS FPS_1]</span>
+<span class="cfg-key">adc_pin</span>: <span class="cfg-val">PA5</span>
+<span class="cfg-key">set_point</span>: <span class="cfg-val">0.5</span>
+
+<span class="cfg-comment"># --- Lanes (one per ACE slot, 4 slots max) ---</span>
+<span class="cfg-section">[AFC_lane ace_lane1]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Ace_1:1</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+
+<span class="cfg-section">[AFC_lane ace_lane2]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Ace_1:2</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+
+<span class="cfg-section">[AFC_lane ace_lane3]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Ace_1:3</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+
+<span class="cfg-section">[AFC_lane ace_lane4]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Ace_1:4</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+</code></pre>
+
+<h2 id="example-openams">Complete Example — OpenAMS Minimal Setup<a class="headerlink" href="#example-openams">&#182;</a></h2>
+
+<p>A minimal working OpenAMS setup. OpenAMS requires an FPS buffer for filament pressure
+sensing. The hub uses a physical sensor (not virtual). OpenAMS communicates with its
+own firmware — no stepper pins are needed in lane sections.</p>
+
+<pre><code><span class="cfg-comment"># =============================================================================</span>
+<span class="cfg-comment"># OpenAMS Minimal Configuration</span>
+<span class="cfg-comment"># =============================================================================</span>
+
+<span class="cfg-comment"># --- Hub (OpenAMS uses a physical hub sensor) ---</span>
+<span class="cfg-section">[AFC_hub oams_hub1]</span>
+<span class="cfg-key">switch_pin</span>: <span class="cfg-val">^!mcu:HUB_PIN</span>
+
+<span class="cfg-comment"># --- FPS buffer (required for OpenAMS) ---</span>
+<span class="cfg-section">[AFC_FPS FPS_1]</span>
+<span class="cfg-key">adc_pin</span>: <span class="cfg-val">mcu:PA5</span>
+<span class="cfg-key">set_point</span>: <span class="cfg-val">0.5</span>
+<span class="cfg-key">low_point</span>: <span class="cfg-val">0.1</span>
+<span class="cfg-key">high_point</span>: <span class="cfg-val">0.9</span>
+
+<span class="cfg-comment"># --- OpenAMS unit ---</span>
+<span class="cfg-section">[AFC_OpenAMS Oams_1]</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-key">buffer</span>: <span class="cfg-val">FPS_1</span>
+<span class="cfg-key">oams</span>: <span class="cfg-val">oams1</span>
+<span class="cfg-key">clog_sensitivity</span>: <span class="cfg-val">medium</span>
+
+<span class="cfg-comment"># --- Lanes (one per OpenAMS bay, 4 bays max) ---</span>
+<span class="cfg-section">[AFC_lane oams_lane1]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:1</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+
+<span class="cfg-section">[AFC_lane oams_lane2]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:2</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+
+<span class="cfg-section">[AFC_lane oams_lane3]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:3</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+
+<span class="cfg-section">[AFC_lane oams_lane4]</span>
+<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:4</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+</code></pre>
+
+<div class="admonition tip">
+  <p class="admonition-title">Tip</p>
+  <p>For stuck spool auto-recovery during printing, add
+  <code>stuck_spool_auto_recovery: True</code> to the <code>[AFC_OpenAMS]</code> section. This makes
+  OpenAMS automatically unload, reload, and resume instead of pausing for user
+  intervention. Adjust <code>stuck_spool_load_grace</code> and
+  <code>stuck_spool_pressure_threshold</code> if you get false triggers.</p>
+</div>
+
+<h2 id="example-fps">Complete Example — FPS Buffer Setup<a class="headerlink" href="#example-fps">&#182;</a></h2>
+
+<p>A fully-tuned FPS buffer configuration with LED indicators. FPS buffers use an ADC
+pin to continuously read filament pressure and adjust the extruder rotation distance
+multiplier in real time. This example shows all tunable parameters at their defaults
+with explanations of what to adjust for common scenarios.</p>
+
+<pre><code><span class="cfg-comment"># =============================================================================</span>
+<span class="cfg-comment"># FPS Buffer — Full Configuration Example</span>
+<span class="cfg-comment"># =============================================================================</span>
+
+<span class="cfg-section">[AFC_FPS FPS_1]</span>
+<span class="cfg-comment"># --- ADC hardware ---</span>
+<span class="cfg-key">adc_pin</span>: <span class="cfg-val">mcu:PA5</span>
+<span class="cfg-key">sample_count</span>: <span class="cfg-val">5</span>
+<span class="cfg-key">sample_time</span>: <span class="cfg-val">0.005</span>
+<span class="cfg-key">report_time</span>: <span class="cfg-val">0.100</span>
+<span class="cfg-key">reversed</span>: <span class="cfg-val">False</span>
+
+<span class="cfg-comment"># --- Buffer state thresholds ---</span>
+<span class="cfg-comment">#   Filament pressure: 0.0 = no pressure, 1.0 = max compression</span>
+<span class="cfg-comment">#</span>
+<span class="cfg-comment">#   |  low_point   set_point   high_point  |</span>
+<span class="cfg-comment">#   |     0.1    [---0.5---]     0.9       |</span>
+<span class="cfg-comment">#   |  TENSION    NEUTRAL     COMPRESSION  |</span>
+<span class="cfg-comment">#</span>
+<span class="cfg-key">set_point</span>: <span class="cfg-val">0.5</span>
+<span class="cfg-key">low_point</span>: <span class="cfg-val">0.1</span>
+<span class="cfg-key">high_point</span>: <span class="cfg-val">0.9</span>
+
+<span class="cfg-comment"># --- Multiplier tuning ---</span>
+<span class="cfg-comment">#   When above set_point: multiplier_high speeds up extrusion</span>
+<span class="cfg-comment">#   When below set_point: multiplier_low slows down extrusion</span>
+<span class="cfg-comment">#   Deadband: no correction applied within this window of set_point</span>
+<span class="cfg-key">multiplier_high</span>: <span class="cfg-val">1.15</span>
+<span class="cfg-key">multiplier_low</span>: <span class="cfg-val">0.85</span>
+<span class="cfg-key">trailing_min_multiplier</span>: <span class="cfg-val">1.05</span>
+<span class="cfg-key">deadband</span>: <span class="cfg-val">0.30</span>
+
+<span class="cfg-comment"># --- Response tuning ---</span>
+<span class="cfg-comment">#   smoothing: higher = slower response, less jitter (0.0-0.95)</span>
+<span class="cfg-comment">#   update_interval: how often corrections are applied</span>
+<span class="cfg-comment">#   flip_cooldown: prevents rapid advance/trail oscillation</span>
+<span class="cfg-key">smoothing</span>: <span class="cfg-val">0.3</span>
+<span class="cfg-key">update_interval</span>: <span class="cfg-val">0.25</span>
+<span class="cfg-key">flip_cooldown</span>: <span class="cfg-val">180.0</span>
+
+<span class="cfg-comment"># --- Error detection ---</span>
+<span class="cfg-comment">#   0 = disabled, 1-10 = sensitivity (higher = more aggressive)</span>
+<span class="cfg-key">filament_error_sensitivity</span>: <span class="cfg-val">0</span>
+
+<span class="cfg-comment"># --- LED indicators (optional) ---</span>
+<span class="cfg-key">led_index</span>: <span class="cfg-val">AFC_Indicator:1</span>
+<span class="cfg-key">led_buffer_advancing</span>: <span class="cfg-val">0,0,1,0</span>
+<span class="cfg-comment">#    Blue: buffer expanding, filament being pulled</span>
+<span class="cfg-key">led_buffer_trailing</span>: <span class="cfg-val">0,1,0,0</span>
+<span class="cfg-comment">#    Green: buffer compressed, filament backing up</span>
+<span class="cfg-key">led_buffer_neutral</span>: <span class="cfg-val">0,0.5,0.5,0</span>
+<span class="cfg-comment">#    Cyan: buffer in deadband, no correction needed</span>
+<span class="cfg-key">led_buffer_disable</span>: <span class="cfg-val">0,0,0,0.25</span>
+<span class="cfg-comment">#    Dim white: buffer disabled</span>
+
+<span class="cfg-key">enable_sensors_in_gui</span>: <span class="cfg-val">True</span>
+<span class="cfg-key">debug</span>: <span class="cfg-val">False</span>
+</code></pre>
+
+<div class="admonition info">
+  <p class="admonition-title">Tuning Tips</p>
+  <p><strong>Noisy readings?</strong> Increase <code>smoothing</code> (try 0.5-0.7) and <code>sample_count</code> (try 8-10).<br>
+  <strong>Oscillating between advance/trail?</strong> Widen <code>deadband</code> (try 0.4) or increase <code>flip_cooldown</code>.<br>
+  <strong>Sluggish correction?</strong> Lower <code>smoothing</code> (try 0.1-0.2) and <code>update_interval</code> (try 0.10).<br>
+  <strong>Sensor reads backwards?</strong> Set <code>reversed: True</code>.<br>
+  <strong>Using PSF naming?</strong> Use <code>neutral_point</code> / <code>max_tension</code> / <code>max_compression</code> instead of
+  <code>set_point</code> / <code>low_point</code> / <code>high_point</code>.</p>
+</div>
+
+    </div><!-- .content -->
+  </div><!-- .layout -->
+
+  <script>
+    function toggleTheme() {
+      const html = document.documentElement;
+      const current = html.getAttribute('data-theme');
+      html.setAttribute('data-theme', current === 'dark' ? '' : 'dark');
+      localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+    }
+    // Restore saved theme
+    if (localStorage.getItem('theme') === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+    // Active sidebar link tracking
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
+          const link = document.querySelector(`.sidebar a[href="#${e.target.id}"]`);
+          if (link) link.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-20% 0px -70% 0px' });
+    document.querySelectorAll('h2[id], h3[id]').forEach(el => observer.observe(el));
+  </script>
+</body>
+</html>
