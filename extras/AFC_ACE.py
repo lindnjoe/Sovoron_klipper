@@ -1491,10 +1491,6 @@ class afcACE(afcUnit):
             if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
                 buffer_obj.enable_advance_latch()
 
-            # U1 only: sync stale motion sensor state before feeding.
-            # No-op for non-U1 sensors.
-            self._sync_toolhead_sensor(cur_extruder, cur_lane)
-
             self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
@@ -1900,30 +1896,6 @@ class afcACE(afcUnit):
     def _is_u1_motion_sensor(self, cur_extruder):
         """Check if the extruder uses a U1 filament_motion_sensor."""
         return self.afc.is_u1_motion_sensor(cur_extruder)
-
-    def _sync_toolhead_sensor(self, cur_extruder, cur_lane):
-        """Reset the toolhead sensor to a clean state before feeding.
-
-        U1 motion sensors can report filament_present=True even after
-        filament is removed: during printing the sensor delays clearing
-        the flag (waits for extrusion-based runout detection), and after
-        a tool-change no extrusion happens to clear it.  The raw switch
-        state (runout_buttun_state) may also rest in True position
-        depending on the encoder wheel.
-
-        Force filament_present=False so the sensor starts clean.  Real
-        filament arrival will toggle the encoder and set it back to True
-        via note_filament_present — that's the real trigger we detect.
-        """
-        if not self._is_u1_motion_sensor(cur_extruder):
-            return
-        sensor_obj = cur_extruder.filament_sensor_obj
-        helper = sensor_obj.runout_helper
-        if helper.filament_present:
-            self.logger.info(
-                f"ACE load: resetting toolhead sensor — "
-                f"filament_present was True (stale), forcing False for clean detection")
-            helper.filament_present = False
 
     def _feed_slot(self, slot_index, lane=None, feed_distance=None):
         """Feed filament from an ACE slot through to the toolhead.
