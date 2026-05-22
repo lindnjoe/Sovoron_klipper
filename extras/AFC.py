@@ -1461,6 +1461,12 @@ class afc:
             if cur_lane.get_toolhead_pre_sensor_state():
                 cur_lane.status = AFCLaneState.TOOL_LOADED
                 self.save_vars()
+            elif self.is_u1_motion_sensor(cur_extruder):
+                # U1 motion sensors detect via encoder rotation during
+                # extruder pulls, not ACE push.  Proceed to tool_stn
+                # where the engagement check verifies the load.
+                cur_lane.status = AFCLaneState.TOOL_LOADED
+                self.save_vars()
             else:
                 message = 'Custom load command did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
                 message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
@@ -1617,10 +1623,12 @@ class afc:
 
             self.afcDeltaTime.log_with_time("Filament loaded to nozzle")
 
-            # Verify filament engagement via U1 motion sensor — only
-            # check if the sensor was active (not stale) before the move.
-            if (self.is_u1_motion_sensor(cur_extruder)
-                    and cur_extruder.tool_start_state):
+            # Verify filament engagement via U1 motion sensor.
+            # The encoder detects filament movement during the extruder
+            # pull — this is the primary verification that filament
+            # reached the gears, especially for ACE where the encoder
+            # may not fire during ACE-only push feeds.
+            if self.is_u1_motion_sensor(cur_extruder):
                 self.reactor.pause(self.reactor.monotonic() + 0.5)
                 if (cur_extruder._clog_last_motion_time is None
                         or cur_extruder._clog_last_motion_time <= pre_stn_time):
