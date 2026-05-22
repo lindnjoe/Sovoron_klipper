@@ -1544,9 +1544,16 @@ class afcACE(afcUnit):
                     "trusting calibrated distance"
                 )
             elif self._is_u1_motion_sensor(cur_extruder):
+                # U1 motion sensor encoder only fires during extruder
+                # motor pulls, not ACE push.  Set filament_present so
+                # AFC's post-custom_load_cmd sensor check passes.
+                helper = cur_extruder.filament_sensor_obj.runout_helper
+                if not helper.filament_present:
+                    helper.filament_present = True
+                cur_extruder.tool_start_state = True
                 self.logger.info(
                     "ACE smart load: U1 motion sensor — skipping ACE push "
-                    "retries, engagement will be verified during tool_stn"
+                    "retries, sensor state set for AFC"
                 )
             # Standard toolhead sensor verification with retry.
             # When home_to_tool is active, scale retries using
