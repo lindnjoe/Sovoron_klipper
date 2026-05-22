@@ -336,6 +336,7 @@ class AFCExtruder:
                 raise error(error_str)
             self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
             self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
+            self.filament_sensor_obj.runout_helper.runout_pause = False
 
         self.tool_end_state = False
         if self.tool_end is not None:
