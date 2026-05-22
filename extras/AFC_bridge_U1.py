@@ -398,14 +398,17 @@ class AFCU1Bridge:
             self._run_flow_calibrate(ptc, flow_calib_phys, phys_to_lane,
                                      lanes_per_ext)
 
-        # ── 10. Pre-extrude first filament per physical extruder ──
-        # Only pre-extrude the first logical index on each physical extruder.
-        # Loading every lane just to purge and unload is wasteful when multiple
-        # lanes share an extruder — only the first one needs priming.
-        preextruded_phys = set()
+        # ── 10. Pre-extrude filament for single-lane extruders ────
+        # Skip pre-extrude on extruders with multiple lanes in this print —
+        # we don't know which lane the slicer uses first, and loading the
+        # wrong one just to purge and unload wastes time. The first tool
+        # change will prime the correct lane via the normal purge sequence.
+        multi_lane_phys = {
+            phys for phys, ext_lanes in lanes_per_ext.items()
+            if len(ext_lanes) > 1
+        }
         for logical, phys in map_entries:
-            if phys not in preextruded_phys:
-                preextruded_phys.add(phys)
+            if phys not in multi_lane_phys:
                 self.gcode.run_script_from_command(
                     "SM_PRINT_PREEXTRUDE_FILAMENT INDEX={idx}".format(idx=logical)
                 )
