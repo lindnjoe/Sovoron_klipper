@@ -736,8 +736,8 @@ A neutral state LED is also available (not present on TurtleNeck).</p>
 
 <p>The <code>auto_spoolman_create</code> feature bridges RFID tag data with
 <a href="https://github.com/Donkie/Spoolman">Spoolman</a> inventory management. It works with
-ACE units (which have built-in RFID readers) and U1 lane scanners (which use external
-RFID hardware). When a spool with an RFID tag is loaded or scanned, AFC reads the tag's
+ACE units (which have built-in RFID readers) and U1 lane scanners (which have RFID
+readers built into the spool holders). When a spool with an RFID tag is loaded or scanned, AFC reads the tag's
 embedded data — material type, color, brand, SKU, diameter, and temperature settings —
 then searches Spoolman for a matching filament and spool. If no match is found and
 <code>auto_spoolman_create</code> is enabled, AFC automatically creates the filament and spool
