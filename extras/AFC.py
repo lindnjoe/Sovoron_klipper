@@ -1804,6 +1804,11 @@ class afc:
             finally:
                 self.restore_toolhead_temp(temp_state)
 
+            # U1 motion sensor: filament has been retracted past the
+            # toolhead sensor — clear stale filament_present so the
+            # next load starts with a clean False baseline.
+            cur_extruder.clear_toolhead_sensor()
+
             unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
             self.afc_stats.average_tool_unload_time.average_time(unload_time)
         self.current_state = State.IDLE
@@ -1966,11 +1971,6 @@ class afc:
                         break
 
             self.afcDeltaTime.log_with_time("Unloaded from toolhead")
-
-            # U1 motion sensor: filament has been retracted past the
-            # toolhead sensor — clear stale filament_present so the
-            # next load starts with a clean False baseline.
-            cur_extruder.clear_toolhead_sensor()
 
             # Move filament past the sensor after the extruder, if applicable.
             if cur_extruder.tool_sensor_after_extruder > 0:
