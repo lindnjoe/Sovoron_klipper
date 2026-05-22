@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AFC Configuration — U1 Extended Units &amp; FPS Buffer</title>
+  <title>AFC_UnitType_1.cfg - Armored Turtle Documentation</title>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
   <style>
@@ -160,15 +160,6 @@
     .admonition.info { border-color: #2979ff; background: rgba(41,121,255,.05); }
     .admonition.info .admonition-title { color: #2979ff; }
 
-    /* Badge */
-    .badge {
-      display: inline-block; font-size: 0.65rem; font-weight: 700;
-      padding: 0.15em 0.5em; border-radius: 3px; vertical-align: middle;
-      margin-left: 0.5rem; text-transform: uppercase; letter-spacing: 0.03em;
-    }
-    .badge-new { background: #00c853; color: #fff; }
-    .badge-u1 { background: #7c4dff; color: #fff; }
-
     /* Tables */
     table {
       width: 100%; border-collapse: collapse; margin: 1rem 0;
@@ -191,55 +182,195 @@
 </head>
 <body>
   <div class="header">
-    <h1>AFC Configuration</h1>
-    <span class="subtitle">U1 Extended — ACE, OpenAMS &amp; FPS Buffer</span>
+    <h1>Armored Turtle Documentation</h1>
+    <span class="subtitle">AFC_UnitType_1.cfg</span>
     <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
   </div>
 
   <div class="layout">
     <!-- Sidebar / TOC -->
     <nav class="sidebar">
+      <div class="section-label">Configuration</div>
+      <ul>
+        <li><a href="#afc_unittype_1cfg-configuration-overview">Overview</a></li>
+      </ul>
       <div class="section-label">Unit Types</div>
       <ul>
+        <li><a href="#afc_boxturtle-unit_name-section">AFC_BoxTurtle</a></li>
+        <li><a href="#afc_nightowl-unit_name-section">AFC_NightOwl</a></li>
+        <li><a href="#afc_quattrobox-unit_name-section">AFC_QuattroBox</a></li>
+        <li><a href="#afc_htlf-unit_name-section">AFC_HTLF</a></li>
+        <li><a href="#afc_vivid-unit_name-section">AFC_vivid</a></li>
         <li><a href="#afc_ace-unit_name-section">AFC_ACE</a></li>
-        <li><a href="#ace-lane-overrides">ACE Lane Overrides</a></li>
         <li><a href="#afc_openams-unit_name-section">AFC_OpenAMS</a></li>
       </ul>
       <div class="section-label">Buffer</div>
       <ul>
-        <li><a href="#afc_fps-buffer_name-section">AFC_FPS (Filament Position Sensor)</a></li>
-        <li><a href="#fps-adc-configuration">ADC Configuration</a></li>
-        <li><a href="#fps-buffer-tuning">Buffer Tuning</a></li>
-        <li><a href="#fps-led-settings">LED Settings</a></li>
+        <li><a href="#afc_buffer-buffer_name-section">AFC_buffer (TurtleNeck)</a></li>
+        <li><a href="#afc_fps-buffer_name-section">AFC_FPS</a></li>
       </ul>
       <div class="section-label">Examples</div>
       <ul>
-        <li><a href="#example-ace">ACE Minimal Setup</a></li>
-        <li><a href="#example-openams">OpenAMS Minimal Setup</a></li>
+        <li><a href="#example-ace">ACE Setup</a></li>
+        <li><a href="#example-openams">OpenAMS Setup</a></li>
         <li><a href="#example-fps">FPS Buffer Setup</a></li>
-      </ul>
-      <div class="section-label">Reference</div>
-      <ul>
-        <li><a href="#existing-units">Existing Unit Types</a></li>
-        <li><a href="#config-hierarchy">Config Hierarchy</a></li>
       </ul>
     </nav>
 
     <!-- Main content -->
     <div class="content">
 
-<h1 id="u1-extended-configuration">AFC U1 Extended Configuration<span class="badge badge-new">New</span></h1>
+<h1 id="afc_unittype_1cfg-configuration-overview">AFC_UnitType_1.cfg Configuration Overview</h1>
 
-<p>This page documents the configuration sections added by the <strong>u1_AFC_Extra</strong> branch for
-ACE PRO, OpenAMS, and FPS (Filament Position Sensor) buffer hardware. These units extend
-the AFC system beyond the standard BoxTurtle / NightOwl / QuattroBox / HTLF / ViViD units.</p>
+<p>The <code>AFC_UnitType_1.cfg</code> file is used to define the configuration for the AFC system when using a specific unit type.</p>
+<p>This file will typically be named in the format of <code>AFC_Turtle_1.cfg</code> for example, when a BoxTurtle is installed. If
+multiple unit types are installed, the file will be named in the format of <code>AFC_Turtle_2.cfg</code>, <code>AFC_Turtle_3.cfg</code>, etc.</p>
 
 <div class="admonition note">
   <p class="admonition-title">Note</p>
-  <p>ACE and OpenAMS units are <strong>stepperless</strong> — they use their own internal firmware for filament
-  movement instead of Klipper-controlled stepper motors. Lane sections for these units omit
-  stepper pin configuration (<code>step_pin</code>, <code>dir_pin</code>, <code>enable_pin</code>).</p>
+  <p>The actual naming convention may vary depending on your specific setup. The unit name can be renamed by using the
+  <code>install-afc.sh</code> script.</p>
 </div>
+
+<!-- =====================================================================
+     BOXTURTLE (reference only - links to upstream)
+     ===================================================================== -->
+
+<h2 id="afc_boxturtle-unit_name-section">[AFC_BoxTurtle unit_name] Section<a class="headerlink" href="#afc_boxturtle-unit_name-section">&#182;</a></h2>
+
+<p>The following options are available in the <code>[AFC_BoxTurtle unit_name]</code> section of the <code>AFC_UnitType_1.cfg</code> file. These
+options control the configuration of the AFC system when interfacing with the BoxTurtle unit type. This section is
+typically used to define the unit name and other options that are specific to the BoxTurtle unit type.</p>
+
+<p>For the full list of BoxTurtle configuration options including hub, extruder, buffer, espooler assist, LED colors,
+movement speeds, homing, and TD-1 settings, refer to the
+<a href="https://dev.armoredturtle.xyz/docs/afc-klipper-add-on/configuration/AFC_UnitType_1.cfg.html#afc_boxturtle-unit_name-section" target="_blank">upstream BoxTurtle documentation</a>.</p>
+
+<pre><code><span class="cfg-section">[AFC_BoxTurtle Turtle_1]</span>
+<span class="cfg-key">hub</span>: <span class="cfg-val">Turtle_1</span>
+<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<span class="cfg-key">buffer</span>: <span class="cfg-val">TN</span>
+<span class="cfg-comment">#    See upstream documentation for full configuration reference.</span>
+</code></pre>
+
+<!-- =====================================================================
+     NIGHTOWL (reference only)
+     ===================================================================== -->
+
+<h2 id="afc_nightowl-unit_name-section">[AFC_NightOwl unit_name] Section<a class="headerlink" href="#afc_nightowl-unit_name-section">&#182;</a></h2>
+
+<p>The following options are available in the <code>[AFC_NightOwl unit_name]</code> section of the <code>AFC_UnitType_1.cfg</code> file. These
+options control the configuration of the AFC system when interfacing with the NightOwl unit type. This section is
+typically used to define the unit name and other options that are specific to the NightOwl unit type.</p>
+
+<p>AFC_NightOwl inherits configuration options from AFC_BoxTurtle configuration section, below are additional configuration values
+for a NightOwl unit.</p>
+
+<pre><code><span class="cfg-section">[AFC_NightOwl NightOwl_1]</span>
+</code></pre>
+
+<!-- =====================================================================
+     QUATTROBOX (reference only)
+     ===================================================================== -->
+
+<h2 id="afc_quattrobox-unit_name-section">[AFC_QuattroBox unit_name] Section<a class="headerlink" href="#afc_quattrobox-unit_name-section">&#182;</a></h2>
+
+<p>The following options are available in the <code>[AFC_QuattroBox unit_name]</code> section of the <code>AFC_UnitType_1.cfg</code> file. These
+options control the configuration of the AFC system when interfacing with the AFC_QuattroBox unit type. This section is
+typically used to define the unit name and other options that are specific to the AFC_QuattroBox unit type.</p>
+
+<p>AFC_QuattroBox inherits configuration options from AFC_BoxTurtle configuration section, below are additional configuration values
+for a QuattroBox unit.</p>
+
+<pre><code><span class="cfg-section">[AFC_QuattroBox QuattroBox_1]</span>
+<span class="cfg-key">led_logo_index</span>:
+<span class="cfg-comment">#    Default: None</span>
+<span class="cfg-comment">#    Led index for led in chain that illuminates a logo. This should reference</span>
+<span class="cfg-comment">#    a defined LED in the [AFC_Indicator] section.</span>
+<span class="cfg-key">led_logo_color</span>: <span class="cfg-val">'0,0,0,0'</span>
+<span class="cfg-comment">#    Default: '0,0,0,0'</span>
+<span class="cfg-comment">#    Color to apply to logo.</span>
+<span class="cfg-key">led_logo_loading</span>: <span class="cfg-val">1,0,0,0</span>
+<span class="cfg-comment">#    Default: 1,0,0,0</span>
+<span class="cfg-comment">#    Color to apply to logo when loading a lane.</span>
+<span class="cfg-key">led_spool_index</span>:
+<span class="cfg-comment">#    Default: None</span>
+<span class="cfg-comment">#    Led index for led in chain that illuminates spool.</span>
+<span class="cfg-key">led_spool_illuminate</span>: <span class="cfg-val">1,1,1,0</span>
+<span class="cfg-comment">#    Default: 1,1,1,0</span>
+<span class="cfg-comment">#    Loading color to illuminate spool.</span>
+</code></pre>
+
+<!-- =====================================================================
+     HTLF (reference only)
+     ===================================================================== -->
+
+<h2 id="afc_htlf-unit_name-section">[AFC_HTLF unit_name] Section<a class="headerlink" href="#afc_htlf-unit_name-section">&#182;</a></h2>
+
+<p>The following options are available in the <code>[AFC_HTLF unit_name]</code> section of the <code>AFC_UnitType_1.cfg</code> file. These
+options control the configuration of the AFC system when interfacing with the AFC_HTLF unit type. This section is
+typically used to define the unit name and other options that are specific to the AFC_HTLF unit type.</p>
+
+<p>AFC_HTLF inherits configuration options from AFC_BoxTurtle configuration section, below are additional configuration values
+for a HTLF unit.</p>
+
+<pre><code><span class="cfg-section">[AFC_HTLF HTLF_1]</span>
+<span class="cfg-key">drive_stepper</span>:
+<span class="cfg-comment">#    Name of AFC_stepper for drive motor.</span>
+<span class="cfg-key">selector_stepper</span>:
+<span class="cfg-comment">#    Name of AFC_stepper for selector motor.</span>
+<span class="cfg-key">mm_move_per_rotation</span>: <span class="cfg-val">32</span>
+<span class="cfg-comment">#    Default: 32</span>
+<span class="cfg-comment">#    How many millimeters move the selector pulley one full rotation.</span>
+<span class="cfg-key">cam_angle</span>:
+<span class="cfg-comment">#    Cam lobe angle. Valid options: 30, 45, 60 (recommend using 60).</span>
+<span class="cfg-key">home_pin</span>:
+<span class="cfg-comment">#    Pin for homing sensor.</span>
+<span class="cfg-key">MAX_ANGLE_MOVEMENT</span>: <span class="cfg-val">215</span>
+<span class="cfg-comment">#    Default: 215</span>
+<span class="cfg-comment">#    Max angle to move lobes when lobe 1 is fully engaged.</span>
+<span class="cfg-key">enable_sensors_in_gui</span>: <span class="cfg-val">True</span>
+<span class="cfg-comment">#    Default: True</span>
+<span class="cfg-comment">#    Show prep and load sensor switches in Mainsail/Fluidd GUI.</span>
+<span class="cfg-key">selector_movement_speed</span>: <span class="cfg-val">50</span>
+<span class="cfg-comment">#    Default: 50</span>
+<span class="cfg-comment">#    Speed in mm/s when selecting lanes with selector motor.</span>
+<span class="cfg-key">selector_movement_accel</span>: <span class="cfg-val">50</span>
+<span class="cfg-comment">#    Default: 50</span>
+<span class="cfg-comment">#    Acceleration in mm/s squared when selecting lanes.</span>
+</code></pre>
+
+<!-- =====================================================================
+     VIVID (reference only)
+     ===================================================================== -->
+
+<h2 id="afc_vivid-unit_name-section">[AFC_vivid unit_name] Section<a class="headerlink" href="#afc_vivid-unit_name-section">&#182;</a></h2>
+
+<p>The following options are available in the <code>[AFC_vivid unit_name]</code> section of the <code>AFC_UnitType_1.cfg</code> file. These
+options control the configuration of the AFC system when interfacing with the AFC_vivid unit type. This section is
+typically used to define the unit name and other options that are specific to the AFC_vivid unit type.</p>
+
+<p>AFC_vivid inherits configuration options from AFC_BoxTurtle configuration section, below are additional configuration values
+for a ViViD unit.</p>
+
+<pre><code><span class="cfg-section">[AFC_vivid Vivid_1]</span>
+<span class="cfg-key">drive_stepper</span>:
+<span class="cfg-comment">#    Name of AFC_stepper for drive motor.</span>
+<span class="cfg-key">selector_stepper</span>:
+<span class="cfg-comment">#    Name of AFC_stepper for selector motor.</span>
+<span class="cfg-key">enable_sensors_in_gui</span>: <span class="cfg-val">True</span>
+<span class="cfg-comment">#    Default: True</span>
+<span class="cfg-comment">#    Show prep and load sensor switches in Mainsail/Fluidd GUI.</span>
+<span class="cfg-key">selector_movement_speed</span>: <span class="cfg-val">150</span>
+<span class="cfg-comment">#    Default: 150</span>
+<span class="cfg-comment">#    Speed in mm/s when selecting lanes with selector motor.</span>
+<span class="cfg-key">selector_movement_accel</span>: <span class="cfg-val">150</span>
+<span class="cfg-comment">#    Default: 150</span>
+<span class="cfg-comment">#    Acceleration in mm/s squared when selecting lanes.</span>
+<span class="cfg-key">max_selector_movement</span>: <span class="cfg-val">800</span>
+<span class="cfg-comment">#    Default: 800</span>
+<span class="cfg-comment">#    Max movement in mm to try to move selector to specified lane.</span>
+</code></pre>
 
 <!-- =====================================================================
      AFC_ACE SECTION
@@ -247,11 +378,18 @@ the AFC system beyond the standard BoxTurtle / NightOwl / QuattroBox / HTLF / Vi
 
 <h2 id="afc_ace-unit_name-section">[AFC_ACE unit_name] Section<a class="headerlink" href="#afc_ace-unit_name-section">&#182;</a></h2>
 
-<p>The following options are available in the <code>[AFC_ACE unit_name]</code> section. These
-control the configuration of the AFC system when interfacing with Anycubic ACE PRO hardware.
+<p>The following options are available in the <code>[AFC_ACE unit_name]</code> section of the <code>AFC_UnitType_1.cfg</code> file. These
+options control the configuration of the AFC system when interfacing with Anycubic ACE PRO hardware.
 ACE units communicate over a serial connection and support two operational modes:
 <strong>combined</strong> (multiple slots share one toolhead path via a combiner) and
 <strong>direct</strong> (each slot feeds its own extruder independently).</p>
+
+<div class="admonition note">
+  <p class="admonition-title">Note</p>
+  <p>ACE and OpenAMS units are <strong>stepperless</strong> — they use their own internal firmware for filament
+  movement instead of Klipper-controlled stepper motors. Lane sections for these units omit
+  stepper pin configuration (<code>step_pin</code>, <code>dir_pin</code>, <code>enable_pin</code>).</p>
+</div>
 
 <div class="admonition warning">
   <p class="admonition-title">Warning</p>
@@ -336,19 +474,12 @@ ACE units communicate over a serial connection and support two operational modes
 <span class="cfg-key">poll_interval</span>: <span class="cfg-val">1.0</span>
 <span class="cfg-comment">#    Default: 1.0</span>
 <span class="cfg-comment">#    Sensor polling interval in seconds for status and runout monitoring.</span>
-</code></pre>
-
-<h3 id="ace-fps-integration">FPS Integration Settings</h3>
-
-<p>When the extruder uses an <code>AFC_FPS</code> buffer as <code>pin_tool_start</code>, the FPS ADC value
-serves as the toolhead sensor. These thresholds control when AFC considers filament
-to have reached the extruder.</p>
-
-<pre><code><span class="cfg-comment"># FPS (Filament Pressure Sensor) integration thresholds</span>
 <span class="cfg-key">fps_threshold</span>: <span class="cfg-val">0.9</span>
 <span class="cfg-comment">#    Default: 0.9</span>
 <span class="cfg-comment">#    FPS pressure threshold for toolhead sensor (0.0-1.0).</span>
-<span class="cfg-comment">#    Above this value, the sensor is considered triggered.</span>
+<span class="cfg-comment">#    When the extruder uses an AFC_FPS buffer as pin_tool_start, the</span>
+<span class="cfg-comment">#    FPS ADC value serves as the toolhead sensor. Above this value,</span>
+<span class="cfg-comment">#    the sensor is considered triggered.</span>
 <span class="cfg-key">fps_load_threshold</span>: <span class="cfg-val">0.65</span>
 <span class="cfg-comment">#    Default: 0.65</span>
 <span class="cfg-comment">#    Lower threshold used during active operations (loading/calibration).</span>
@@ -365,9 +496,6 @@ to have reached the extruder.</p>
 <span class="cfg-comment">#    requiring multiple consecutive readings filters these out.</span>
 <span class="cfg-comment">#    At ~100ms per ADC callback, 3 readings adds ~200ms confirmation delay.</span>
 </code></pre>
-
-<!-- ACE Lane Overrides -->
-<h2 id="ace-lane-overrides">ACE Lane Configuration<a class="headerlink" href="#ace-lane-overrides">&#182;</a></h2>
 
 <p>ACE lanes are configured with standard <code>[AFC_lane]</code> sections but use a slot-based
 <code>unit</code> reference. Stepper pins are not needed. Several unit-level parameters can be
@@ -404,8 +532,8 @@ overridden per-lane.</p>
 
 <h2 id="afc_openams-unit_name-section">[AFC_OpenAMS unit_name] Section<a class="headerlink" href="#afc_openams-unit_name-section">&#182;</a></h2>
 
-<p>The following options are available in the <code>[AFC_OpenAMS unit_name]</code> section. These
-control the configuration of the AFC system when interfacing with OpenAMS (Open Automatic
+<p>The following options are available in the <code>[AFC_OpenAMS unit_name]</code> section of the <code>AFC_UnitType_1.cfg</code> file. These
+options control the configuration of the AFC system when interfacing with OpenAMS (Open Automatic
 Material System) hardware. OpenAMS units communicate with their own firmware and use an
 AFC_FPS buffer for filament pressure sensing.</p>
 
@@ -413,8 +541,8 @@ AFC_FPS buffer for filament pressure sensing.</p>
 from the <code>afcUnit</code> base class, the same as BoxTurtle/NightOwl. Below are configuration
 values specific to OpenAMS.</p>
 
-<div class="admonition info">
-  <p class="admonition-title">Info</p>
+<div class="admonition note">
+  <p class="admonition-title">Note</p>
   <p>OpenAMS units do <strong>not</strong> support TurtleNeck-style (stepper-based) buffers. Only <code>AFC_FPS</code>
   buffers are compatible. If a non-FPS buffer is configured, it will be automatically disabled.</p>
 </div>
@@ -456,16 +584,45 @@ values specific to OpenAMS.</p>
 <span class="cfg-comment">#    Higher sensitivity triggers clog detection more aggressively.</span>
 </code></pre>
 
-<h3>OpenAMS Lane Configuration</h3>
+<!-- =====================================================================
+     AFC_buffer (TurtleNeck) reference
+     ===================================================================== -->
 
-<p>OpenAMS lanes are configured like standard <code>[AFC_lane]</code> sections but, like ACE,
-do not require stepper pin configuration.</p>
+<h2 id="afc_buffer-buffer_name-section">[AFC_buffer buffer_name] Section<a class="headerlink" href="#afc_buffer-buffer_name-section">&#182;</a></h2>
 
-<pre><code><span class="cfg-section">[AFC_lane oams_lane1]</span>
-<span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:1</span>
-<span class="cfg-comment">#    Unit:Slot reference for this lane.</span>
-<span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
-<span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
+<p>The following options are available in the <code>[AFC_buffer buffer_name]</code> section. TurtleNeck buffers use
+two GPIO switches (advance and trailing) to detect buffer state and adjust the extruder rotation distance
+multiplier during printing.</p>
+
+<p>For the full TurtleNeck buffer configuration guide, wiring diagrams, and LED setup, refer to the
+<a href="https://dev.armoredturtle.xyz/docs/afc-klipper-add-on/installation/buffer-overview.html" target="_blank">upstream buffer documentation</a>.</p>
+
+<pre><code><span class="cfg-section">[AFC_buffer TN]</span>
+<span class="cfg-key">advance_pin</span>: <span class="cfg-val">mcu:ADVANCE_PIN</span>
+<span class="cfg-comment">#    GPIO pin for advance (expanded) buffer switch. Required.</span>
+<span class="cfg-key">trailing_pin</span>: <span class="cfg-val">mcu:TRAILING_PIN</span>
+<span class="cfg-comment">#    GPIO pin for trailing (compressed) buffer switch. Required.</span>
+<span class="cfg-key">multiplier_high</span>: <span class="cfg-val">1.1</span>
+<span class="cfg-comment">#    Default: 1.1</span>
+<span class="cfg-comment">#    Rotation distance multiplier when buffer is compressed.</span>
+<span class="cfg-key">multiplier_low</span>: <span class="cfg-val">0.9</span>
+<span class="cfg-comment">#    Default: 0.9</span>
+<span class="cfg-comment">#    Rotation distance multiplier when buffer is expanded.</span>
+<span class="cfg-key">led_index</span>:
+<span class="cfg-comment">#    Default: None</span>
+<span class="cfg-comment">#    LED index for buffer state indication.</span>
+<span class="cfg-key">led_buffer_advancing</span>: <span class="cfg-val">0,0,1,0</span>
+<span class="cfg-comment">#    Default: 0,0,1,0</span>
+<span class="cfg-comment">#    LED color (R,G,B,W) when buffer is in advancing state.</span>
+<span class="cfg-key">led_buffer_trailing</span>: <span class="cfg-val">0,1,0,0</span>
+<span class="cfg-comment">#    Default: 0,1,0,0</span>
+<span class="cfg-comment">#    LED color when buffer is in trailing state.</span>
+<span class="cfg-key">led_buffer_disable</span>: <span class="cfg-val">0,0,0,0.25</span>
+<span class="cfg-comment">#    Default: 0,0,0,0.25</span>
+<span class="cfg-comment">#    LED color when buffer is disabled.</span>
+<span class="cfg-key">filament_error_sensitivity</span>: <span class="cfg-val">0</span>
+<span class="cfg-comment">#    Default: 0 (range: 0-10)</span>
+<span class="cfg-comment">#    Error sensitivity. 0 = disabled, higher = more sensitive.</span>
 </code></pre>
 
 <!-- =====================================================================
@@ -479,8 +636,9 @@ do not require stepper pin configuration.</p>
 use physical advance/trailing switches, FPS uses continuous analog readings to determine
 filament buffer state and adjust extruder rotation distance multipliers for smooth printing.</p>
 
-<p>FPS buffers are used by ACE and OpenAMS units, and can also be used with stepper-based
-units as an alternative to TurtleNeck buffers.</p>
+<p>FPS buffers are required for OpenAMS units and can optionally be used with ACE units for
+pressure-based toolhead sensing. They can also be used with stepper-based units as an
+alternative to TurtleNeck buffers.</p>
 
 <div class="admonition note">
   <p class="admonition-title">Note</p>
@@ -607,83 +765,18 @@ A neutral state LED is also available (not present on TurtleNeck).</p>
 </code></pre>
 
 <!-- =====================================================================
-     COMPARISON / REFERENCE
+     EXAMPLE CONFIGS
      ===================================================================== -->
 
-<h2 id="existing-units">Existing Unit Types (Reference)<a class="headerlink" href="#existing-units">&#182;</a></h2>
-
-<p>For comparison, these are the unit types documented on the
-<a href="https://dev.armoredturtle.xyz/docs/afc-klipper-add-on/configuration/AFC_UnitType_1.cfg.html" target="_blank">upstream AFC documentation site</a>:</p>
-
-<table>
-  <thead>
-    <tr><th>Unit Type</th><th>Section Name</th><th>Stepper</th><th>Hub</th><th>Notes</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>BoxTurtle</td><td><code>[AFC_BoxTurtle]</code></td><td>Yes</td><td>Physical</td><td>Base unit type. All others inherit from it.</td></tr>
-    <tr><td>NightOwl</td><td><code>[AFC_NightOwl]</code></td><td>Yes</td><td>Physical</td><td>Inherits BoxTurtle config, no extra options.</td></tr>
-    <tr><td>QuattroBox</td><td><code>[AFC_QuattroBox]</code></td><td>Yes</td><td>Physical</td><td>Adds logo LED &amp; spool LED options.</td></tr>
-    <tr><td>HTLF</td><td><code>[AFC_HTLF]</code></td><td>Yes</td><td>Physical</td><td>Adds selector stepper &amp; cam angle config.</td></tr>
-    <tr><td>ViViD</td><td><code>[AFC_vivid]</code></td><td>Yes</td><td>Physical</td><td>Adds selector stepper config.</td></tr>
-    <tr><td><strong>ACE</strong></td><td><code>[AFC_ACE]</code></td><td>No</td><td>Virtual</td><td><span class="badge badge-new">New</span> Serial ACE PRO integration.</td></tr>
-    <tr><td><strong>OpenAMS</strong></td><td><code>[AFC_OpenAMS]</code></td><td>No</td><td>Physical</td><td><span class="badge badge-new">New</span> FPS-based pressure sensing.</td></tr>
-  </tbody>
-</table>
-
-<h3>Buffer Type Comparison</h3>
-
-<table>
-  <thead>
-    <tr><th>Buffer Type</th><th>Section Name</th><th>Sensor</th><th>States</th><th>Compatible Units</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>TurtleNeck</td><td><code>[AFC_buffer]</code></td><td>2 GPIO switches</td><td>Advance / Trail / Disable</td><td>BoxTurtle, NightOwl, QuattroBox, HTLF, ViViD</td></tr>
-    <tr><td><strong>FPS</strong></td><td><code>[AFC_FPS]</code></td><td>1 ADC pin</td><td>Advance / Neutral / Trail / Disable</td><td>All units (required for OpenAMS) <span class="badge badge-new">New</span></td></tr>
-  </tbody>
-</table>
-
-<h2 id="config-hierarchy">Configuration Hierarchy<a class="headerlink" href="#config-hierarchy">&#182;</a></h2>
-
-<p>Configuration values cascade through multiple levels. More specific settings override
-broader ones:</p>
-
-<pre><code><span class="cfg-comment"># ACE Configuration Hierarchy (most specific wins)</span>
-<span class="cfg-comment">#</span>
-<span class="cfg-comment">#   1. Per-lane override    [AFC_lane lane1] feed_length: 2800</span>
-<span class="cfg-comment">#   2. Per-unit setting     [AFC_ACE Ace_1]  feed_length: 500</span>
-<span class="cfg-comment">#   3. Hard-coded default                    feed_length = 500.0</span>
-<span class="cfg-comment">#</span>
-<span class="cfg-comment"># OpenAMS Configuration Hierarchy</span>
-<span class="cfg-comment">#</span>
-<span class="cfg-comment">#   1. Per-unit setting     [AFC_OpenAMS Oams_1] stuck_spool_load_grace: 10</span>
-<span class="cfg-comment">#   2. Hard-coded default                        stuck_spool_load_grace = 8.0</span>
-<span class="cfg-comment">#</span>
-<span class="cfg-comment"># FPS Buffer — PSF Alias Resolution</span>
-<span class="cfg-comment">#</span>
-<span class="cfg-comment">#   neutral_point  -->  set_point     (neutral_point is checked first as default)</span>
-<span class="cfg-comment">#   max_tension    -->  low_point     (max_tension is checked first as default)</span>
-<span class="cfg-comment">#   max_compression --> high_point    (max_compression is checked first as default)</span>
-</code></pre>
-
-<!-- =====================================================================
-     COMPLETE EXAMPLES
-     ===================================================================== -->
-
-<h2 id="example-ace">Complete Example — ACE Minimal Setup<a class="headerlink" href="#example-ace">&#182;</a></h2>
+<h2 id="example-ace">Example — ACE Setup<a class="headerlink" href="#example-ace">&#182;</a></h2>
 
 <p>A minimal working ACE PRO setup. The virtual hub is required because ACE has no
 physical hub sensor. The FPS buffer is optional but recommended for pressure-based
 toolhead sensing.</p>
 
-<pre><code><span class="cfg-comment"># =============================================================================</span>
-<span class="cfg-comment"># ACE PRO Minimal Configuration</span>
-<span class="cfg-comment"># =============================================================================</span>
-
-<span class="cfg-comment"># --- Virtual hub (ACE has no physical hub sensor) ---</span>
-<span class="cfg-section">[AFC_hub ace_hub1]</span>
+<pre><code><span class="cfg-section">[AFC_hub ace_hub1]</span>
 <span class="cfg-key">switch_pin</span>: <span class="cfg-val">virtual</span>
 
-<span class="cfg-comment"># --- ACE unit ---</span>
 <span class="cfg-section">[AFC_ACE Ace_1]</span>
 <span class="cfg-key">serial_port</span>: <span class="cfg-val">/dev/ttyACM0</span>
 <span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
@@ -691,12 +784,10 @@ toolhead sensing.</p>
 <span class="cfg-key">feed_length</span>: <span class="cfg-val">500</span>
 <span class="cfg-key">retract_length</span>: <span class="cfg-val">500</span>
 
-<span class="cfg-comment"># --- FPS buffer (optional — enables pressure-based toolhead sensing) ---</span>
 <span class="cfg-section">[AFC_FPS FPS_1]</span>
 <span class="cfg-key">adc_pin</span>: <span class="cfg-val">PA5</span>
 <span class="cfg-key">set_point</span>: <span class="cfg-val">0.5</span>
 
-<span class="cfg-comment"># --- Lanes (one per ACE slot, 4 slots max) ---</span>
 <span class="cfg-section">[AFC_lane ace_lane1]</span>
 <span class="cfg-key">unit</span>: <span class="cfg-val">Ace_1:1</span>
 <span class="cfg-key">hub</span>: <span class="cfg-val">ace_hub1</span>
@@ -718,28 +809,21 @@ toolhead sensing.</p>
 <span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
 </code></pre>
 
-<h2 id="example-openams">Complete Example — OpenAMS Minimal Setup<a class="headerlink" href="#example-openams">&#182;</a></h2>
+<h2 id="example-openams">Example — OpenAMS Setup<a class="headerlink" href="#example-openams">&#182;</a></h2>
 
 <p>A minimal working OpenAMS setup. OpenAMS requires an FPS buffer for filament pressure
-sensing. The hub uses a physical sensor (not virtual). OpenAMS communicates with its
-own firmware — no stepper pins are needed in lane sections.</p>
+sensing. The hub uses a physical sensor. OpenAMS communicates with its own firmware — no
+stepper pins are needed in lane sections.</p>
 
-<pre><code><span class="cfg-comment"># =============================================================================</span>
-<span class="cfg-comment"># OpenAMS Minimal Configuration</span>
-<span class="cfg-comment"># =============================================================================</span>
-
-<span class="cfg-comment"># --- Hub (OpenAMS uses a physical hub sensor) ---</span>
-<span class="cfg-section">[AFC_hub oams_hub1]</span>
+<pre><code><span class="cfg-section">[AFC_hub oams_hub1]</span>
 <span class="cfg-key">switch_pin</span>: <span class="cfg-val">^!mcu:HUB_PIN</span>
 
-<span class="cfg-comment"># --- FPS buffer (required for OpenAMS) ---</span>
 <span class="cfg-section">[AFC_FPS FPS_1]</span>
 <span class="cfg-key">adc_pin</span>: <span class="cfg-val">mcu:PA5</span>
 <span class="cfg-key">set_point</span>: <span class="cfg-val">0.5</span>
 <span class="cfg-key">low_point</span>: <span class="cfg-val">0.1</span>
 <span class="cfg-key">high_point</span>: <span class="cfg-val">0.9</span>
 
-<span class="cfg-comment"># --- OpenAMS unit ---</span>
 <span class="cfg-section">[AFC_OpenAMS Oams_1]</span>
 <span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
 <span class="cfg-key">extruder</span>: <span class="cfg-val">extruder</span>
@@ -747,7 +831,6 @@ own firmware — no stepper pins are needed in lane sections.</p>
 <span class="cfg-key">oams</span>: <span class="cfg-val">oams1</span>
 <span class="cfg-key">clog_sensitivity</span>: <span class="cfg-val">medium</span>
 
-<span class="cfg-comment"># --- Lanes (one per OpenAMS bay, 4 bays max) ---</span>
 <span class="cfg-section">[AFC_lane oams_lane1]</span>
 <span class="cfg-key">unit</span>: <span class="cfg-val">Oams_1:1</span>
 <span class="cfg-key">hub</span>: <span class="cfg-val">oams_hub1</span>
@@ -778,18 +861,13 @@ own firmware — no stepper pins are needed in lane sections.</p>
   <code>stuck_spool_pressure_threshold</code> if you get false triggers.</p>
 </div>
 
-<h2 id="example-fps">Complete Example — FPS Buffer Setup<a class="headerlink" href="#example-fps">&#182;</a></h2>
+<h2 id="example-fps">Example — FPS Buffer Setup<a class="headerlink" href="#example-fps">&#182;</a></h2>
 
 <p>A fully-tuned FPS buffer configuration with LED indicators. FPS buffers use an ADC
 pin to continuously read filament pressure and adjust the extruder rotation distance
-multiplier in real time. This example shows all tunable parameters at their defaults
-with explanations of what to adjust for common scenarios.</p>
+multiplier in real time. This example shows all tunable parameters at their defaults.</p>
 
-<pre><code><span class="cfg-comment"># =============================================================================</span>
-<span class="cfg-comment"># FPS Buffer — Full Configuration Example</span>
-<span class="cfg-comment"># =============================================================================</span>
-
-<span class="cfg-section">[AFC_FPS FPS_1]</span>
+<pre><code><span class="cfg-section">[AFC_FPS FPS_1]</span>
 <span class="cfg-comment"># --- ADC hardware ---</span>
 <span class="cfg-key">adc_pin</span>: <span class="cfg-val">mcu:PA5</span>
 <span class="cfg-key">sample_count</span>: <span class="cfg-val">5</span>
@@ -809,42 +887,31 @@ with explanations of what to adjust for common scenarios.</p>
 <span class="cfg-key">high_point</span>: <span class="cfg-val">0.9</span>
 
 <span class="cfg-comment"># --- Multiplier tuning ---</span>
-<span class="cfg-comment">#   When above set_point: multiplier_high speeds up extrusion</span>
-<span class="cfg-comment">#   When below set_point: multiplier_low slows down extrusion</span>
-<span class="cfg-comment">#   Deadband: no correction applied within this window of set_point</span>
 <span class="cfg-key">multiplier_high</span>: <span class="cfg-val">1.15</span>
 <span class="cfg-key">multiplier_low</span>: <span class="cfg-val">0.85</span>
 <span class="cfg-key">trailing_min_multiplier</span>: <span class="cfg-val">1.05</span>
 <span class="cfg-key">deadband</span>: <span class="cfg-val">0.30</span>
 
 <span class="cfg-comment"># --- Response tuning ---</span>
-<span class="cfg-comment">#   smoothing: higher = slower response, less jitter (0.0-0.95)</span>
-<span class="cfg-comment">#   update_interval: how often corrections are applied</span>
-<span class="cfg-comment">#   flip_cooldown: prevents rapid advance/trail oscillation</span>
 <span class="cfg-key">smoothing</span>: <span class="cfg-val">0.3</span>
 <span class="cfg-key">update_interval</span>: <span class="cfg-val">0.25</span>
 <span class="cfg-key">flip_cooldown</span>: <span class="cfg-val">180.0</span>
 
 <span class="cfg-comment"># --- Error detection ---</span>
-<span class="cfg-comment">#   0 = disabled, 1-10 = sensitivity (higher = more aggressive)</span>
 <span class="cfg-key">filament_error_sensitivity</span>: <span class="cfg-val">0</span>
 
-<span class="cfg-comment"># --- LED indicators (optional) ---</span>
+<span class="cfg-comment"># --- LED indicators ---</span>
 <span class="cfg-key">led_index</span>: <span class="cfg-val">AFC_Indicator:1</span>
 <span class="cfg-key">led_buffer_advancing</span>: <span class="cfg-val">0,0,1,0</span>
-<span class="cfg-comment">#    Blue: buffer expanding, filament being pulled</span>
 <span class="cfg-key">led_buffer_trailing</span>: <span class="cfg-val">0,1,0,0</span>
-<span class="cfg-comment">#    Green: buffer compressed, filament backing up</span>
 <span class="cfg-key">led_buffer_neutral</span>: <span class="cfg-val">0,0.5,0.5,0</span>
-<span class="cfg-comment">#    Cyan: buffer in deadband, no correction needed</span>
 <span class="cfg-key">led_buffer_disable</span>: <span class="cfg-val">0,0,0,0.25</span>
-<span class="cfg-comment">#    Dim white: buffer disabled</span>
 
 <span class="cfg-key">enable_sensors_in_gui</span>: <span class="cfg-val">True</span>
 <span class="cfg-key">debug</span>: <span class="cfg-val">False</span>
 </code></pre>
 
-<div class="admonition info">
+<div class="admonition tip">
   <p class="admonition-title">Tuning Tips</p>
   <p><strong>Noisy readings?</strong> Increase <code>smoothing</code> (try 0.5-0.7) and <code>sample_count</code> (try 8-10).<br>
   <strong>Oscillating between advance/trail?</strong> Widen <code>deadband</code> (try 0.4) or increase <code>flip_cooldown</code>.<br>
@@ -864,11 +931,9 @@ with explanations of what to adjust for common scenarios.</p>
       html.setAttribute('data-theme', current === 'dark' ? '' : 'dark');
       localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
     }
-    // Restore saved theme
     if (localStorage.getItem('theme') === 'dark') {
       document.documentElement.setAttribute('data-theme', 'dark');
     }
-    // Active sidebar link tracking
     const observer = new IntersectionObserver(entries => {
       entries.forEach(e => {
         if (e.isIntersecting) {
