@@ -116,18 +116,59 @@ class afcACE(afcUnit):
         self.logo_error += 'R  ========</span>\n'
         self.logo_error += '  ' + self.name + '\n'
 
-        # Connect to ACE hardware
-        self._ace = ACEConnection(
-            self.afc.reactor, self.serial_port,
-            baud_rate=self.baud_rate,
-            logger=self.logger)
-
         # Build slot map and set custom load/unload commands
         for lane_name, lane in self.lanes.items():
             slot = getattr(lane, 'index', 0)
             self._slot_map[lane_name] = slot
             lane.custom_load_cmd = f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
             lane.custom_unload_cmd = f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
+
+        # Defer serial connection until reactor is running (klippy:ready)
+        self.printer.register_event_handler("klippy:ready", self._handle_ready)
+
+    _CONNECT_MAX_RETRIES = 5
+    _CONNECT_RETRY_DELAYS = [2.0, 3.0, 5.0, 8.0, 10.0]
+
+    def _handle_ready(self):
+        self.afc.reactor.register_callback(self._deferred_ace_connect)
+
+    def _deferred_ace_connect(self, eventtime):
+        """Connect to ACE hardware after reactor is fully running."""
+        last_err = None
+        for attempt in range(self._CONNECT_MAX_RETRIES):
+            try:
+                self._ace = ACEConnection(
+                    reactor=self.afc.reactor,
+                    serial_port=self.serial_port,
+                    logger=self.logger,
+                    baud_rate=self.baud_rate,
+                )
+                self._ace.connect()
+                if attempt > 0:
+                    self.logger.info(
+                        f"ACE {self.name}: connected on attempt {attempt + 1}")
+                break
+            except Exception as e:
+                last_err = e
+                self._ace = None
+                if attempt < self._CONNECT_MAX_RETRIES - 1:
+                    delay = self._CONNECT_RETRY_DELAYS[attempt]
+                    self.logger.info(
+                        f"ACE {self.name}: serial port not available, "
+                        f"retrying in {delay:.0f}s "
+                        f"(attempt {attempt + 1}/{self._CONNECT_MAX_RETRIES})")
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + delay)
+        else:
+            self.logger.error(
+                f"ACE {self.name}: failed to connect at "
+                f"{self.serial_port} after {self._CONNECT_MAX_RETRIES} "
+                f"attempts: {last_err}")
+            return
+
+        self.logger.info(
+            f"ACE {self.name}: connected, mode={self.mode}, "
+            f"port={self.serial_port}")
 
     # ── Lane parameter helpers ──────────────────────────────────────
 
