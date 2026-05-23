@@ -99,6 +99,11 @@ class afcAMS(afcUnit):
         self._last_hub = [None] * 4
         self._poll_timer = None
 
+        # Operation guard — prevents polling from corrupting state during load/unload
+        self._operation_active = False
+        self._prev_states_stale = False
+        self._hub_load_suppressed: set[str] = set()
+
         # Register temperature_oams sensor factory during config parsing
         try:
             from extras.temperature_oams import TemperatureOAMS
@@ -234,6 +239,12 @@ class afcAMS(afcUnit):
         if self.oams is None:
             return self.afc.reactor.NEVER
 
+        if self._operation_active:
+            return eventtime + 2.0
+
+        resync_prev = self._prev_states_stale
+        self._prev_states_stale = False
+
         f1s_values = getattr(self.oams, 'f1s_hes_value', None) or []
         hub_values = getattr(self.oams, 'hub_hes_value', None) or []
 
@@ -245,54 +256,66 @@ class afcAMS(afcUnit):
             # F1S sensor (filament in spool bay)
             if slot < len(f1s_values):
                 new_f1s = bool(f1s_values[slot])
-                old_f1s = self._last_f1s[slot] if slot < len(self._last_f1s) else None
 
-                if old_f1s is not None and new_f1s != old_f1s:
-                    lane._load_state = new_f1s
-                    lane.prep_state = new_f1s
+                lane._load_state = new_f1s
+                lane.prep_state = new_f1s
 
-                    prep_done = getattr(lane, '_afc_prep_done', False)
-                    if prep_done:
-                        if new_f1s and not old_f1s:
-                            self.logger.info(f"OAMS: {lane.name} filament inserted")
-                            if lane.status == AFCLaneState.NONE:
-                                lane.set_loaded()
-                                self.lane_loaded(lane)
-                                self.afc.save_vars()
+                if resync_prev:
+                    self._last_f1s[slot] = new_f1s
+                else:
+                    old_f1s = self._last_f1s[slot] if slot < len(self._last_f1s) else None
 
-                        elif not new_f1s and old_f1s:
-                            self.logger.info(f"OAMS: {lane.name} filament removed")
-                            if getattr(lane, 'tool_loaded', False):
-                                try:
-                                    is_printing = self.afc.function.is_printing()
-                                except Exception:
-                                    is_printing = False
-                                if is_printing:
-                                    self.afc.error.AFC_error(
-                                        f"OAMS runout on {lane.name}", pause=True)
-                            else:
-                                lane.loaded_to_hub = False
-                                lane.status = AFCLaneState.NONE
-                                self.lane_unloaded(lane)
-                                self.afc.save_vars()
+                    if old_f1s is not None and new_f1s != old_f1s:
+                        prep_done = getattr(lane, '_afc_prep_done', False)
+                        if prep_done:
+                            if new_f1s and not old_f1s:
+                                if lane_name in self._hub_load_suppressed:
+                                    self._hub_load_suppressed.discard(lane_name)
+                                else:
+                                    self.logger.info(f"OAMS: {lane.name} filament inserted")
+                                    if lane.status == AFCLaneState.NONE:
+                                        lane.set_loaded()
+                                        self.lane_loaded(lane)
+                                        self.afc.save_vars()
 
-                self._last_f1s[slot] = bool(f1s_values[slot]) if slot < len(f1s_values) else None
+                            elif not new_f1s and old_f1s:
+                                self.logger.info(f"OAMS: {lane.name} filament removed")
+                                if getattr(lane, 'tool_loaded', False):
+                                    try:
+                                        is_printing = self.afc.function.is_printing()
+                                    except Exception:
+                                        is_printing = False
+                                    if is_printing:
+                                        self.afc.error.AFC_error(
+                                            f"OAMS runout on {lane.name}", pause=True)
+                                else:
+                                    lane.loaded_to_hub = False
+                                    lane.status = AFCLaneState.NONE
+                                    self.lane_unloaded(lane)
+                                    self.afc.save_vars()
+
+                    self._last_f1s[slot] = new_f1s
 
             # Hub HES sensor (filament at hub)
             if slot < len(hub_values):
                 new_hub = bool(hub_values[slot])
-                old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
 
-                if old_hub is not None and new_hub != old_hub:
+                if resync_prev:
+                    self._last_hub[slot] = new_hub
                     lane.loaded_to_hub = new_hub
-                    hub = getattr(lane, 'hub_obj', None)
-                    if hub is not None and hasattr(hub, 'switch_pin_callback'):
-                        try:
-                            hub.switch_pin_callback(eventtime, new_hub)
-                        except Exception:
-                            pass
+                else:
+                    old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
 
-                self._last_hub[slot] = bool(hub_values[slot]) if slot < len(hub_values) else None
+                    if old_hub is not None and new_hub != old_hub:
+                        lane.loaded_to_hub = new_hub
+                        hub = getattr(lane, 'hub_obj', None)
+                        if hub is not None and hasattr(hub, 'switch_pin_callback'):
+                            try:
+                                hub.switch_pin_callback(eventtime, new_hub)
+                            except Exception:
+                                pass
+
+                    self._last_hub[slot] = new_hub
 
         return eventtime + 2.0
 
@@ -545,11 +568,22 @@ class afcAMS(afcUnit):
 
     def _oams_load_sequence(self, cur_lane, cur_extruder) -> bool:
         """Full OAMS load: heat → OAMS hardware load → extruder load."""
+        self._operation_active = True
+        try:
+            return self._oams_load_inner(cur_lane, cur_extruder)
+        finally:
+            self._operation_active = False
+            self._prev_states_stale = True
+
+    def _oams_load_inner(self, cur_lane, cur_extruder) -> bool:
         afc = self.afc
 
         # Heat extruder
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
+        # Clear suppression — this lane is being intentionally loaded
+        self._hub_load_suppressed.discard(cur_lane.name)
 
         # OAMS hardware load
         if not self._oams_load(cur_lane):
@@ -569,6 +603,14 @@ class afcAMS(afcUnit):
 
     def _oams_unload_sequence(self, cur_lane, cur_extruder) -> bool:
         """Full OAMS unload: heat → cut → park → tip → OAMS hardware unload."""
+        self._operation_active = True
+        try:
+            return self._oams_unload_inner(cur_lane, cur_extruder)
+        finally:
+            self._operation_active = False
+            self._prev_states_stale = True
+
+    def _oams_unload_inner(self, cur_lane, cur_extruder) -> bool:
         afc = self.afc
 
         # Disable buffer
@@ -628,12 +670,12 @@ class afcAMS(afcUnit):
 
         # Finalize state
         cur_lane.set_tool_unloaded()
+        cur_lane.loaded_to_hub = True
         self.lane_tool_unloaded(cur_lane)
+        self._hub_load_suppressed.add(cur_lane.name)
 
         if afc.post_unload_macro is not None:
             afc.gcode.run_script_from_command(afc.post_unload_macro)
-
-        afc.save_vars()
 
         afc.afcDeltaTime.log_with_time("OAMS unload complete")
         return True

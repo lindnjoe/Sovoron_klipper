@@ -40,6 +40,7 @@ class AFC_U1_RFID:
         self._poll_timer = None
         self._scanner_channels: set = set()
         self._channel_to_lane: Dict[int, str] = {}
+        self._last_scan_time: Dict[int, float] = {}
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel."""
@@ -181,6 +182,10 @@ class AFC_U1_RFID:
             if is_scanner:
                 if getattr(self.afc.spool, 'next_spool_id', None):
                     return
+                now = self.reactor.monotonic()
+                last_t = getattr(self, '_last_scan_time', {}).get(channel, 0)
+                if now - last_t < 12.0:
+                    return
             else:
                 return
 
@@ -207,6 +212,7 @@ class AFC_U1_RFID:
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
+            self._last_scan_time[channel] = self.reactor.monotonic()
             allow_create = get_auto_spoolman_create(lane)
             sync_rfid_to_spoolman(
                 self.afc, lane, slot_info, self.logger, "U1 RFID",

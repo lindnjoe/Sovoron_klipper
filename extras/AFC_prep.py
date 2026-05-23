@@ -262,6 +262,10 @@ class afcPrep:
             self._start_u1_rfid()
         except Exception as e:
             self.logger.info(f"U1 RFID init error: {e}")
+        try:
+            self._start_u1_bridge()
+        except Exception as e:
+            self.logger.info(f"U1 bridge init error: {e}")
         self.afc.save_vars()
 
         if self.afc.buffers:
@@ -303,6 +307,29 @@ class afcPrep:
             rfid.register_lane(lane, channel)
         rfid.start()
         self.afc.u1_rfid = rfid
+
+    def _start_u1_bridge(self):
+        """Auto-load the U1 bridge if running on a Snapmaker U1 (has machine_state_manager)."""
+        if getattr(self.afc, 'u1_bridge', None) is not None:
+            return
+        msm = self.printer.lookup_object("machine_state_manager", None)
+        if msm is None:
+            return
+        from extras.AFC_bridge_U1 import AFCU1Bridge
+
+        class _BridgeConfig:
+            def __init__(self, printer):
+                self._printer = printer
+            def get_printer(self):
+                return self._printer
+            def get_name(self):
+                return "AFC_bridge_U1"
+
+        bridge = AFCU1Bridge(_BridgeConfig(self.printer))
+        bridge._handle_connect()
+        self.afc.u1_bridge = bridge
+        self.logger.info("U1 bridge auto-loaded")
+
 
 def load_config(config):
     return afcPrep(config)
