@@ -767,7 +767,7 @@ class afcACE(afcUnit):
     # ── Custom load/unload gcode handlers ───────────────────────────
 
     def _cmd_ace_custom_load(self, gcmd):
-        """Handle _ACE_CUSTOM_LOAD — full load sequence with toolhead ops."""
+        """Handle _ACE_CUSTOM_LOAD — filament transport to toolhead area."""
         lane_name = gcmd.get('LANE')
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
@@ -778,7 +778,7 @@ class afcACE(afcUnit):
             raise gcmd.error(f"ACE load failed for {lane_name}")
 
     def _cmd_ace_custom_unload(self, gcmd):
-        """Handle _ACE_CUSTOM_UNLOAD — full unload sequence with toolhead ops."""
+        """Handle _ACE_CUSTOM_UNLOAD — filament transport from toolhead."""
         lane_name = gcmd.get('LANE')
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
@@ -789,7 +789,7 @@ class afcACE(afcUnit):
             raise gcmd.error(f"ACE unload failed for {lane_name}")
 
     def _ace_load_sequence(self, cur_lane, cur_extruder) -> bool:
-        """Full ACE load: heat → ACE serial feed → extruder load → feed assist."""
+        """ACE load transport: serial feed to toolhead area + feed assist."""
         self._operation_active = True
         try:
             return self._ace_load_inner(cur_lane, cur_extruder)
@@ -798,6 +798,12 @@ class afcACE(afcUnit):
             self._prev_states_stale = True
 
     def _ace_load_inner(self, cur_lane, cur_extruder) -> bool:
+        """ACE custom load — filament transport only.
+
+        AFC's load_sequence handles the shared toolhead engagement
+        (sync_to_extruder, tool_end, tool_stn, sensor verification,
+        buffer ram) after this returns via custom_load_cmd.
+        """
         afc = self.afc
         slot = self._get_slot(cur_lane.name)
 
@@ -812,10 +818,6 @@ class afcACE(afcUnit):
                 if other_slot != slot and other_slot in self._feed_assist_active:
                     self._stop_feed_assist(other_slot)
 
-        # Heat extruder
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
-
         # Calculate feed distance
         if cur_lane.loaded_to_hub:
             hub = cur_lane.hub_obj
@@ -826,13 +828,18 @@ class afcACE(afcUnit):
 
         self._set_hub_state(cur_lane, True)
         self._hub_load_suppressed.discard(cur_lane.name)
-        cur_lane.loaded_to_hub = True
+
+        # Enable FPS advance latch so the toolhead sensor stays triggered
+        # even when pressure drops briefly after ACE feed completes.
+        buffer_obj = getattr(cur_lane, 'buffer_obj', None)
+        if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
+            buffer_obj.enable_advance_latch()
 
         # ACE serial feed to toolhead area
         try:
             self._wait_for_ace_ready()
             self._ace.feed_filament(slot, feed_dist, self.feed_speed)
-            success = self._wait_for_feed_complete(slot, feed_dist, self.feed_speed)
+            success = self._wait_for_feed_complete(slot, feed_dist, self.feed_speed, cur_lane)
 
             if not success:
                 if cur_lane.get_toolhead_pre_sensor_state():
@@ -848,61 +855,21 @@ class afcACE(afcUnit):
                 cur_lane, f"ACE load feed error: {e}")
             return False
 
-        # Sync to extruder and load into toolhead
-        cur_lane.sync_to_extruder()
+        # Set loaded_to_hub AFTER successful feed
+        cur_lane.loaded_to_hub = True
 
-        # Extruder load (tool_stn)
-        if cur_extruder.tool_stn > 0:
-            afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
-            afc.toolhead.wait_moves()
-
-        # Verify filament reached toolhead sensor (switch, buffer, FPS, or motion sensor)
-        # Pulse ACE feed in small increments if sensor not yet triggered
-        has_sensor = (cur_extruder.tool_start is not None
-                      or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
-        if has_sensor and not self._toolhead_sensor_triggered(cur_lane):
-            afc.reactor.pause(afc.reactor.monotonic() + 0.5)
-            if not self._toolhead_sensor_triggered(cur_lane):
-                pulse_step = cur_lane.short_move_dis
-                max_pulse_dist = afc.tool_homing_distance
-                total_pulsed = 0.0
-                self.logger.info(
-                    f"ACE load: sensor not triggered, pulsing up to "
-                    f"{max_pulse_dist:.0f}mm in {pulse_step:.0f}mm steps")
-                while total_pulsed < max_pulse_dist:
-                    try:
-                        self._wait_for_ace_ready()
-                        self._ace.feed_filament(slot, pulse_step, self.feed_speed)
-                        self._wait_for_feed_complete(slot, pulse_step, self.feed_speed)
-                    except Exception as e:
-                        self.logger.warning(f"ACE load pulse failed: {e}")
-                        break
-                    total_pulsed += pulse_step
-                    afc.reactor.pause(afc.reactor.monotonic() + 0.3)
-                    if self._toolhead_sensor_triggered(cur_lane):
-                        self.logger.info(
-                            f"ACE load: sensor triggered after "
-                            f"{total_pulsed:.0f}mm of extra feed")
-                        break
-                else:
-                    cur_lane.unsync_to_extruder()
-                    message = (
-                        f"ACE load: filament did not reach toolhead sensor for "
-                        f"{cur_lane.name} after {total_pulsed:.0f}mm of retry pulses. "
-                        f"Spool may be stuck or PTFE path blocked.\n"
-                        f"To resolve set lane loaded with "
-                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                    )
-                    if afc.function.in_print():
-                        message += "\nOnce filament is fully loaded click resume to continue printing"
-                    afc.error.handle_lane_failure(cur_lane, message)
-                    return False
+        # Force FPS advance latch so get_toolhead_pre_sensor_state()
+        # returns True — FPS pressure may drop below threshold
+        # even though filament is confirmed present via feed success.
+        if buffer_obj is not None and hasattr(buffer_obj, '_advance_latched'):
+            buffer_obj._advance_latched = True
+            buffer_obj.advance_state = True
 
         # Enable feed assist
         if self._use_feed_assist(cur_lane):
             self._start_feed_assist(slot)
 
-        afc.afcDeltaTime.log_with_time("ACE load complete")
+        afc.afcDeltaTime.log_with_time("ACE load transport complete")
         return True
 
     def _ace_unload_sequence(self, cur_lane, cur_extruder) -> bool:

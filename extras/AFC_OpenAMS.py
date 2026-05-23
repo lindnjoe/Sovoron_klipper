@@ -982,7 +982,7 @@ class afcAMS(afcUnit):
     # ── Custom load/unload gcode handlers ───────────────────────────
 
     def _cmd_oams_custom_load(self, gcmd):
-        """Handle _OAMS_CUSTOM_LOAD — full load sequence with toolhead ops."""
+        """Handle _OAMS_CUSTOM_LOAD — filament transport to toolhead area."""
         lane_name = gcmd.get('LANE')
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
@@ -993,7 +993,7 @@ class afcAMS(afcUnit):
             raise gcmd.error(f"OAMS load failed for {lane_name}")
 
     def _cmd_oams_custom_unload(self, gcmd):
-        """Handle _OAMS_CUSTOM_UNLOAD — full unload sequence with toolhead ops."""
+        """Handle _OAMS_CUSTOM_UNLOAD — filament transport from toolhead."""
         lane_name = gcmd.get('LANE')
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
@@ -1004,7 +1004,7 @@ class afcAMS(afcUnit):
             raise gcmd.error(f"OAMS unload failed for {lane_name}")
 
     def _oams_load_sequence(self, cur_lane, cur_extruder) -> bool:
-        """Full OAMS load: heat → OAMS hardware load → extruder load."""
+        """OAMS load transport: push filament to toolhead area."""
         self._operation_active = True
         try:
             return self._oams_load_inner(cur_lane, cur_extruder)
@@ -1013,47 +1013,20 @@ class afcAMS(afcUnit):
             self._prev_states_stale = True
 
     def _oams_load_inner(self, cur_lane, cur_extruder) -> bool:
-        afc = self.afc
+        """OAMS custom load — filament transport only.
 
-        # Heat extruder
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
-
+        AFC's load_sequence handles the shared toolhead engagement
+        (sync_to_extruder, tool_end, tool_stn, sensor verification,
+        buffer ram) after this returns via custom_load_cmd.
+        """
         # Clear suppression — this lane is being intentionally loaded
         self._hub_load_suppressed.discard(cur_lane.name)
 
-        # OAMS hardware load
+        # OAMS hardware load (pushes filament to toolhead area)
         if not self._oams_load(cur_lane):
             return False
 
-        # Sync to extruder and finalize
         cur_lane.loaded_to_hub = True
-        cur_lane.sync_to_extruder()
-
-        # Extruder load (tool_stn)
-        if cur_extruder.tool_stn > 0:
-            afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
-            afc.toolhead.wait_moves()
-
-        # Verify filament reached toolhead sensor (switch, FPS, or motion sensor)
-        has_sensor = (cur_extruder.tool_start is not None
-                      or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
-        if has_sensor and not self._toolhead_sensor_triggered(cur_lane):
-            afc.reactor.pause(afc.reactor.monotonic() + 0.5)
-            if not self._toolhead_sensor_triggered(cur_lane):
-                cur_lane.unsync_to_extruder()
-                message = (
-                    f"OAMS load: filament did not reach toolhead sensor for "
-                    f"{cur_lane.name}. Spool may be stuck or PTFE path blocked.\n"
-                    f"To resolve set lane loaded with "
-                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                )
-                if afc.function.in_print():
-                    message += "\nOnce filament is fully loaded click resume to continue printing"
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
-
-        afc.afcDeltaTime.log_with_time("OAMS load complete")
         return True
 
     def _oams_unload_sequence(self, cur_lane, cur_extruder) -> bool:

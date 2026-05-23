@@ -1453,8 +1453,9 @@ class afc:
 
     def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
-        This function controls the loading sequence and allows for custom gcode commands to be executed
-        during the loading process.
+        This function controls the loading sequence. The filament transport is
+        handled either by a custom load command or by the standard stepper path,
+        then shared toolhead engagement runs for ALL unit types.
 
         :param cur_lane: The lane object to be loaded.
         :param cur_hub: The hub object associated with the lane.
@@ -1463,33 +1464,18 @@ class afc:
         if self.park_pre_load:
             self.gcode.run_script_from_command(self.park_pre_load_cmd)
 
-        # Placeholder for custom load sequence
+        # ── Phase 1: Filament transport (custom or stepper) ──
+
         if cur_lane.custom_load_cmd:
             self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
+
+            if self._check_extruder_temp(cur_lane):
+                self.afcDeltaTime.log_with_time("Done heating toolhead")
+
             self.gcode.run_script_from_command(cur_lane.custom_load_cmd)
-            if cur_lane.get_toolhead_pre_sensor_state():
-                cur_lane.status = AFCLaneState.TOOL_LOADED
-                self.save_vars()
-            elif self.is_u1_motion_sensor(cur_extruder):
-                # U1 motion sensors detect via encoder rotation during
-                # extruder pulls, not ACE push.  The unit's load
-                # sequence verified the feed internally — set the
-                # sensor state so Klipper reports filament present.
-                helper = cur_extruder.filament_sensor_obj.runout_helper
-                if not helper.filament_present:
-                    helper.filament_present = True
-                cur_extruder.tool_start_state = True
-                cur_lane.status = AFCLaneState.TOOL_LOADED
-                self.save_vars()
-            else:
-                message = 'Custom load command did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
-                message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
-                message += '\nManually move filament until filament is right before toolhead extruder gears,'
-                message += '\nthen load into extruder gears with extrude button in your gui of choice until the color fully changes'
-                if self.function.in_print():
-                    message += '\nOnce filament is fully loaded click resume to continue printing'
-                self.error.handle_lane_failure(cur_lane, message)
+            if self.error_state:
                 return False
+            self.afcDeltaTime.log_with_time("Custom load transport complete")
         else:
             use_direct_dist = False
             if (cur_lane.hub_obj
@@ -1609,43 +1595,69 @@ class afc:
 
             self.afcDeltaTime.log_with_time("Filament loaded to pre-sensor")
 
-            # Synchronize lane's extruder stepper and finalize tool loading.
-            cur_lane.status = AFCLaneState.TOOL_LOADED
-            self.save_vars()
-            cur_lane.sync_to_extruder()
+        # ── Phase 2: Shared toolhead engagement (ALL unit types) ──
 
-            if cur_extruder.tool_end:
-                while not cur_extruder.tool_end_state:
-                    tool_attempts += 1
-                    self.move_e_pos(cur_lane.short_move_dis, cur_extruder.tool_load_speed,
-                                    "Tool end", wait_tool=True )
-                    if tool_attempts > 20:
-                        message = 'filament failed to trigger post extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
-                        message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
-                        message += '\nAlso might be a good idea to verify that post extruder gear toolhead sensor is working.'
-                        if self.function.in_print():
-                            message += '\nOnce issue is resolved click resume to continue printing'
-                        self.error.handle_lane_failure(cur_lane, message)
-                        return False
+        # Verify filament reached toolhead sensor (for custom_load_cmd paths)
+        if cur_lane.custom_load_cmd and cur_extruder.tool_start:
+            if not cur_lane.get_toolhead_pre_sensor_state():
+                if self.is_u1_motion_sensor(cur_extruder):
+                    # U1 motion sensors detect via encoder rotation during
+                    # extruder pulls, not ACE/OAMS push. The unit's load
+                    # verified the feed internally.
+                    pass
+                else:
+                    message = 'Custom load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
+                    message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
+                    message += '\nManually move filament until filament is right before toolhead extruder gears,'
+                    message += '\nthen load into extruder gears with extrude button in your gui of choice until the color fully changes'
+                    if self.function.in_print():
+                        message += '\nOnce filament is fully loaded click resume to continue printing'
+                    self.error.handle_lane_failure(cur_lane, message)
+                    return False
 
-                self.afcDeltaTime.log_with_time("Filament loaded to post-sensor")
+        # Synchronize lane's extruder stepper and finalize tool loading.
+        cur_lane.status = AFCLaneState.TOOL_LOADED
+        self.save_vars()
+        cur_lane.sync_to_extruder()
 
-            # Adjust tool position for loading.
-            pre_stn_time = self.reactor.monotonic()
-            self.move_e_pos( cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn" )
-            self.toolhead.wait_moves()
+        if cur_extruder.tool_end:
+            tool_attempts = 0
+            while not cur_extruder.tool_end_state:
+                tool_attempts += 1
+                self.move_e_pos(cur_lane.short_move_dis, cur_extruder.tool_load_speed,
+                                "Tool end", wait_tool=True )
+                if tool_attempts > 20:
+                    message = 'filament failed to trigger post extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
+                    message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
+                    message += '\nAlso might be a good idea to verify that post extruder gear toolhead sensor is working.'
+                    if self.function.in_print():
+                        message += '\nOnce issue is resolved click resume to continue printing'
+                    self.error.handle_lane_failure(cur_lane, message)
+                    return False
 
-            self.afcDeltaTime.log_with_time("Filament loaded to nozzle")
+            self.afcDeltaTime.log_with_time("Filament loaded to post-sensor")
 
-            # Verify filament engagement via U1 motion sensor.
-            # The encoder detects filament movement during the extruder
-            # pull — this is the primary verification that filament
-            # reached the gears, especially for ACE where the encoder
-            # may not fire during ACE-only push feeds.
-            if self.is_u1_motion_sensor(cur_extruder):
-                self.reactor.pause(self.reactor.monotonic() + 0.5)
-                if (cur_extruder._clog_last_motion_time is None
-                        or cur_extruder._clog_last_motion_time <= pre_stn_time):
+        # Adjust tool position for loading.
+        pre_stn_time = self.reactor.monotonic()
+        self.move_e_pos( cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn" )
+        self.toolhead.wait_moves()
+
+        self.afcDeltaTime.log_with_time("Filament loaded to nozzle")
+
+        # Verify filament engagement via U1 motion sensor.
+        if self.is_u1_motion_sensor(cur_extruder):
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+            if (cur_extruder._clog_last_motion_time is None
+                    or cur_extruder._clog_last_motion_time <= pre_stn_time):
+                # For custom load units, force the sensor state since the
+                # encoder only fires during extruder pulls — the unit's
+                # own feed verification confirmed filament is present.
+                if cur_lane.custom_load_cmd:
+                    helper = cur_extruder.filament_sensor_obj.runout_helper
+                    if not helper.filament_present:
+                        helper.filament_present = True
+                    cur_extruder.tool_start_state = True
+                else:
                     msg = ("Filament engagement failed: motion sensor did not detect "
                            "movement during tool_stn load.\n"
                            "Check that extruder gears are gripping filament and "
@@ -1657,33 +1669,31 @@ class afc:
                     self.error.handle_lane_failure(cur_lane, msg)
                     return False
 
-            # Check if ramming is enabled, if it is, go through ram load sequence.
-            # Lane will load until Advance sensor is True
-            # After the tool_stn distance the lane will retract off the sensor to confirm load and reset buffer
-            if cur_extruder.tool_start == "buffer":
-                cur_lane.unsync_to_extruder()
-                load_checks = 0
-                while cur_lane.get_toolhead_pre_sensor_state():
-                    cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
-                    load_checks += 1
-                    self.reactor.pause(self.reactor.monotonic() + 0.1)
-                    if load_checks > self.tool_max_load_checks:
-                        msg = ''
-                        msg += "Buffer did not become compressed after {} short moves.\n".format(self.tool_max_load_checks)
-                        msg += "Setting and increasing 'tool_max_load_checks' in AFC.cfg may improve loading reliability.\n\n"
-                        msg += "Check that the filament is properly loaded into the toolhead extruder. If filament is loaded\n"
-                        msg += f"into toolhead extruders gears, then manually run SET_LANE_LOADED LANE={cur_lane.name} then\n"
-                        msg += "manually extrude filament and clean nozzle."
-                        if self.function.in_print():
-                            msg += '\nOnce issue is resolved click resume to continue printing'
-                        self.error.handle_lane_failure(cur_lane, msg)
-                        return False
-                cur_lane.sync_to_extruder()
+        # Buffer ram: retract to compress buffer and confirm engagement.
+        # Only runs when buffer-based tool_start AND lane has a physical stepper.
+        if cur_extruder.tool_start == "buffer" and cur_lane.drive_stepper is not None:
+            cur_lane.unsync_to_extruder()
+            load_checks = 0
+            while cur_lane.get_toolhead_pre_sensor_state():
+                cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
+                load_checks += 1
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
+                if load_checks > self.tool_max_load_checks:
+                    msg = ''
+                    msg += "Buffer did not become compressed after {} short moves.\n".format(self.tool_max_load_checks)
+                    msg += "Setting and increasing 'tool_max_load_checks' in AFC.cfg may improve loading reliability.\n\n"
+                    msg += "Check that the filament is properly loaded into the toolhead extruder. If filament is loaded\n"
+                    msg += f"into toolhead extruders gears, then manually run SET_LANE_LOADED LANE={cur_lane.name} then\n"
+                    msg += "manually extrude filament and clean nozzle."
+                    if self.function.in_print():
+                        msg += '\nOnce issue is resolved click resume to continue printing'
+                    self.error.handle_lane_failure(cur_lane, msg)
+                    return False
+            cur_lane.sync_to_extruder()
 
-        # Update tool and lane status.
+        # ── Phase 3: Finalize ──
+
         cur_lane.set_tool_loaded()
-        # Setting disable_fault so that fault detection is turned off for users
-        # that utilize poop
         cur_lane.enable_buffer(disable_fault=True)
         self.save_vars()
 
@@ -1907,6 +1917,8 @@ class afc:
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
             cur_lane.unsync_to_extruder()
             self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
+            if self.error_state:
+                return False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()
