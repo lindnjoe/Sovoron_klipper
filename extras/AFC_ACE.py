@@ -1701,32 +1701,9 @@ class afcACE(afcUnit):
                     f"ACE unload: failed to stop feed assist for slot {local_slot}: {e}"
                 )
 
-        # Disable buffer before unloading (safe no-op if no buffer)
-        cur_lane.disable_buffer()
-
-        self.lane_unloading(cur_lane)
-
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
-        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
-
-        cur_lane.sync_to_extruder()
-        cur_lane.do_enable(True)
-        cur_lane.select_lane()
-
-        if afc.tool_cut:
-            cur_lane.extruder_obj.estats.increase_cut_total()
-            afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
-            if afc.park:
-                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-        if afc.form_tip:
-            if afc.park:
-                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-            if afc.form_tip_cmd == "AFC":
-                tip = afc.printer.lookup_object('AFC_form_tip')
-                tip.tip_form()
-            else:
-                afc.gcode.run_script_from_command(afc.form_tip_cmd)
+        # AFC's unload_sequence handles shared toolhead operations
+        # (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
+        # before calling this via custom_unload_cmd.
 
         cur_lane.unsync_to_extruder()
 

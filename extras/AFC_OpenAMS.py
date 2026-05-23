@@ -1438,11 +1438,11 @@ class afcAMS(afcUnit):
         return True
 
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
-        """OpenAMS load sequence — AFC-owned orchestration.
+        """OpenAMS load — transport only.
 
-        Handles dock purge wrapper, temperature management, and delegates
-        the hardware load to OAMS directly. AFC is master control: dock purge
-        happens here, same pattern as ACE.
+        Feeds filament from spool bay to toolhead via OAMS hardware.
+        Toolhead engagement (sync, tool_end, tool_stn, sensor verification,
+        buffer ram) is handled by AFC.py after this returns.
 
         :param cur_lane: The lane object to be loaded.
         :param cur_hub: The hub object associated with the lane (unused for OpenAMS).
@@ -1451,42 +1451,14 @@ class afcAMS(afcUnit):
         """
         afc = self.afc
 
-        # Check if this lane is already loaded to toolhead — sync state and skip
         if cur_lane.get_toolhead_pre_sensor_state() and hasattr(cur_lane, 'tool_loaded') and cur_lane.tool_loaded:
             self.logger.debug(f"Lane {cur_lane.name} already loaded to toolhead, skipping load")
             return True
-
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
-
-        if afc.afcDeltaTime.start_time is None:
-            afc.afcDeltaTime.set_start_time()
-        else:
-            now = datetime.now()
-            afc.afcDeltaTime.major_delta_time = now
-            afc.afcDeltaTime.last_time = now
-
-        # Pre-load check: if a DIFFERENT lane is loaded on this extruder,
-        # auto-unload it first. AFC owns this decision.
-        existing_lane = cur_extruder.lane_loaded
-        if existing_lane and existing_lane != cur_lane.name:
-            self.logger.info(
-                f"Auto-unloading {existing_lane} before loading {cur_lane.name} "
-                f"(AFC pre-load cleanup)")
-            try:
-                afc.gcode.run_script_from_command(f"TOOL_UNLOAD LANE={existing_lane}")
-                afc.toolhead.wait_moves()
-            except Exception as e:
-                afc.error.handle_lane_failure(
-                    cur_lane,
-                    f"Failed to auto-unload {existing_lane} before loading {cur_lane.name}: {e}")
-                return False
 
         try:
             self.logger.debug(
                 f"OpenAMS load: loading {cur_lane.name} via OAMS hardware"
             )
-
             success, message = self._oams_load(cur_lane)
             if not success:
                 message = message or f"OpenAMS load failed for {cur_lane.name}"
@@ -1497,89 +1469,27 @@ class afcAMS(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        sensor_state = cur_lane.get_toolhead_pre_sensor_state()
-        on_shuttle = cur_lane.extruder_obj.on_shuttle()
-        buf = getattr(cur_lane, 'buffer_obj', None)
-        self.logger.debug(
-            f"OpenAMS sensor check for {cur_lane.name}: "
-            f"sensor_state={sensor_state}, on_shuttle={on_shuttle}, "
-            f"tool_start={cur_lane.extruder_obj.tool_start}, "
-            f"buffer_obj={buf.name if buf else None}, "
-            f"advance_state={getattr(buf, 'advance_state', '?') if buf else 'N/A'}, "
-            f"latched={getattr(buf, '_advance_latched', '?') if buf else 'N/A'}, "
-            f"fps={getattr(buf, 'smoothed_fps', '?') if buf else 'N/A'}"
-        )
-        if not sensor_state and not on_shuttle:
-            if afc.is_u1_motion_sensor(cur_extruder):
-                # U1 motion sensor encoder only fires during extruder
-                # motor pulls.  The OAMS engagement verification already
-                # confirmed filament is engaged — set the sensor state
-                # so Klipper/Mainsail reports filament present.
-                helper = cur_extruder.filament_sensor_obj.runout_helper
-                if not helper.filament_present:
-                    helper.filament_present = True
-                cur_extruder.tool_start_state = True
-                self.logger.info(
-                    f"U1 motion sensor bypass for {cur_lane.name}: "
-                    f"engagement verified by OAMS, sensor state set")
-            else:
-                message = (
-                    "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
-                    "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
-                )
-                message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
-                if afc.function.in_print():
-                    message += "\nOnce filament is fully loaded click resume to continue printing"
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
-
+        cur_lane.loaded_to_hub = True
         return True
 
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
-        """OpenAMS unload sequence — called via custom_unload_cmd gcode handler.
+        """OpenAMS unload — transport only.
 
-        Handles shared toolhead steps (cut, form tip, park) then delegates
-        retraction to OAMSManager. State management (set_tool_unloaded,
-        save_vars) is handled by AFC upstream after this returns.
+        Retracts filament from toolhead back to spool bay via OAMS hardware.
+        Toolhead operations (LED, heat, quick pull, sync, cut/park/tip) are
+        handled by AFC.py before this is called. Lane is already unsynced
+        from the extruder when we enter here.
         """
         afc = self.afc
 
-        # Set follower reverse before cut so it assists all retract phases
+        # Set follower reverse so it assists the retract
         if self._follower is not None and self.oams is not None:
             fps_state = self._get_monitor_state()
             if fps_state:
                 self._follower.set_follower_state(
-                    fps_state, self.oams, 1, 0, "before unload cut", force=True)
-        self.lane_unloading(cur_lane)
-
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
-        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
-
-        cur_lane.sync_to_extruder()
-        cur_lane.do_enable(True)
-        cur_lane.select_lane()
-
-        if afc.tool_cut:
-            cur_lane.extruder_obj.estats.increase_cut_total()
-            afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
-            if afc.park:
-                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-        if afc.form_tip:
-            if afc.park:
-                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-            if afc.form_tip_cmd == "AFC":
-                tip = afc.printer.lookup_object('AFC_form_tip')
-                tip.tip_form()
-            else:
-                afc.gcode.run_script_from_command(afc.form_tip_cmd)
+                    fps_state, self.oams, 1, 0, "before unload retract", force=True)
 
         try:
-            # Unsync from extruder before OpenAMS unload
-            # After cut/form_tip, lane is synced to extruder. Must unsync before
-            # AFC hardware unload can control the spool independently.
-            cur_lane.unsync_to_extruder()
-
             self.logger.debug(
                 f"OpenAMS unload: unloading {cur_lane.name} via OAMS hardware"
             )
@@ -1589,10 +1499,6 @@ class afcAMS(afcUnit):
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
 
-            # After unload, read the actual hub sensor to determine if filament
-            # is still at the hub.  The OAMS unload retracts filament back to the
-            # spool bay (past the hub sensor), so hub_hes_value will typically be 0.
-            # Hardcoding True here previously caused stale hub status on swaps.
             hub_loaded = False
             try:
                 spool_idx = self._get_openams_spool_index(cur_lane)
@@ -1602,8 +1508,7 @@ class afcAMS(afcUnit):
             except Exception:
                 hub_loaded = False
             cur_lane.loaded_to_hub = hub_loaded
-            # Clear the virtual hub sensor so Mainsail/status reflects
-            # that the hub is no longer occupied after unload.
+
             hub_obj = getattr(cur_lane, "hub_obj", None)
             if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
                 hub_obj.switch_pin_callback(
