@@ -1350,7 +1350,6 @@ class afc:
         if cur_extruder_obj.lane_loaded == cur_lane.name:
             cur_lane.status = AFCLaneState.TOOL_LOADED
             cur_lane.set_tool_loaded()
-            self.current = cur_lane.name
             self.save_vars()
             self.logger.info("{} already loaded on {}, re-activating".format(
                 cur_lane.name, cur_extruder_obj.name))
@@ -1723,7 +1722,6 @@ class afc:
         self.TOOL_UNLOAD(cur_lane)
 
         # User manually unloaded spool from toolhead, clear active tracking
-        self.current = None
         self.spool.set_active_spool(None)
         self.save_vars()
 
@@ -2269,8 +2267,6 @@ class afc:
 
                 # Load the new lane and restore the toolhead position if successful.
                 if self.TOOL_LOAD(cur_lane, purge_length, set_start_time=False) and not self.error_state:
-                    self.current = cur_lane.name
-                    self.save_vars()
                     if restore_pos:
                         self.restore_pos()
                     total_time = self.afcDeltaTime.log_total_time("Total change time:")
