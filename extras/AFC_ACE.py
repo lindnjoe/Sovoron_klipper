@@ -1115,9 +1115,11 @@ class afcACE(afcUnit):
             # detection on the first callback after an operation ends
             # (_prev_slot_states is stale and would cause false triggers).
             if not slot_ready and not slot_transient and not resync_prev:
+                # Spool physically removed — clear suppression so the next
+                # new spool insertion gets a fresh prep_post_load cycle.
+                self._hub_load_suppressed.discard(lane.name)
                 prev_ready_cb = self._prev_slot_states.get(lane.name)
                 if prev_ready_cb:
-                    self._hub_load_suppressed.discard(lane.name)
                     is_printing = False
                     try:
                         is_printing = self.afc.function.is_printing()
