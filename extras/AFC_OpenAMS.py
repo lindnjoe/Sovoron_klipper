@@ -94,6 +94,14 @@ class afcAMS(afcUnit):
             'AFC_OAMS_CLEAR_ERRORS', self.cmd_AFC_OAMS_CLEAR_ERRORS,
             desc="Clear OpenAMS errors and resync state")
 
+        # Register temperature_oams sensor factory during config parsing
+        try:
+            from extras.temperature_oams import TemperatureOAMS
+            pheaters = self.printer.load_object(config, "heaters")
+            pheaters.add_sensor_factory("temperature_oams", TemperatureOAMS)
+        except Exception:
+            pass
+
     def handle_connect(self):
         super().handle_connect()
 

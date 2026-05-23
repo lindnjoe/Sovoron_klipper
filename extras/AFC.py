@@ -57,21 +57,6 @@ class State:
     RESTORING_POS   = "Restoring"
 
 def load_config(config):
-    # Register U1 temperature sensor factories early — Klipper resolves
-    # sensor_type during config parsing, before handle_connect runs.
-    # Must load heaters first to ensure the factory registry exists.
-    printer = config.get_printer()
-    pheaters = printer.load_object(config, 'heaters')
-    try:
-        from extras.temperature_ace import TemperatureACE
-        pheaters.add_sensor_factory("temperature_ace", TemperatureACE)
-    except Exception:
-        pass
-    try:
-        from extras.temperature_oams import TemperatureOAMS
-        pheaters.add_sensor_factory("temperature_oams", TemperatureOAMS)
-    except Exception:
-        pass
     return afc(config)
 
 class afc:
