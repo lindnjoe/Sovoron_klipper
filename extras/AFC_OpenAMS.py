@@ -1035,9 +1035,8 @@ class afcAMS(afcUnit):
             afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
             afc.toolhead.wait_moves()
 
-        # Verify filament reached toolhead sensor (physical switch or motion sensor)
+        # Verify filament reached toolhead sensor (switch, FPS, or motion sensor)
         has_sensor = (cur_extruder.tool_start is not None
-                      and cur_extruder.tool_start not in ("buffer", "internal")
                       or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
         if has_sensor and not self._toolhead_sensor_triggered(cur_lane):
             afc.reactor.pause(afc.reactor.monotonic() + 0.5)
@@ -1151,6 +1150,12 @@ class afcAMS(afcUnit):
         if self._monitor:
             self._monitor.stop()
 
+        # Enable FPS advance latch so the toolhead sensor stays triggered
+        # even when pressure drops briefly after OAMS feed completes.
+        buffer_obj = getattr(cur_lane, 'buffer_obj', None)
+        if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
+            buffer_obj.enable_advance_latch()
+
         # Enable follower forward before load
         if self._follower:
             fps_state = self._get_monitor_state()
@@ -1168,6 +1173,13 @@ class afcAMS(afcUnit):
                 # Verify engagement
                 engaged = self._verify_engagement(cur_lane)
                 if engaged:
+                    # Force FPS advance latch so get_toolhead_pre_sensor_state()
+                    # returns True — FPS pressure may drop below threshold
+                    # even though filament is confirmed present via encoder.
+                    if buffer_obj is not None and hasattr(buffer_obj, '_advance_latched'):
+                        buffer_obj._advance_latched = True
+                        buffer_obj.advance_state = True
+
                     # Enable follower and start monitor
                     if self._follower:
                         fps_state = self._get_monitor_state()
