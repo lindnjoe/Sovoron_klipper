@@ -1655,15 +1655,10 @@ class afc:
 
         self.afcDeltaTime.log_with_time("Filament loaded to nozzle")
 
-        # Verify filament engagement via U1 motion sensor.
+        # Verify filament engagement via U1 motion sensor physical switch.
         if self.is_u1_motion_sensor(cur_extruder):
             self.reactor.pause(self.reactor.monotonic() + 0.5)
-            if (cur_extruder._clog_last_motion_time is None
-                    or cur_extruder._clog_last_motion_time <= pre_stn_time):
-                # Encoder didn't see motion during tool_stn.
-                # Use physical switch as ground truth — if the switch
-                # confirms filament is present, sync the encoder state.
-                if cur_extruder.filament_sensor_obj.runout_buttun_state:
+            if cur_extruder.filament_sensor_obj.runout_buttun_state:
                     helper = cur_extruder.filament_sensor_obj.runout_helper
                     if not helper.filament_present:
                         helper.filament_present = True
