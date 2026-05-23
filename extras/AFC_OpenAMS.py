@@ -35,11 +35,6 @@ try:
 except Exception:
     OAMSMonitor = None
 
-try:
-    from extras.openams_integration import AMSHardwareService, AMSRunoutCoordinator
-except Exception:
-    AMSHardwareService = None
-    AMSRunoutCoordinator = None
 
 
 class afcAMS(afcUnit):
@@ -82,7 +77,6 @@ class afcAMS(afcUnit):
 
         # Runtime state
         self.oams = None
-        self.hardware_service = None
         self._follower: Optional[FollowerController] = None
         self._monitor: Optional[OAMSMonitor] = None
         self._spool_map: dict[str, int] = {}
@@ -129,12 +123,6 @@ class afcAMS(afcUnit):
             self.oams = self.printer.lookup_object(f"oams {self.oams_name}", None)
         except Exception:
             self.oams = None
-
-        if AMSHardwareService is not None:
-            try:
-                self.hardware_service = self.printer.lookup_object("ams_hardware_service", None)
-            except Exception:
-                pass
 
         # Build spool map and set custom commands on lanes
         for lane_name, lane in self.lanes.items():
