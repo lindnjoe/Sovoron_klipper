@@ -47,7 +47,16 @@ except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_ex
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
+try: from extras.AFC_stats import AFCStats_var
+except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
+
 LARGE_TIME_OFFSET = 99999.9
+
+# U1 motion sensor clog/stuck spool detection
+U1_CLOG_SENSITIVITY = {'off': None, 'low': 1.5, 'medium': 1.0, 'high': 0.7}
+U1_CLOG_DWELL_BASE = 10.0
+U1_CLOG_CHECK_INTERVAL = 2.0
+U1_CLOG_GRACE_PERIOD = 15.0
 
 class AFCExtruderStats:
     """
@@ -198,6 +207,7 @@ class AFCExtruderStats:
         self.tool_unselected.reset_count()
 
 class AFCExtruder:
+    common_error = "[{}] not found in config file for {}"
     def __init__(self, config: ConfigWrapper) -> None:
         self.printer:Printer = config.get_printer()
         buttons         = self.printer.load_object(config, 'buttons')
@@ -208,14 +218,18 @@ class AFCExtruder:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        self.printer.register_event_handler("afc:tool_loaded", self._on_tool_loaded_clog)
+        self.printer.register_event_handler("klippy:shutdown", self._stop_clog_monitor)
 
         self.extruder_move_timer= self.reactor.register_timer(self.extruder_move_cb)
         self.temp_check_timer   = self.reactor.register_timer(self.temp_check_cb)
 
         self.toolhead_extruder: PrinterExtruder
         self.fullname                   = config.get_name()
+        self.mutex                      = self.reactor.mutex()
 
         self.name: str                  = self.fullname.split(' ')[-1]
+        # self.extruder_name: str         = config.get("extruder_name", self.name)    # Add support for this, not sure where all this will have to be updated
         self.tool_start                 = config.get('pin_tool_start', None)                                            # Pin for sensor before(pre) extruder gears
         self.tool_end                   = config.get('pin_tool_end', None)                                              # Pin for sensor after(post) extruder gears (optional)
         self.tool_stn                   = config.getfloat("tool_stn", 72)                                               # Distance in mm from the toolhead sensor to the tip of the nozzle in mm, if `tool_end` is defined then distance is from this sensor
@@ -237,7 +251,9 @@ class AFCExtruder:
         self.set_status_color_fn        = None
         self.check_transmit_status_fn   = None
         self.status_led_count:int       = 0
-        self._captured_toolhead_temp: Optional[dict] = None
+        # U1 only related variables
+        self.filament_sensor_name: str  = config.get('u1_filament_sensor_name', None)
+        self.park_detector: str         = config.get("u1_park_detector_name", None)
 
         if self.toolhead_status_index:
             self.toolhead_status_index  = self.afc.function._get_led_indexes(self.toolhead_status_index)
@@ -269,6 +285,31 @@ class AFCExtruder:
         self.current_move_distance: float = 0
         self.estats = AFCExtruderStats(self.name, self, self.afc.tool_cut_threshold)
 
+        # U1 only related variables
+        self.park_detector_obj   = None
+        self.filament_sensor_obj = None
+
+        # Clog/stuck spool detection via U1 motion sensor (no buffer)
+        self._clog_use_sensor = (self.filament_sensor_name is not None
+                                 and self.buffer_name is None)
+        if self._clog_use_sensor:
+            _sens = config.get('clog_sensitivity', 'medium')
+            if _sens not in U1_CLOG_SENSITIVITY:
+                raise error(
+                    f"Invalid clog_sensitivity '{_sens}' in [{self.fullname}]. "
+                    f"Valid: {', '.join(U1_CLOG_SENSITIVITY.keys())}")
+            self._clog_sensitivity_name = _sens
+            self._clog_multiplier = U1_CLOG_SENSITIVITY[_sens]
+        else:
+            self._clog_sensitivity_name = 'off'
+            self._clog_multiplier = None
+        self._clog_dwell = (U1_CLOG_DWELL_BASE * self._clog_multiplier
+                            if self._clog_multiplier is not None else 0)
+        self._clog_timer = None
+        self._clog_last_motion_time = None
+        self._clog_sensor_seen = False
+        self._clog_fired = False
+
         self.tool_start_state = False
         # TODO: add a check here as pin_tool_start should always be required, or let klipper take care of it by not passing in None
         if self.tool_start is not None:
@@ -277,11 +318,26 @@ class AFCExtruder:
 
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
+            elif self.tool_start == "internal":
+                self.logger.info(
+                    "Setting up as internal — relying on unit firmware "
+                    "(e.g. ACE) for filament engagement verification"
+                )
             else:
-                buttons.register_buttons([self.tool_start], self.tool_start_callback)
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
-                                                                                        self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
-                                                                                        self.debounce_delay )
+                                                                                    self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
+                                                                                    self.debounce_delay )
+                buttons.register_buttons([self.tool_start], self.tool_start_callback)
+        elif self.filament_sensor_name is not None:
+            filament_motion_name = f"filament_motion_sensor {self.filament_sensor_name}"
+            try:
+                self.filament_sensor_obj = self.printer.load_object(config, filament_motion_name)
+            except error:
+                error_str = self.common_error.format(filament_motion_name, self.fullname)
+                raise error(error_str)
+            self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
+            self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
+            self.filament_sensor_obj.runout_helper.runout_pause = False
 
         self.tool_end_state = False
         if self.tool_end is not None:
@@ -365,6 +421,7 @@ class AFCExtruder:
                     f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
 
+
     def handle_connect(self):
         """
         Handle the connection event.
@@ -373,29 +430,32 @@ class AFCExtruder:
         """
         self.reactor = self.afc.reactor
         self.afc.tools[self.name] = self
+        
+        self.toolhead_extruder = self.printer.lookup_object(self.name)
+        if not self.toolhead_extruder:
+            error_str = self.common_error.format(self.name, self.fullname)
+            raise error(error_str)
 
-        try:
-            self.toolhead_extruder = self.printer.lookup_object(self.name)
-        except:
-            raise error("[{}] not found in config file".format(self.name))
+        if self.tool:
+            self.tool_obj = self.printer.lookup_object(self.tool, None)
+            if not self.tool_obj:
+                error_str = self.common_error.format(self.tool, self.fullname)
+                raise error(error_str)
 
-        try:
-            if self.tool:
-                self.tool_obj = self.printer.lookup_object(self.tool)
-        except:
-            raise error(f'[{self.tool}] not found in config file for {self.fullname}')
+        if self.park_detector:
+            park_dect_str = f"park_detector {self.park_detector}"
+            self.park_detector_obj = self.printer.lookup_object(park_dect_str, None)
+            if not self.park_detector_obj:
+                error_str = self.common_error.format(park_dect_str, self.fullname)
+                raise error(error_str)
 
-        try:
-            if self.tc_unit_name:
-                self.tc_unit_obj = self.printer.lookup_object(
-                    f"AFC_Toolchanger {self.tc_unit_name}"
-                )
-                self.tc_lane.unit_obj = self.tc_unit_obj
-
-        except:
-            raise error(
-                f'AFC_Toolchanger {self.tc_unit_name} not found in config file for {self.fullname}'
-            )
+        if self.tc_unit_name:
+            tc_str = f"AFC_Toolchanger {self.tc_unit_name}"
+            self.tc_unit_obj = self.printer.lookup_object(tc_str, None)
+            if not self.tc_unit_obj:
+                error_str = self.common_error.format(tc_str, self.fullname)
+                raise error(error_str)
+            self.tc_lane.unit_obj = self.tc_unit_obj
 
         try:
             # Looking up led object if user supplied variable
@@ -415,7 +475,7 @@ class AFCExtruder:
                         self.set_status_color_fn = led_helper.set_color
                         self.check_transmit_status_fn = led_helper.check_transmit
 
-        except configfile.error:
+        except error:
             raise error(
                 f"{self.toolhead_leds} not found in config file for led_name variable in " \
                 f"{self.fullname} config section"
@@ -455,6 +515,38 @@ class AFCExtruder:
         """
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
+
+    def note_tool_start_callback(self, state, force=False):
+        self.orig_note_filament_present(state, force)
+        if state:
+            self._clog_last_motion_time = self.reactor.monotonic()
+            self._clog_sensor_seen = True
+            self._clog_fired = False
+        self.tool_start_callback(0, state)
+
+    def clear_toolhead_sensor(self):
+        """Clear the U1 motion sensor state after filament has been unloaded.
+
+        U1 motion sensors can leave filament_present=True after unload because
+        during printing only True toggles call note_filament_present, and
+        position-based runout needs extruder movement (which doesn't happen
+        when the ACE motor drives the retraction).
+
+        Sets state directly rather than through note_filament_present(False)
+        because calling that during printing triggers the runout event path
+        which sets min_event_systime=NEVER, blocking all future sensor
+        events until the async runout handler completes.
+        """
+        if (self.filament_sensor_name is not None
+                and self.filament_sensor_obj is not None
+                and self.afc.is_u1_motion_sensor(self)):
+            helper = self.filament_sensor_obj.runout_helper
+            if helper.filament_present:
+                helper.filament_present = False
+                self.logger.info(
+                    "Cleared U1 toolhead sensor after unload — "
+                    "filament_present was stale True")
+            self.tool_start_state = False
 
     def tool_start_callback(self, eventtime, state):
         """
@@ -584,7 +676,7 @@ class AFCExtruder:
         axis_r, accel_t, cruise_t, cruise_v = calc_move_time(distance, self.tool_load_speed, 5)
         print_time = toolhead.get_last_move_time()
         self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
-                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5)
+                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5, 0) # TODO: add a check for the zero
         print_time = print_time + accel_t + cruise_t + accel_t
 
         if self.motion_queuing is None:
@@ -778,20 +870,29 @@ class AFCExtruder:
         """
         # Return true if both are not set as this would be for single toolhead
         # setups
-        if self.tool_obj is None and self.tc_unit_name is None:
+        if ( (self.tool_obj is None 
+              and self.park_detector_obj is None)
+              and self.tc_unit_name is None):
             return True
 
         # Return true if toolchanger unit is defined but no tool object has been defined
         # this could be because someone is using custom swap and unselect macros
-        if self.tc_unit_name and self.tool_obj is None:
+        if (self.tc_unit_name
+            and (self.tool_obj is None
+                 and self.park_detector_obj is None)):
             return True
 
-        if hasattr(self.tool_obj, "detect_state"):
+        if (self.tool_obj
+            and hasattr(self.tool_obj, "detect_state")):
             from extras.toolchanger import DETECT_PRESENT
             return (
                 self.tool_obj.detect_state == DETECT_PRESENT or
                 self.tool_obj.main_toolchanger.get_selected_tool() == self.tool_obj
             )
+        elif(self.park_detector_obj
+             and hasattr(self.park_detector_obj, "get_park_detector_status")):
+            status = self.park_detector_obj.get_park_detector_status()
+            return status.get('state') == 'ACTIVATE'
         else:
             return False
 
@@ -803,6 +904,71 @@ class AFCExtruder:
             are attached.
         """
         return self.no_lanes
+
+    # ---- U1 motion sensor clog/stuck spool detection ----
+
+    def _on_tool_loaded_clog(self, cur_lane):
+        if cur_lane.extruder_name == self.name:
+            self._start_clog_monitor()
+
+    def _start_clog_monitor(self):
+        if not self._clog_use_sensor or self._clog_multiplier is None:
+            return
+        self._clog_last_motion_time = None
+        self._clog_sensor_seen = False
+        self._clog_fired = False
+        if self._clog_timer is None:
+            self._clog_timer = self.reactor.register_timer(
+                self._clog_monitor_cb,
+                self.reactor.monotonic() + U1_CLOG_GRACE_PERIOD)
+
+    def _stop_clog_monitor(self):
+        if self._clog_timer is not None:
+            self.reactor.unregister_timer(self._clog_timer)
+            self._clog_timer = None
+        self._clog_fired = False
+        self._clog_sensor_seen = False
+
+    def _clog_monitor_cb(self, eventtime):
+        if self._clog_multiplier is None:
+            self._stop_clog_monitor()
+            return self.reactor.NEVER
+
+        if not self.lane_loaded:
+            self._stop_clog_monitor()
+            return self.reactor.NEVER
+
+        if not self._clog_sensor_seen:
+            return eventtime + U1_CLOG_CHECK_INTERVAL
+
+        if not self.afc.function.is_printing():
+            self._clog_last_motion_time = eventtime
+            return eventtime + U1_CLOG_CHECK_INTERVAL
+
+        toolhead = self.printer.lookup_object('toolhead')
+        if toolhead.get_extruder().get_name() != self.name:
+            self._clog_last_motion_time = eventtime
+            return eventtime + U1_CLOG_CHECK_INTERVAL
+
+        time_since_motion = eventtime - self._clog_last_motion_time
+
+        if time_since_motion >= self._clog_dwell and not self._clog_fired:
+            self._clog_fired = True
+            self._fire_clog_error(time_since_motion)
+
+        return eventtime + U1_CLOG_CHECK_INTERVAL
+
+    def _fire_clog_error(self, elapsed):
+        lane_name = self.lane_loaded
+        if lane_name and lane_name in self.lanes:
+            cur_lane = self.lanes[lane_name]
+            msg = (f"Clog or stuck spool detected: no filament movement "
+                   f"for {elapsed:.1f}s (sensitivity: {self._clog_sensitivity_name})")
+            self.afc.error.handle_lane_failure(cur_lane, msg, pause=True)
+        else:
+            msg = (f"Clog or stuck spool detected on {self.name}: no filament "
+                   f"movement for {elapsed:.1f}s")
+            self.afc.error.AFC_error(msg, pause=True)
 
     cmd_UPDATE_TOOLHEAD_SENSORS_help = "Gives ability to update tool_stn, tool_stn_unload, tool_sensor_after_extruder values without restarting klipper"
     cmd_UPDATE_TOOLHEAD_SENSORS_options = {
@@ -881,11 +1047,12 @@ class AFCExtruder:
         Macro call to set print led in toolhead based on extruder name. Led config name needs to be
         set to AFC_extruder `led_name` variable. Status led in toolhead will not be affected if `status_led_idx`
         is set in AFC_extruder config. If `nozzle_led_idx` is set in AFC_extruder configuration then just
-        those leds will be turned on. If `nozzle_led_idx` is not provided then all leds not in defined in
+        those leds will be turned on. If `nozzle_led_inx` is not provided then all leds not in defined in
         `status_led_idx` will be turned on.
 
-        EXTRUDER - AFC_extruder config name to print leds. If single toolhead, this will always be `extruder`<br>
-        TURN_ON - set to 1 to turn on leds, set to 0 to turn off leds. If not supplied, defaults to 1
+        `EXTRUDER` - AFC_extruder config name to print leds. If single toolhead, this will always be `extruder`
+
+        `TURN_ON` - set to 1 to turn on leds, set to 0 to turn off leds. If not supplied, defaults to 1
 
         Usage
         -----
@@ -920,6 +1087,8 @@ class AFCExtruder:
         self.response['tool_end_status'] = bool(self.tool_end_state)
         self.response['lanes'] = [lane.name for lane in self.lanes.values()]
         self.response['on_shuttle'] = self.on_shuttle()
+        if self._clog_use_sensor:
+            self.response['clog_sensitivity'] = self._clog_sensitivity_name
         return self.response
 
 def load_config_prefix(config):

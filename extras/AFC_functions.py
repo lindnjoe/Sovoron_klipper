@@ -224,7 +224,7 @@ class afcFunction:
 
         :param cur_lane: Lane to assign auto generated T(n) macro
         """
-        if cur_lane.map == None :
+        if cur_lane.map is None:
             for x in range(99):
                 cmd = 'T{}'.format(x)
                 # Checking to see if cmd exists in lanes that have manually assigned mapping
@@ -232,19 +232,22 @@ class afcFunction:
                 manually_assigned = any( cmd == lane._map for lane in self.afc.lanes.values() )
                 if not manually_assigned and cmd not in self.afc.tool_cmds:
                     # Checking if macro already exists, generate next valid cmd if current generated cmd exists
-                    existing = self.afc.gcode.ready_gcode_handlers.get(cmd)
+                    existing = False
+                    if not self.afc.force_assign_map:
+                        existing = self.afc.gcode.ready_gcode_handlers.get(cmd)
                     if not existing:
                         cur_lane._map = cur_lane.map = cmd
                         break
         self.afc.tool_cmds[cur_lane.map]=cur_lane.name
         try:
-            if cur_lane._map:
+            if (cur_lane._map
+                or self.afc.force_assign_map):
                 rename_map = ("_{}".format(cur_lane.map))
                 self._rename(cur_lane.map, rename_map, self.afc.cmd_CHANGE_TOOL, self.afc.cmd_CHANGE_TOOL_help)
             else:
                 self.afc.gcode.register_command(cur_lane.map, self.afc.cmd_CHANGE_TOOL, desc=self.afc.cmd_CHANGE_TOOL_help)
         except:
-                self.logger.info("Error trying to map lane {lane} to {tool_macro}, please make sure there are no macros already setup for {tool_macro}".format(lane=[cur_lane.name], tool_macro=cur_lane.map), )
+                self.logger.error("Error trying to map lane {lane} to {tool_macro}, please make sure there are no macros already setup for {tool_macro}".format(lane=[cur_lane.name], tool_macro=cur_lane.map), )
         self.afc.save_vars()
 
     def check_macro_present(self, macro_name):
@@ -385,6 +388,15 @@ class afcFunction:
             current_extruder = self.get_current_extruder()
             if current_extruder is not None:
                 return self.afc.tools[current_extruder].lane_loaded
+            current_extruder_name = self.afc.toolhead.get_extruder().name
+            tool_obj = self.afc.tools.get(current_extruder_name, None)
+            if tool_obj is not None:
+                for lane_name, lane_obj in self.afc.lanes.items():
+                    if (getattr(lane_obj, 'extruder_name', None) == current_extruder_name
+                            and getattr(lane_obj, 'unit_obj', None) is not None):
+                        result = lane_obj.unit_obj.get_current_lane_fallback(tool_obj)
+                        if result is not None:
+                            return result
         return None
 
     def get_current_lane_obj(self):
@@ -573,9 +585,11 @@ class afcFunction:
         """
         cur_lane_loaded = self.get_current_lane_obj()
         if cur_lane_loaded is not None:
+            extruder_name = getattr(cur_lane_loaded, 'extruder_name', None)
             cur_lane_loaded.unsync_to_extruder()
             cur_lane_loaded.set_tool_unloaded()
             cur_lane_loaded.unit_obj.return_to_home()
+            cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
             self.afc.function.handle_activate_extruder()
             self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
             self.afc.save_vars()
@@ -901,7 +915,14 @@ class afcFunction:
                 checked, msg, pos = lane.unit_obj.calibrate_lane(lane, tol)
             if(not checked):
                 self.afc.error.AFC_error(msg, False)
-                self._afc_cali_fail(cali=lane, dis=pos, reset_lane=(pos!=0),fail_message=msg)
+
+                reset_lane = False
+                # Check to see if lane has hub object and thats its triggered, this will control
+                # if reset lane message is displayed when errors occur.
+                if hasattr(lane, "hub_obj") and hasattr(lane.hub_obj, "state"):
+                    reset_lane = lane.hub_obj.state
+
+                self._afc_cali_fail(cali=lane, dis=abs(pos), reset_lane=(pos!=0 and reset_lane),fail_message=msg)
                 return checked, [], []
             else:
                 if msg == "calibration_lane":
@@ -972,7 +993,10 @@ class afcFunction:
         text = f'{title} for {cali}. '
         if reset_lane:
             text += 'First: reset lane, Second: review messages and take necessary action and re-run calibration.'
-            buttons.append(("Reset lane", "AFC_LANE_RESET LANE={} DISTANCE={}".format(cali, dis), "primary"))
+            if dis is not None:
+                buttons.append(("Reset lane", "AFC_LANE_RESET LANE={} DISTANCE={}".format(cali, dis), "primary"))
+            else:
+                buttons.append(("Reset lane", "AFC_LANE_RESET LANE={}".format(cali), "primary"))
 
         if fail_message:
             text += f"\nFail message: {fail_message}"
@@ -1339,8 +1363,11 @@ class afcFunction:
 
             checked, msg, pos = cur_lane.unit_obj.calibrate_bowden(cur_lane, dis, tol)
             if not checked:
-                self.afc.error.AFC_error('{} failed to calibrate bowden length {}'.format(afc_bl, msg), pause=False)
-                self.afc.gcode.run_script_from_command('AFC_CALI_FAIL FAIL={} DISTANCE={}'.format(afc_bl, pos))
+                msg = '{} failed to calibrate bowden length {}'.format(afc_bl, msg)
+                self.afc.error.AFC_error(msg, pause=False)
+
+                self._afc_cali_fail(cali=cur_lane, dis=abs(pos), reset_lane=(pos!=0),
+                                    title="AFC Bowden Calibration Failed", fail_message=msg)
                 return
             else: calibrated.append('Bowden_length: {}'.format(afc_bl))
 
@@ -1483,10 +1510,7 @@ class afcFunction:
         for index, LANE in enumerate(self.afc.lanes.values()):
             if LANE.raw_load_state:
                 button_label = "{}".format(LANE.name)
-                if dis is not None:
-                    button_command = "AFC_LANE_RESET LANE={} DISTANCE={}".format(LANE.name, dis)
-                else:
-                    button_command = "AFC_LANE_RESET LANE={}".format(LANE.name)
+                button_command = self._lane_reset_command(LANE, dis)
 
                 button_style = "primary" if index % 2 == 0 else "secondary"
                 buttons.append((button_label, button_command, button_style))
@@ -1497,6 +1521,15 @@ class afcFunction:
 
         prompt.create_custom_p(title, text, buttons,
                         True, None)
+
+    def _lane_reset_command(self, lane, dis):
+        """Return the GCode command to reset *lane*, using unit override if available."""
+        custom_command = lane.unit_obj.get_lane_reset_command(lane, dis)
+        if custom_command is not None:
+            return custom_command
+        if dis is not None:
+            return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
+        return "AFC_LANE_RESET LANE={}".format(lane.name)
 
     cmd_AFC_LANE_RESET_help = 'reset a loaded lane to hub'
     cmd_AFC_LANE_RESET_options = {"DISTANCE": {"default": "50", "type": "float"},
@@ -1548,6 +1581,14 @@ class afcFunction:
                 return
 
         cur_lane: Union[AFCLane, AFCExtruderStepper] = self.afc.lanes[lane]
+
+        custom_reset_command = cur_lane.unit_obj.get_lane_reset_command(cur_lane, long_dis)
+        if custom_reset_command is not None:
+            prompt.p_end()
+            self.logger.info(f"{lane} uses custom lane reset: {custom_reset_command}")
+            self.afc.gcode.run_script_from_command(custom_reset_command)
+            return
+
         CUR_HUB: afc_hub = cur_lane.hub_obj
         short_move = cur_lane.short_move_dis * 2
 

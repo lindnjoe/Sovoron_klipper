@@ -59,6 +59,7 @@ class afc_hub:
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switches as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
+        self.use_dist_hub           = config.getboolean("use_dist_hub", False)
 
         if self.switch_pin.lower() != "virtual":
             buttons = self.printer.load_object(config, "buttons")
@@ -73,6 +74,9 @@ class afc_hub:
 
     def __str__(self):
         return self.name
+
+    def is_virtual_pin(self):
+        return self.switch_pin.lower() == "virtual"
 
     def handle_runout(self, eventtime):
         """
@@ -103,7 +107,7 @@ class afc_hub:
 
         self.printer.send_event("afc_hub:register_macros", self)
 
-        if self.switch_pin.lower() == "virtual":
+        if self.is_virtual_pin():
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
@@ -121,7 +125,7 @@ class afc_hub:
         sensor is triggered.
         """
         state = self._state
-        if self.switch_pin.lower() == "virtual":
+        if self.is_virtual_pin():
             state = any(lane.raw_load_state for lane in self.lanes.values())
         return state
 
