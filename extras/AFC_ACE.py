@@ -631,26 +631,48 @@ class afcACE(afcUnit):
     # ── Custom load/unload gcode handlers ───────────────────────────
 
     def _cmd_ace_custom_load(self, gcmd):
-        """Handle _ACE_CUSTOM_LOAD gcode command."""
+        """Handle _ACE_CUSTOM_LOAD — full load sequence with toolhead ops."""
         lane_name = gcmd.get('LANE')
-        if lane_name not in self.afc.lanes:
-            self.logger.error(f"Unknown lane: {lane_name}")
-            return
-        cur_lane = self.afc.lanes[lane_name]
-        slot = self._get_slot(lane_name)
+        cur_lane = self.afc.lanes.get(lane_name)
+        if cur_lane is None:
+            raise gcmd.error(f"Unknown lane: {lane_name}")
+        cur_extruder = cur_lane.extruder_obj
+        result = self._ace_load_sequence(cur_lane, cur_extruder)
+        if not result:
+            raise gcmd.error(f"ACE load failed for {lane_name}")
+
+    def _cmd_ace_custom_unload(self, gcmd):
+        """Handle _ACE_CUSTOM_UNLOAD — full unload sequence with toolhead ops."""
+        lane_name = gcmd.get('LANE')
+        cur_lane = self.afc.lanes.get(lane_name)
+        if cur_lane is None:
+            raise gcmd.error(f"Unknown lane: {lane_name}")
+        cur_extruder = cur_lane.extruder_obj
+        result = self._ace_unload_sequence(cur_lane, cur_extruder)
+        if not result:
+            raise gcmd.error(f"ACE unload failed for {lane_name}")
+
+    def _ace_load_sequence(self, cur_lane, cur_extruder) -> bool:
+        """Full ACE load: heat → ACE serial feed → extruder load → feed assist."""
+        afc = self.afc
+        slot = self._get_slot(cur_lane.name)
 
         if not self._ace or not self._ace.connected:
-            self.logger.error("ACE not connected")
-            return
+            afc.error.handle_lane_failure(
+                cur_lane, f"ACE not connected ({self.serial_port})")
+            return False
 
-        # In combined mode, retract any other loaded slot first
+        # In combined mode, stop feed assist on other slots
         if self.mode == MODE_COMBINED:
             for other_name, other_slot in self._slot_map.items():
                 if other_slot != slot and other_slot in self._feed_assist_active:
                     self._stop_feed_assist(other_slot)
 
-        # Calculate effective feed distance using upstream variables:
-        # dist_hub (lane→hub) + afc_bowden_length (hub→toolhead)
+        # Heat extruder
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
+        # Calculate feed distance
         if cur_lane.loaded_to_hub:
             hub = cur_lane.hub_obj
             feed_dist = getattr(hub, 'afc_bowden_length', 0) if hub else 0
@@ -658,70 +680,131 @@ class afcACE(afcUnit):
         else:
             feed_dist = self._get_bowden_length(cur_lane)
 
-        # Set virtual hub sensor state
-        if cur_lane.hub_obj and cur_lane.hub_obj.is_virtual_pin():
+        if self._is_virtual_hub(cur_lane):
             cur_lane.loaded_to_hub = True
 
-        # Feed filament
+        # ACE serial feed to toolhead area
         try:
             self._wait_for_ace_ready()
             self._ace.feed_filament(slot, feed_dist, self.feed_speed)
             success = self._wait_for_feed_complete(slot, feed_dist, self.feed_speed)
 
             if not success:
-                # Check if filament reached despite error
                 if cur_lane.get_toolhead_pre_sensor_state():
-                    self.logger.info("Feed reported error but sensor triggered — continuing")
+                    self.logger.info("Feed error but sensor triggered — continuing")
                 else:
-                    # Retry with incremental feeds
                     success = self._smart_load_retry(cur_lane, slot)
                     if not success:
-                        self.logger.error(f"ACE load failed for {lane_name}")
-                        return
-
-            # Enable feed assist
-            if self._use_feed_assist(cur_lane):
-                self._start_feed_assist(slot)
-
+                        afc.error.handle_lane_failure(
+                            cur_lane, f"ACE feed failed for {cur_lane.name}")
+                        return False
         except Exception as e:
-            self.logger.error(f"ACE load error for {lane_name}: {e}")
+            afc.error.handle_lane_failure(
+                cur_lane, f"ACE load feed error: {e}")
+            return False
 
-    def _cmd_ace_custom_unload(self, gcmd):
-        """Handle _ACE_CUSTOM_UNLOAD gcode command."""
-        lane_name = gcmd.get('LANE')
-        if lane_name not in self.afc.lanes:
-            self.logger.error(f"Unknown lane: {lane_name}")
-            return
-        cur_lane = self.afc.lanes[lane_name]
-        slot = self._get_slot(lane_name)
+        # Sync to extruder and load into toolhead
+        cur_lane.status = AFCLaneState.TOOL_LOADED
+        afc.save_vars()
+        cur_lane.sync_to_extruder()
+
+        # Extruder load (tool_stn)
+        if cur_extruder.tool_stn > 0:
+            afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
+            afc.toolhead.wait_moves()
+
+        # Enable buffer
+        cur_lane.enable_buffer()
+
+        # Enable feed assist
+        if self._use_feed_assist(cur_lane):
+            self._start_feed_assist(slot)
+
+        afc.afcDeltaTime.log_with_time("ACE load complete")
+        return True
+
+    def _ace_unload_sequence(self, cur_lane, cur_extruder) -> bool:
+        """Full ACE unload: heat → cut → park → tip → retract extruder → ACE serial unwind."""
+        afc = self.afc
+        slot = self._get_slot(cur_lane.name)
 
         if not self._ace or not self._ace.connected:
-            self.logger.error("ACE not connected")
-            return
+            afc.error.handle_lane_failure(
+                cur_lane, f"ACE not connected ({self.serial_port})")
+            return False
 
+        # Stop feed assist
+        self._stop_feed_assist(slot)
+
+        # Disable buffer
+        cur_lane.disable_buffer()
+
+        # LED animation
+        self.lane_unloading(cur_lane)
+
+        # Heat extruder
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
+        # Quick pull to prevent oozing
+        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+
+        # Sync to extruder for cut/park/tip operations
+        cur_lane.sync_to_extruder()
+        cur_lane.do_enable(True)
+
+        # Cut
+        if afc.tool_cut:
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            afc.gcode.run_script_from_command(
+                "{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
+            if afc.park:
+                afc.gcode.run_script_from_command(
+                    "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+
+        # Form tip
+        if afc.form_tip:
+            if afc.park:
+                afc.gcode.run_script_from_command(
+                    "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+            if afc.form_tip_cmd == "AFC":
+                tip = afc.printer.lookup_object('AFC_form_tip')
+                tip.tip_form()
+            else:
+                afc.gcode.run_script_from_command(afc.form_tip_cmd)
+
+        # Retract from extruder (tool_stn_unload via extruder motor)
+        if cur_extruder.tool_stn_unload > 0:
+            afc.move_e_pos(
+                cur_extruder.tool_stn_unload * -1,
+                cur_extruder.tool_unload_speed,
+                "Retract from extruder", wait_tool=True)
+
+        # Unsync from extruder
+        cur_lane.unsync_to_extruder()
+
+        afc.afcDeltaTime.log_with_time("Toolhead operations complete")
+
+        # ACE serial unwind — retract bowden length
+        retract_dist = self._get_unload_length(cur_lane)
         try:
-            # Stop feed assist
-            self._stop_feed_assist(slot)
-
-            # Disable buffer
-            cur_lane.disable_buffer()
-
-            # ACE rewind — full retract using upstream distance variables
             self._wait_for_ace_ready()
-            retract_dist = self._get_unload_length(cur_lane)
             self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
             self._wait_for_feed_complete(slot, retract_dist, self.retract_speed)
-
-            # Clear hub state but keep filament staged near hub
-            if cur_lane.hub_obj:
-                hub = cur_lane.hub_obj
-                if not hub.is_virtual_pin() and hasattr(hub, 'state') and not hub.state:
-                    cur_lane.loaded_to_hub = False
-                else:
-                    cur_lane.loaded_to_hub = True
-
         except Exception as e:
-            self.logger.error(f"ACE unload error for {lane_name}: {e}")
+            afc.error.handle_lane_failure(
+                cur_lane, f"ACE unwind failed for {cur_lane.name}: {e}")
+            return False
+
+        afc.afcDeltaTime.log_with_time("ACE unwind complete")
+
+        # Finalize state — filament staged near hub
+        cur_lane.set_tool_unloaded()
+        cur_lane.loaded_to_hub = True
+        self.lane_tool_unloaded(cur_lane)
+        afc.save_vars()
+
+        return True
 
     # ── Calibration commands ────────────────────────────────────────
 

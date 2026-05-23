@@ -522,22 +522,121 @@ class afcAMS(afcUnit):
     # ── Custom load/unload gcode handlers ───────────────────────────
 
     def _cmd_oams_custom_load(self, gcmd):
-        """Handle _OAMS_CUSTOM_LOAD gcode command."""
+        """Handle _OAMS_CUSTOM_LOAD — full load sequence with toolhead ops."""
         lane_name = gcmd.get('LANE')
-        if lane_name not in self.afc.lanes:
-            self.logger.error(f"Unknown lane: {lane_name}")
-            return
-        cur_lane = self.afc.lanes[lane_name]
-        self._oams_load(cur_lane)
+        cur_lane = self.afc.lanes.get(lane_name)
+        if cur_lane is None:
+            raise gcmd.error(f"Unknown lane: {lane_name}")
+        cur_extruder = cur_lane.extruder_obj
+        result = self._oams_load_sequence(cur_lane, cur_extruder)
+        if not result:
+            raise gcmd.error(f"OAMS load failed for {lane_name}")
 
     def _cmd_oams_custom_unload(self, gcmd):
-        """Handle _OAMS_CUSTOM_UNLOAD gcode command."""
+        """Handle _OAMS_CUSTOM_UNLOAD — full unload sequence with toolhead ops."""
         lane_name = gcmd.get('LANE')
-        if lane_name not in self.afc.lanes:
-            self.logger.error(f"Unknown lane: {lane_name}")
-            return
-        cur_lane = self.afc.lanes[lane_name]
-        self._oams_unload(cur_lane)
+        cur_lane = self.afc.lanes.get(lane_name)
+        if cur_lane is None:
+            raise gcmd.error(f"Unknown lane: {lane_name}")
+        cur_extruder = cur_lane.extruder_obj
+        result = self._oams_unload_sequence(cur_lane, cur_extruder)
+        if not result:
+            raise gcmd.error(f"OAMS unload failed for {lane_name}")
+
+    def _oams_load_sequence(self, cur_lane, cur_extruder) -> bool:
+        """Full OAMS load: heat → OAMS hardware load → extruder load."""
+        afc = self.afc
+
+        # Heat extruder
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
+        # OAMS hardware load
+        if not self._oams_load(cur_lane):
+            return False
+
+        # Sync to extruder and finalize
+        cur_lane.status = AFCLaneState.TOOL_LOADED
+        afc.save_vars()
+        cur_lane.sync_to_extruder()
+
+        # Extruder load (tool_stn)
+        if cur_extruder.tool_stn > 0:
+            afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
+            afc.toolhead.wait_moves()
+
+        # Enable buffer
+        cur_lane.enable_buffer()
+
+        afc.afcDeltaTime.log_with_time("OAMS load complete")
+        return True
+
+    def _oams_unload_sequence(self, cur_lane, cur_extruder) -> bool:
+        """Full OAMS unload: heat → cut → park → tip → OAMS hardware unload."""
+        afc = self.afc
+
+        # Disable buffer
+        cur_lane.disable_buffer()
+
+        # LED animation
+        self.lane_unloading(cur_lane)
+
+        # Heat extruder
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
+        # Quick pull
+        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+
+        # Sync for cut/park/tip
+        cur_lane.sync_to_extruder()
+        cur_lane.do_enable(True)
+
+        # Cut
+        if afc.tool_cut:
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            afc.gcode.run_script_from_command(
+                "{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
+            if afc.park:
+                afc.gcode.run_script_from_command(
+                    "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+
+        # Form tip
+        if afc.form_tip:
+            if afc.park:
+                afc.gcode.run_script_from_command(
+                    "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+            if afc.form_tip_cmd == "AFC":
+                tip = afc.printer.lookup_object('AFC_form_tip')
+                tip.tip_form()
+            else:
+                afc.gcode.run_script_from_command(afc.form_tip_cmd)
+
+        # Retract from extruder
+        if cur_extruder.tool_stn_unload > 0:
+            afc.move_e_pos(
+                cur_extruder.tool_stn_unload * -1,
+                cur_extruder.tool_unload_speed,
+                "Retract from extruder", wait_tool=True)
+
+        # Unsync
+        cur_lane.unsync_to_extruder()
+
+        afc.afcDeltaTime.log_with_time("Toolhead operations complete")
+
+        # OAMS hardware unload
+        if not self._oams_unload(cur_lane):
+            afc.error.handle_lane_failure(
+                cur_lane, f"OAMS unload failed for {cur_lane.name}")
+            return False
+
+        # Finalize state
+        cur_lane.set_tool_unloaded()
+        self.lane_tool_unloaded(cur_lane)
+        afc.save_vars()
+
+        afc.afcDeltaTime.log_with_time("OAMS unload complete")
+        return True
 
     def _oams_load(self, cur_lane, max_retries: int = 3) -> bool:
         """Load filament via OpenAMS hardware with engagement verification."""
