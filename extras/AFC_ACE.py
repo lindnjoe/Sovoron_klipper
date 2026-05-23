@@ -628,9 +628,11 @@ class afcACE(afcUnit):
         return succeeded
 
     def _clear_stale_sensor_state(self, cur_lane):
-        """Clear stale tool_start_state / FPS latch so calibration reads
-        real-time sensor values. For U1 motion sensors, does NOT clear
-        filament_present — the raw button state is used instead."""
+        """Clear stale tool_start_state / filament_present / FPS latch so
+        calibration reads real-time sensor values."""
+        sensor_obj = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
+        if sensor_obj is not None:
+            sensor_obj.runout_helper.filament_present = False
         if hasattr(cur_lane.extruder_obj, 'tool_start_state'):
             cur_lane.extruder_obj.tool_start_state = False
         buffer_obj = getattr(cur_lane, 'buffer_obj', None)
@@ -666,15 +668,13 @@ class afcACE(afcUnit):
                     f"ACE calibration: feed failed at {total_fed:.0f}mm, retrying: {e}")
                 self._wait_for_ace_ready(timeout=15.0)
                 self._ace.feed_filament(slot, step, self.feed_speed)
-            sensor_hit = self._wait_for_feed_complete(
-                slot, step, self.feed_speed, lane=cur_lane, poll_interval=0.3)
+            self._wait_for_feed_complete(slot, step, self.feed_speed)
             total_fed += step
 
-            if sensor_hit or self._calibration_sensor_triggered(cur_lane):
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
+            if self._calibration_sensor_triggered(cur_lane):
                 self.logger.info(f"ACE calibration: sensor triggered at {total_fed:.1f}mm")
                 return total_fed, True
-
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
 
         return total_fed, False
 
