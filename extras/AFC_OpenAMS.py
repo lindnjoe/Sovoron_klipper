@@ -805,30 +805,32 @@ class afcAMS(afcUnit):
 
     # ── Stuck spool / clog detection callbacks ──────────────────────
 
-    def _on_stuck_spool_detected(self, lane_name: str = None):
+    def _on_stuck_spool_detected(self, fps_name: str = None, message: str = None):
         """Called by OAMSMonitor when stuck spool detected during print."""
-        msg = f"OpenAMS stuck spool detected"
-        if lane_name:
-            msg += f" on {lane_name}"
+        msg = message or "OpenAMS stuck spool detected"
+        if fps_name and fps_name not in msg:
+            msg = f"{msg} (FPS: {fps_name})"
 
         if self.stuck_spool_auto_recovery:
             self.logger.info(f"{msg} — attempting auto recovery")
             # TODO: implement auto-recovery (unload + reload + resume)
         else:
-            msg += ". Print paused — check spool and resume."
+            if "paused" not in msg.lower():
+                msg += ". Print paused — check spool and resume."
             self.afc.error.AFC_error(msg, pause=True)
 
-    def _on_clog_detected(self, lane_name: str = None):
+    def _on_clog_detected(self, fps_name: str = None, message: str = None):
         """Called by OAMSMonitor when clog detected during print."""
-        msg = "OpenAMS clog detected"
-        if lane_name:
-            msg += f" on {lane_name}"
-        msg += ". Print paused — check filament path."
+        msg = message or "OpenAMS clog detected"
+        if fps_name and fps_name not in msg:
+            msg = f"{msg} (FPS: {fps_name})"
+        if "paused" not in msg.lower():
+            msg += ". Print paused — check filament path."
         self.afc.error.AFC_error(msg, pause=True)
 
-    def _on_stuck_spool_cleared(self, lane_name: str = None):
+    def _on_stuck_spool_cleared(self, fps_name: str = None):
         """Called by OAMSMonitor when stuck spool condition clears."""
-        self.logger.info(f"Stuck spool cleared{' for ' + lane_name if lane_name else ''}")
+        self.logger.info(f"Stuck spool cleared{' on ' + fps_name if fps_name else ''}")
 
     # ── Unit interface overrides ────────────────────────────────────
 
