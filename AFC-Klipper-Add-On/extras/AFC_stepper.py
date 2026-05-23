@@ -19,7 +19,7 @@ except:
     raise_string = "Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc())
     raise error(raise_string)
 
-try: from extras.AFC_lane import AFCLane, SpeedMode, AFCHomingPoints
+try: from extras.AFC_lane import AFCLane, SpeedMode, AFCHomingPoints, VALID_DIRECT_HUB
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 if TYPE_CHECKING:
