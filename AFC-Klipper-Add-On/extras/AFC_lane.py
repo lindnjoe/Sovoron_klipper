@@ -592,10 +592,6 @@ class AFCLane:
             self.extruder_obj.lanes[self.name] = self
             self.extruder_obj.check_lanes()
 
-        # internal is only valid for units with their own filament engagement
-        # verification (currently only ACE). Toolchanger units are also
-        # allowed since they don't do filament loading themselves — the ACE
-        # unit handles load/unload for the shared extruder.
         _INTERNAL_ALLOWED_TYPES = ("ACE", "Toolchanger")
         if (self.extruder_obj.tool_start == "internal"
             and self.unit_obj.type not in _INTERNAL_ALLOWED_TYPES):
@@ -1529,7 +1525,6 @@ class AFCLane:
         if self.extruder_obj.tool_start == "buffer":
             return self.buffer_endstop_name
         elif self.extruder_obj.tool_start == "internal":
-            # No AFC-visible endstop — engagement is verified via unit firmware
             return None
         else:
             return self.tool_endstop_name
