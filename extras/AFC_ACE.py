@@ -949,8 +949,10 @@ class afcACE(afcUnit):
 
         afc.afcDeltaTime.log_with_time("Toolhead operations complete")
 
-        # ACE serial unwind — retract bowden length
-        retract_dist = self._get_unload_length(cur_lane)
+        # ACE serial unwind — retract bowden length only (toolhead→hub)
+        # dist_hub is NOT included: filament should stay at the hub for fast reload
+        hub = cur_lane.hub_obj
+        retract_dist = getattr(hub, 'afc_unload_bowden_length', getattr(hub, 'afc_bowden_length', 0)) if hub else 0
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
