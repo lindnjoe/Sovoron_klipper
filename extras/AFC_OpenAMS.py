@@ -1158,6 +1158,8 @@ class afcAMS(afcUnit):
                     is_printing_fn=lambda: self.afc.function.in_print(),
                     is_lane_loaded_fn=lambda: any(
                         getattr(l, 'tool_loaded', False)
+                        and getattr(l, 'extruder_obj', None) is not None
+                        and l.extruder_obj.on_shuttle()
                         for l in self.lanes.values()),
                 )
                 # Apply config thresholds
