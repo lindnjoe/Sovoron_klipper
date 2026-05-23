@@ -93,14 +93,6 @@ class afcACE(afcUnit):
     def handle_connect(self):
         super().handle_connect()
 
-        # Register temperature_ace sensor factory so [temperature_sensor]
-        # sections with sensor_type: temperature_ace resolve correctly.
-        try:
-            from extras.temperature_ace import _register_sensor_factory
-            _register_sensor_factory(self.printer)
-        except Exception:
-            pass
-
         self.logo = '<span class=success--text>R  ACE PRO\n'
         self.logo += 'E  ========\n'
         self.logo += 'A  |      |\n'

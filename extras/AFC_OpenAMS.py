@@ -97,12 +97,6 @@ class afcAMS(afcUnit):
     def handle_connect(self):
         super().handle_connect()
 
-        try:
-            from extras.temperature_oams import _register_sensor_factory
-            _register_sensor_factory(self.printer)
-        except Exception:
-            pass
-
         self.logo = '<span class=success--text>R  OpenAMS\n'
         self.logo += 'E  ========\n'
         self.logo += 'A  |      |\n'
