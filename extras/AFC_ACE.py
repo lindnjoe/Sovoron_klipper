@@ -170,6 +170,79 @@ class afcACE(afcUnit):
             f"ACE {self.name}: connected, mode={self.mode}, "
             f"port={self.serial_port}")
 
+        # Register callback for heartbeat status updates
+        self._ace.status_callback = self._on_hw_status_callback
+
+        # Seed initial slot state
+        try:
+            hw_status = self._ace.get_status(timeout=2.0)
+            if isinstance(hw_status, dict):
+                self._sync_slot_states(hw_status)
+        except Exception as e:
+            self.logger.debug(f"ACE initial get_status failed: {e}")
+
+    def _on_hw_status_callback(self, response):
+        """Process heartbeat status from ACE — keep lane states in sync."""
+        if not isinstance(response, dict):
+            return
+        result = response.get("result", response)
+        if not isinstance(result, dict):
+            return
+        self._sync_slot_states(result)
+
+    def _sync_slot_states(self, hw_status):
+        """Sync lane prep/load state from ACE hardware slot status."""
+        slots = hw_status.get("slots", [])
+        for lane in self.lanes.values():
+            slot = self._get_slot(lane.name)
+            if slot >= len(slots) or not isinstance(slots[slot], dict):
+                continue
+
+            slot_status = slots[slot].get("status", "")
+            slot_ready = slot_status == "ready"
+            slot_transient = slot_status in ("shifting", "feeding", "unwinding")
+
+            if slot_transient:
+                continue
+
+            prev_ready = getattr(lane, '_prev_slot_ready', None)
+            lane._load_state = slot_ready
+            lane.prep_state = slot_ready
+
+            prep_done = getattr(lane, '_afc_prep_done', False)
+
+            # Filament inserted: slot went from not-ready to ready
+            if slot_ready and prev_ready is False and prep_done:
+                if lane.status == AFCLaneState.NONE:
+                    self.logger.info(f"ACE: {lane.name} filament inserted")
+                    lane.set_loaded()
+                    self.lane_loaded(lane)
+                    self.afc.save_vars()
+                    try:
+                        self.prep_post_load(lane)
+                    except Exception as e:
+                        self.logger.error(f"ACE prep_post_load error for {lane.name}: {e}")
+
+            # Filament removed: slot went from ready to not-ready
+            if not slot_ready and prev_ready is True and prep_done:
+                if lane.status not in (AFCLaneState.NONE,):
+                    self.logger.info(f"ACE: {lane.name} filament removed")
+                    if getattr(lane, 'tool_loaded', False):
+                        try:
+                            is_printing = self.afc.function.is_printing()
+                        except Exception:
+                            is_printing = False
+                        if is_printing:
+                            self.afc.error.AFC_error(
+                                f"ACE runout on {lane.name}", pause=True)
+                    else:
+                        lane.loaded_to_hub = False
+                        lane.status = AFCLaneState.NONE
+                        self.lane_unloaded(lane)
+                        self.afc.save_vars()
+
+            lane._prev_slot_ready = slot_ready
+
     # ── Lane parameter helpers ──────────────────────────────────────
 
     def _get_bowden_length(self, cur_lane) -> float:
