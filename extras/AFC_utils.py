@@ -53,6 +53,7 @@ def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, run
     filament_switch_config.add_section( new_switch_name )
     filament_switch_config.set( new_switch_name, 'switch_pin', switch_pin)
     filament_switch_config.set( new_switch_name, 'pause_on_runout', 'False')
+    filament_switch_config.set( new_switch_name, 'extruder', 'extruder')
     filament_switch_config.set( new_switch_name, 'debounce_delay', 0.0)
 
     cfg_wrap = configfile.ConfigWrapper( printer, filament_switch_config, {}, new_switch_name)

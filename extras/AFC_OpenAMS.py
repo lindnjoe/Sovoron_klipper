@@ -63,9 +63,10 @@ class afcAMS(afcUnit):
         # Clog detection
         self.clog_sensitivity = config.get("clog_sensitivity", "medium").lower()
 
-        # Engagement params — unit-level defaults
+        # Engagement params — unit-level defaults, per-lane overrides from lane config
         self._engagement_length = config.getfloat("engagement_length", 20.0, minval=1.0)
         self._engagement_speed = config.getfloat("engagement_speed", 300.0, minval=10.0)
+        self._engagement_params: dict[str, tuple[float, float]] = {}
 
         # Runtime state
         self.oams = None
@@ -122,12 +123,16 @@ class afcAMS(afcUnit):
         except Exception:
             self.oams = None
 
-        # Build spool map and set custom load/unload commands
+        # Build spool map, set custom commands, read per-lane engagement params
         for lane_name, lane in self.lanes.items():
             slot = getattr(lane, 'index', 0)
             self._spool_map[lane_name] = slot
             lane.custom_load_cmd = f"_OAMS_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
             lane.custom_unload_cmd = f"_OAMS_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
+            eng_len = getattr(lane, 'engagement_length', None)
+            if eng_len is not None:
+                eng_speed = getattr(lane, 'engagement_speed', None) or self._engagement_speed
+                self._engagement_params[lane_name] = (eng_len, eng_speed)
 
         # Initialize follower and monitor subsystems
         self._init_follower_and_monitor()
@@ -172,6 +177,8 @@ class afcAMS(afcUnit):
 
     def get_engagement_params(self, lane_name: str) -> tuple:
         """Return (engagement_length, engagement_speed) for a lane."""
+        if lane_name in self._engagement_params:
+            return self._engagement_params[lane_name]
         return (self._engagement_length, self._engagement_speed)
 
     def _verify_engagement(self, cur_lane) -> bool:

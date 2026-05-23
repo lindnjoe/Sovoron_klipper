@@ -194,6 +194,11 @@ class AFCLane:
         self.rev_long_moves_speed_factor: float = config.getfloat("rev_long_moves_speed_factor", None)     # scalar speed factor when reversing filamentalist
 
         self.dist_hub: float        = config.getfloat('dist_hub', 60)                       # Bowden distance between Box Turtle extruder and hub
+        self.feed_length: float     = config.getfloat('feed_length', None)                  # Total PTFE/bowden distance from unit to toolhead. Used by units like ACE in direct mode where each lane has a different path length.
+        self.retract_length: float  = config.getfloat('retract_length', None)               # Retract distance for unloading. Setting value here overrides values set in unit section.
+        self.use_feed_assist: bool  = config.getboolean('use_feed_assist', None)            # Enable feed assist motor to push filament to toolhead. Setting value here overrides values set in unit section.
+        self.engagement_length: float = config.getfloat('engagement_length', None)          # Extrude distance for filament engagement verification. Setting value here overrides values set in unit section.
+        self.engagement_speed: float  = config.getfloat('engagement_speed', None)           # Extrude speed for filament engagement verification. Setting value here overrides values set in unit section.
         self.park_dist: float       = config.getfloat('park_dist', 10)                      # Currently unused
 
         self.load_to_hub: bool      = config.getboolean("load_to_hub", self.afc.load_to_hub) # Fast loads filament to hub when inserted, set to False to disable. Setting here overrides global setting in AFC.cfg
