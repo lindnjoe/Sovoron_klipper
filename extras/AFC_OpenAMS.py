@@ -75,24 +75,27 @@ class afcAMS(afcUnit):
         self._spool_map: dict[str, int] = {}
 
         self.gcode = self.printer.lookup_object('gcode')
+        unit_suffix = self.name.upper().replace(" ", "_")
+        self._custom_load_cmd_name = f'_OAMS_CUSTOM_LOAD_{unit_suffix}'
+        self._custom_unload_cmd_name = f'_OAMS_CUSTOM_UNLOAD_{unit_suffix}'
         self.gcode.register_command(
-            '_OAMS_CUSTOM_LOAD', self._cmd_oams_custom_load,
-            desc="OpenAMS internal load command")
+            self._custom_load_cmd_name, self._cmd_oams_custom_load,
+            desc=f"OpenAMS internal load command ({self.name})")
         self.gcode.register_command(
-            '_OAMS_CUSTOM_UNLOAD', self._cmd_oams_custom_unload,
-            desc="OpenAMS internal unload command")
+            self._custom_unload_cmd_name, self._cmd_oams_custom_unload,
+            desc=f"OpenAMS internal unload command ({self.name})")
         self.gcode.register_command(
-            'AFC_OAMS_CALIBRATE_PTFE', self.cmd_AFC_OAMS_CALIBRATE_PTFE,
-            desc="Calibrate OpenAMS PTFE length")
+            f'AFC_OAMS_CALIBRATE_PTFE_{unit_suffix}', self.cmd_AFC_OAMS_CALIBRATE_PTFE,
+            desc=f"Calibrate OpenAMS PTFE length ({self.name})")
         self.gcode.register_command(
-            'AFC_OAMS_CALIBRATE_HUB_HES', self.cmd_AFC_OAMS_CALIBRATE_HUB_HES,
-            desc="Calibrate OpenAMS hub HES for a spool")
+            f'AFC_OAMS_CALIBRATE_HUB_HES_{unit_suffix}', self.cmd_AFC_OAMS_CALIBRATE_HUB_HES,
+            desc=f"Calibrate OpenAMS hub HES for a spool ({self.name})")
         self.gcode.register_command(
-            'AFC_OAMS_CALIBRATE_HUB_HES_ALL', self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL,
-            desc="Calibrate all loaded OpenAMS hub HES sensors")
+            f'AFC_OAMS_CALIBRATE_HUB_HES_ALL_{unit_suffix}', self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL,
+            desc=f"Calibrate all loaded OpenAMS hub HES sensors ({self.name})")
         self.gcode.register_command(
-            'AFC_OAMS_CLEAR_ERRORS', self.cmd_AFC_OAMS_CLEAR_ERRORS,
-            desc="Clear OpenAMS errors and resync state")
+            f'AFC_OAMS_CLEAR_ERRORS_{unit_suffix}', self.cmd_AFC_OAMS_CLEAR_ERRORS,
+            desc=f"Clear OpenAMS errors and resync state ({self.name})")
 
         # Sensor polling state
         self._last_f1s = [None] * 4
@@ -138,8 +141,8 @@ class afcAMS(afcUnit):
             if slot < 0:
                 slot = 0
             self._spool_map[lane_name] = slot
-            lane.custom_load_cmd = f"_OAMS_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
-            lane.custom_unload_cmd = f"_OAMS_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
+            lane.custom_load_cmd = f"{self._custom_load_cmd_name} UNIT={self.name} LANE={lane_name}"
+            lane.custom_unload_cmd = f"{self._custom_unload_cmd_name} UNIT={self.name} LANE={lane_name}"
             eng_len = getattr(lane, 'engagement_length', None)
             if eng_len is not None:
                 eng_speed = getattr(lane, 'engagement_speed', None) or self._engagement_speed
