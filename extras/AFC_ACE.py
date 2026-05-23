@@ -627,9 +627,51 @@ class afcACE(afcUnit):
         cur_lane.set_afc_prep_done()
         return succeeded
 
+    def _clear_stale_sensor_state(self, cur_lane):
+        """Clear stale filament_present / tool_start_state / FPS latch
+        so calibration reads real-time sensor values."""
+        sensor_obj = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
+        if sensor_obj is not None:
+            sensor_obj.runout_helper.filament_present = False
+        if hasattr(cur_lane.extruder_obj, 'tool_start_state'):
+            cur_lane.extruder_obj.tool_start_state = False
+        buffer_obj = getattr(cur_lane, 'buffer_obj', None)
+        if buffer_obj is not None and hasattr(buffer_obj, 'clear_advance_latch'):
+            buffer_obj.clear_advance_latch()
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+
+    def _feed_until_sensor(self, slot, cur_lane, max_distance, step_size=None):
+        """Feed filament in steps until toolhead sensor triggers.
+
+        Returns (distance_fed, sensor_triggered).
+        """
+        if step_size is None:
+            step_size = self.calibration_step
+        total_fed = 0.0
+
+        while total_fed < max_distance:
+            step = min(step_size, max_distance - total_fed)
+            self._wait_for_ace_ready()
+            try:
+                self._ace.feed_filament(slot, step, self.feed_speed)
+            except Exception as e:
+                self.logger.warning(
+                    f"ACE calibration: feed failed at {total_fed:.0f}mm, retrying: {e}")
+                self._wait_for_ace_ready(timeout=15.0)
+                self._ace.feed_filament(slot, step, self.feed_speed)
+            self._wait_for_feed_complete(slot, step, self.feed_speed)
+            total_fed += step
+
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            if cur_lane.get_toolhead_pre_sensor_state():
+                self.logger.info(f"ACE calibration: sensor triggered at {total_fed:.1f}mm")
+                return total_fed, True
+
+        return total_fed, False
+
     def calibrate_bowden(self, cur_lane, dis, tol):
-        """Calibrate afc_bowden_length (hub→toolhead) by feeding from hub until
-        the toolhead sensor triggers, matching the upstream BoxTurtle pattern."""
+        """Calibrate afc_bowden_length (hub→toolhead) by feeding until
+        the toolhead sensor triggers."""
         slot = self._get_slot(cur_lane.name)
         if not self._ace or not self._ace.connected:
             return False, "ACE not connected", 0
@@ -638,40 +680,78 @@ class afcACE(afcUnit):
         if cur_hub is None:
             return False, "Lane has no hub configured", 0
 
-        self.logger.raw(f'Calibrating afc_bowden_length for {cur_lane.name}')
-        total_fed = 0.0
-        step = self.calibration_step
+        self._operation_active = True
+        try:
+            return self._calibrate_bowden_inner(cur_lane, cur_hub, slot)
+        finally:
+            self._operation_active = False
+            self._prev_states_stale = True
+
+    def _calibrate_bowden_inner(self, cur_lane, cur_hub, slot):
+        self._clear_stale_sensor_state(cur_lane)
+
+        if cur_lane.get_toolhead_pre_sensor_state():
+            return False, "Toolhead sensor already triggered — unload first", 0
+
         old_bowden = getattr(cur_hub, 'afc_bowden_length', 0)
-        max_distance = max(old_bowden + self.max_feed_overshoot, 4000.0)
+        max_distance = 6000
 
-        while not cur_lane.get_toolhead_pre_sensor_state():
-            if total_fed >= max_distance:
-                msg = f'Filament did not reach toolhead sensor after {total_fed}mm'
-                return False, msg, total_fed
+        self.logger.raw(
+            f'Calibrating afc_bowden_length for {cur_lane.name} '
+            f'(max {max_distance}mm in {self.calibration_step}mm steps)')
+
+        distance, triggered = self._feed_until_sensor(
+            slot, cur_lane, max_distance)
+
+        # Retract
+        retract_dist = distance + 5 if triggered else distance
+        self.logger.info(f"ACE calibrate: retracting {retract_dist:.0f}mm")
+        try:
             self._wait_for_ace_ready()
-            self._ace.feed_filament(slot, step, self.feed_speed)
-            self._wait_for_feed_complete(slot, step, self.feed_speed)
-            total_fed += step
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
+            self._wait_for_feed_complete(slot, retract_dist, self.retract_speed)
+            self._wait_for_ace_ready(timeout=15.0)
+        except Exception as e:
+            self.logger.error(f"ACE calibrate: retract failed: {e}")
 
-        bowden_dist = round(total_fed, 2)
+        # Clear sensor state after retract
+        self._clear_stale_sensor_state(cur_lane)
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
+
+        if not triggered:
+            return False, (
+                f"Toolhead sensor did not trigger after {distance:.0f}mm. "
+                "Check filament path and sensor wiring."), distance
+
+        # Account for filament already at hub
+        if cur_lane.loaded_to_hub:
+            dist_hub = cur_lane.dist_hub
+            if dist_hub > 0:
+                self.logger.info(
+                    f"ACE calibrate: filament at hub, adding dist_hub="
+                    f"{dist_hub:.0f}mm to measured {distance:.1f}mm")
+                distance += dist_hub
+
+        bowden_dist = round(distance, 2)
         cal_msg = f'\n afc_bowden_length: New: {bowden_dist} Old: {old_bowden}'
         cur_hub.afc_bowden_length = bowden_dist
         cur_hub.afc_unload_bowden_length = bowden_dist
-        self.afc.function.ConfigRewrite(cur_hub.fullname, "afc_bowden_length", bowden_dist, cal_msg)
-        self.afc.function.ConfigRewrite(cur_hub.fullname, "afc_unload_bowden_length", bowden_dist,
-                                         f'\n afc_unload_bowden_length: {bowden_dist}')
+        self.afc.function.ConfigRewrite(
+            cur_hub.fullname, "afc_bowden_length", bowden_dist, cal_msg)
+        self.afc.function.ConfigRewrite(
+            cur_hub.fullname, "afc_unload_bowden_length", bowden_dist,
+            f'\n afc_unload_bowden_length: {bowden_dist}')
 
-        # Retract back
-        self._wait_for_ace_ready()
-        self._ace.unwind_filament(slot, total_fed, self.retract_speed)
-        self._wait_for_feed_complete(slot, total_fed, self.retract_speed)
-
-        return True, "afc_bowden_length calibration successful", bowden_dist
+        return True, f"afc_bowden_length calibration: {bowden_dist}mm (was {old_bowden}mm)", bowden_dist
 
     def calibrate_lane(self, cur_lane, tol):
         """Calibrate dist_hub from ACE slot to hub sensor."""
-        return self._calibrate_hub_inner(cur_lane)
+        self._operation_active = True
+        try:
+            return self._calibrate_hub_inner(cur_lane)
+        finally:
+            self._operation_active = False
+            self._prev_states_stale = True
 
     # ── Custom load/unload gcode handlers ───────────────────────────
 
@@ -1103,33 +1183,56 @@ class afcACE(afcUnit):
         if hub is None or hub.is_virtual_pin():
             return False, "Physical hub sensor required for calibration", 0
 
-        self.logger.raw(f'Calibrating dist_hub for {cur_lane.name}')
+        if hub.state:
+            return False, "Hub sensor already triggered — clear the hub first", 0
+
+        max_distance = 4000
+        step = self.calibration_step
         total_fed = 0.0
-        step = self.sensor_step
-        max_distance = max(cur_lane.dist_hub + 200.0, 4000.0)
 
-        while not hub.state:
-            if total_fed >= max_distance:
-                msg = f'Filament did not reach hub sensor after {total_fed}mm'
-                return False, msg, total_fed
-            self._wait_for_ace_ready()
-            self._ace.feed_filament(slot, step, self.feed_speed)
-            self._wait_for_feed_complete(slot, step, self.feed_speed)
-            total_fed += step
+        self.logger.raw(
+            f'Calibrating dist_hub for {cur_lane.name} '
+            f'(max {max_distance}mm in {step}mm steps)')
+
+        while total_fed < max_distance:
+            feed_step = min(step, max_distance - total_fed)
+            try:
+                self._wait_for_ace_ready()
+                self._ace.feed_filament(slot, feed_step, self.feed_speed)
+                self._wait_for_feed_complete(slot, feed_step, self.feed_speed)
+            except Exception as e:
+                self.logger.error(f"ACE hub calibrate: feed failed: {e}")
+                break
+            total_fed += feed_step
+
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            if hub.state:
+                self.logger.info(
+                    f"ACE hub calibrate: hub sensor triggered at {total_fed:.1f}mm")
+                break
 
+        # Retract
+        retract_dist = total_fed - 50 if hub.state else total_fed
+        if retract_dist > 0:
+            try:
+                self._wait_for_ace_ready()
+                self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
+                self._wait_for_feed_complete(slot, retract_dist, self.retract_speed)
+            except Exception as e:
+                self.logger.error(f"ACE hub calibrate: retract failed: {e}")
+
+        if not hub.state and total_fed >= max_distance:
+            return False, (
+                f"Hub sensor did not trigger after {total_fed:.0f}mm. "
+                "Check filament path and hub sensor wiring."), total_fed
+
+        old_dist = cur_lane.dist_hub
         new_dist = round(total_fed, 2)
-        cal_msg = f'\n dist_hub: New: {new_dist} Old: {cur_lane.dist_hub}'
+        cal_msg = f'\n dist_hub: New: {new_dist} Old: {old_dist}'
         cur_lane.dist_hub = new_dist
         self.afc.function.ConfigRewrite(cur_lane.fullname, "dist_hub", new_dist, cal_msg)
 
-        # Retract to clear hub
-        self._wait_for_ace_ready()
-        backoff = getattr(hub, 'hub_clear_move_dis', 50.0)
-        self._ace.unwind_filament(slot, backoff, self.retract_speed)
-        self._wait_for_feed_complete(slot, backoff, self.retract_speed)
-
-        return True, "dist_hub calibration successful", new_dist
+        return True, f"dist_hub calibration: {new_dist}mm (was {old_dist}mm)", new_dist
 
 
     # ── RFID / Spoolman helpers ─────────────────────────────────────
