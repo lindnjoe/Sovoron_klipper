@@ -1451,6 +1451,10 @@ class afcAMS(afcUnit):
             return False
 
         cur_lane.loaded_to_hub = True
+        hub_obj = getattr(cur_lane, "hub_obj", None)
+        if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
+            hub_obj.switch_pin_callback(self.reactor.monotonic(), True)
+
         return True
 
     def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
@@ -1494,8 +1498,12 @@ class afcAMS(afcUnit):
 
             hub_obj = getattr(cur_lane, "hub_obj", None)
             if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
+                any_hub_loaded = any(
+                    getattr(l, "loaded_to_hub", False)
+                    for l in hub_obj.lanes.values()
+                )
                 hub_obj.switch_pin_callback(
-                    self.reactor.monotonic(), hub_loaded
+                    self.reactor.monotonic(), any_hub_loaded
                 )
         except Exception as e:
             message = "OpenAMS unload failed for {}: {}".format(cur_lane.name, str(e))
@@ -3786,14 +3794,19 @@ class afcAMS(afcUnit):
                     self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
             return
 
-        hub.switch_pin_callback(eventtime, hub_val)
-        fila = getattr(hub, "fila", None)
-        if fila is not None:
-            fila.runout_helper.note_filament_present(eventtime, hub_val)
         if hub_val:
             lane.loaded_to_hub = True
         elif not bool(getattr(lane, "_load_state", False)):
             lane.loaded_to_hub = False
+
+        any_hub_loaded = any(
+            getattr(l, "loaded_to_hub", False)
+            for l in hub.lanes.values()
+        )
+        hub.switch_pin_callback(eventtime, any_hub_loaded)
+        fila = getattr(hub, "fila", None)
+        if fila is not None:
+            fila.runout_helper.note_filament_present(eventtime, any_hub_loaded)
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -3828,34 +3841,23 @@ class afcAMS(afcUnit):
                 if spool_idx is None or spool_idx < 0:
                     continue
 
-                # Sync hub sensor -> loaded_to_hub + virtual hub sensor objects.
-                # Must mirror what _on_hub_changed does: update the lane attribute AND
-                # drive switch_pin_callback + runout_helper so the virtual hub sensor
-                # AFC reads for hub-runout detection stays in sync with hardware.
+                # Sync hub sensor -> loaded_to_hub per lane.
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
                     current = getattr(lane, "loaded_to_hub", False)
                     if hw_hub and not current:
                         lane.loaded_to_hub = True
-                    elif not hw_hub and not bool(getattr(lane, "_load_state", False)):
-                        lane.loaded_to_hub = False
-                        hub_obj = getattr(lane, "hub_obj", None)
-                        if hub_obj is not None:
-                            try:
-                                if hasattr(hub_obj, "switch_pin_callback"):
-                                    hub_obj.switch_pin_callback(eventtime, hw_hub)
-                                fila = getattr(hub_obj, "fila", None)
-                                if fila is not None and hasattr(fila, "runout_helper"):
-                                    fila.runout_helper.note_filament_present(eventtime, hw_hub)
-                            except Exception as hub_e:
-                                self.logger.debug(
-                                    f"sync_openams_sensors: failed to update virtual hub sensor "
-                                    f"for {lane.name}: {hub_e}"
-                                )
                         self.logger.debug(
                             f"sync_openams_sensors: corrected loaded_to_hub "
                             f"{current}->{hw_hub} for {lane.name}"
                         )
+                    elif not hw_hub and not bool(getattr(lane, "_load_state", False)):
+                        if current:
+                            self.logger.debug(
+                                f"sync_openams_sensors: corrected loaded_to_hub "
+                                f"{current}->{hw_hub} for {lane.name}"
+                            )
+                        lane.loaded_to_hub = False
 
                 # Sync F1S sensor -> load_state/prep_state (only when allowed)
                 if sync_f1s and f1s_values is not None and spool_idx < len(f1s_values):
@@ -3875,6 +3877,28 @@ class afcAMS(afcUnit):
                                 lane.prep_callback(eventtime, hw_f1s)
             except Exception as e:
                 self.logger.debug(f"sync_openams_sensors: error syncing {getattr(lane, 'name', '?')}: {e}")
+
+        if sync_hub:
+            hubs_updated = set()
+            for lane in self.lanes.values():
+                hub_obj = getattr(lane, "hub_obj", None)
+                if hub_obj is None or id(hub_obj) in hubs_updated:
+                    continue
+                hubs_updated.add(id(hub_obj))
+                any_loaded = any(
+                    getattr(l, "loaded_to_hub", False)
+                    for l in hub_obj.lanes.values()
+                )
+                try:
+                    if hasattr(hub_obj, "switch_pin_callback"):
+                        hub_obj.switch_pin_callback(eventtime, any_loaded)
+                    fila = getattr(hub_obj, "fila", None)
+                    if fila is not None and hasattr(fila, "runout_helper"):
+                        fila.runout_helper.note_filament_present(eventtime, any_loaded)
+                except Exception as hub_e:
+                    self.logger.debug(
+                        f"sync_openams_sensors: failed to update virtual hub sensor: {hub_e}"
+                    )
 
     def _should_block_sensor_update_for_runout(self, lane, lane_val):
         """Check if sensor update should be blocked due to active runout.
@@ -4026,11 +4050,15 @@ class afcAMS(afcUnit):
                 try:
                     hub_obj = getattr(lane, "hub_obj", None)
                     if hub_obj is not None:
+                        any_hub_loaded = any(
+                            getattr(l, "loaded_to_hub", False)
+                            for l in hub_obj.lanes.values()
+                        )
                         if hasattr(hub_obj, "switch_pin_callback"):
-                            hub_obj.switch_pin_callback(eventtime, hub_state)
+                            hub_obj.switch_pin_callback(eventtime, any_hub_loaded)
                         fila = getattr(hub_obj, "fila", None)
                         if fila is not None and hasattr(fila, "runout_helper"):
-                            fila.runout_helper.note_filament_present(eventtime, hub_state)
+                            fila.runout_helper.note_filament_present(eventtime, any_hub_loaded)
                 except Exception as e:
                     self.logger.debug(
                         f"_update_shared_lane: failed to reconcile per-lane hub state for {lane.name}: {e}"
@@ -4754,21 +4782,25 @@ class afcAMS(afcUnit):
             if hub_obj is None:
                 return
 
+            any_hub_loaded = any(
+                getattr(l, "loaded_to_hub", False)
+                for l in hub_obj.lanes.values()
+            )
             try:
                 if hasattr(hub_obj, "switch_pin_callback"):
-                    hub_obj.switch_pin_callback(eventtime, False)
+                    hub_obj.switch_pin_callback(eventtime, any_hub_loaded)
             except Exception as e:
                 self.logger.debug(
-                    f"Failed to clear virtual hub switch state for {getattr(target_lane, 'name', '<unknown>')}: {e}"
+                    f"Failed to update virtual hub switch state for {getattr(target_lane, 'name', '<unknown>')}: {e}"
                 )
 
             try:
                 fila = getattr(hub_obj, "fila", None)
                 if fila is not None and hasattr(fila, "runout_helper"):
-                    fila.runout_helper.note_filament_present(eventtime, False)
+                    fila.runout_helper.note_filament_present(eventtime, any_hub_loaded)
             except Exception as e:
                 self.logger.debug(
-                    f"Failed to clear virtual hub runout helper for {getattr(target_lane, 'name', '<unknown>')}: {e}"
+                    f"Failed to update virtual hub runout helper for {getattr(target_lane, 'name', '<unknown>')}: {e}"
                 )
 
         def _lane_hardware_hub_has_filament(target_lane) -> bool:

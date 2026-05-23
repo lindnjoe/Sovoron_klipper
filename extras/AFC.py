@@ -1613,6 +1613,8 @@ class afc:
                         message += '\nOnce filament is fully loaded click resume to continue printing'
                     self.error.handle_lane_failure(cur_lane, message)
                     return False
+            else:
+                self.afcDeltaTime.log_with_time("Filament loaded to pre-sensor")
 
         # Synchronize lane's extruder stepper and finalize tool loading.
         cur_lane.status = AFCLaneState.TOOL_LOADED
