@@ -121,35 +121,21 @@ class afcPrep:
             self.afc.error.AFC_error(error_string, False)
 
         # check if Lane is supposed to be loaded in tool head from saved file
-        # First pass: restore lane_loaded from saved state
         for extruder in self.afc.tools.keys():
             extruder_obj=self.afc.tools[extruder]
             extruder_obj.set_status_led( self.afc.led_tool_unloaded )
+            if extruder_obj.on_shuttle():
+                # Calls ACTIVATE_EXTRUDER if current toolhead on shuttle is not the active extruder
+                if self.afc.function.get_current_extruder() != extruder_obj.name:
+                    self.afc.gcode.run_script_from_command(
+                        f"ACTIVATE_EXTRUDER EXTRUDER={extruder_obj.name}"
+                    )
             if 'system' in units and "extruders" in units["system"]:
                 # Check to see if lane_loaded is in dictionary and its not an empty string
                 if extruder_obj.name in units["system"]["extruders"] and \
                   'lane_loaded' in units["system"]["extruders"][extruder_obj.name] and \
                   units["system"]["extruders"][extruder_obj.name]['lane_loaded']:
                     extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
-
-        # Restore current_load so CHANGE_TOOL knows which lane is active
-        if 'system' in units and 'current_load' in units["system"]:
-            saved_current = units["system"]["current_load"]
-            if saved_current and saved_current in self.afc.lanes:
-                self.afc.current = saved_current
-
-        # Second pass: activate the extruder whose tool is on the shuttle.
-        # Only activate one — the first extruder where on_shuttle() is
-        # True.  For non-toolchanger (single extruder) setups on_shuttle()
-        # always returns True so the default extruder stays active.
-        active_extruder = self.afc.toolhead.get_extruder().name
-        for extruder in self.afc.tools.keys():
-            extruder_obj=self.afc.tools[extruder]
-            if extruder_obj.on_shuttle() and active_extruder != extruder_obj.name:
-                self.afc.gcode.run_script_from_command(
-                    f"ACTIVATE_EXTRUDER EXTRUDER={extruder_obj.name}"
-                )
-                break
 
 
         for lane in self.afc.lanes.keys():
@@ -276,6 +262,10 @@ class afcPrep:
             self._start_u1_rfid()
         except Exception as e:
             self.logger.info(f"U1 RFID init error: {e}")
+        try:
+            self._start_u1_bridge()
+        except Exception as e:
+            self.logger.info(f"U1 bridge init error: {e}")
         self.afc.save_vars()
 
         if self.afc.buffers:
@@ -298,10 +288,6 @@ class afcPrep:
         if old_rfid is not None:
             old_rfid.stop()
 
-        # Collect all lanes and extruder tc_lanes that have RFID channels.
-        # Extruder tc_lanes may have been removed from afc.lanes by
-        # check_lanes() when other lanes share the same extruder, but
-        # their RFID reader is still physically present.
         rfid_sources = {}
         for lane in self.afc.lanes.values():
             channel = getattr(lane, "u1_rfid_channel", -1)
@@ -321,6 +307,29 @@ class afcPrep:
             rfid.register_lane(lane, channel)
         rfid.start()
         self.afc.u1_rfid = rfid
+
+    def _start_u1_bridge(self):
+        """Auto-load the U1 bridge if running on a Snapmaker U1 (has machine_state_manager)."""
+        if getattr(self.afc, 'u1_bridge', None) is not None:
+            return
+        msm = self.printer.lookup_object("machine_state_manager", None)
+        if msm is None:
+            return
+        from extras.AFC_bridge_U1 import AFCU1Bridge
+
+        class _BridgeConfig:
+            def __init__(self, printer):
+                self._printer = printer
+            def get_printer(self):
+                return self._printer
+            def get_name(self):
+                return "AFC_bridge_U1"
+
+        bridge = AFCU1Bridge(_BridgeConfig(self.printer))
+        bridge._handle_connect()
+        self.afc.u1_bridge = bridge
+        self.logger.info("U1 bridge auto-loaded")
+
 
 def load_config(config):
     return afcPrep(config)

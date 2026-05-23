@@ -108,7 +108,7 @@ class AFCLane:
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
         self.cb_update_weight   = self.reactor.register_timer( self.update_weight_callback )
 
-        self.unit_obj: afcUnit = None
+        self.unit_obj: afcUnit  = None
         self.hub_obj: Optional[afc_hub|None] = None
         self.buffer_obj: Optional[AFCTrigger|None] = None
         self.extruder_obj: AFCExtruder
@@ -141,6 +141,8 @@ class AFCLane:
         self.hub: str           = config.get('hub',None)                                # Hub name(AFC_hub) that belongs to this stepper, overrides hub that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
         # Overrides buffers set at the unit and extruder level
         self.buffer_name: str   = config.get("buffer", None)                            # Buffer name(AFC_buffer) that belongs to this stepper, overrides buffer that is set in extruder(AFC_extruder) or unit(AFC_BoxTurtle/NightOwl/etc) sections.
+        self.u1_rfid_channel: int  = config.getint('u1_rfid_channel', -1)
+        self.spool_scanner: bool   = config.getboolean('spool_scanner', False)
         self.unit               = unit.split(':')[0]
         try:
             self.index              = int(unit.split(':')[1])
@@ -150,8 +152,6 @@ class AFCLane:
 
         self.extruder_name      = config.get('extruder', None)                          # Extruder name(AFC_extruder) that belongs to this stepper, overrides extruder that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
         self.remember_spool :bool = config.getboolean('remember_spool', None)             # remember_spool that is set in AFC_Stepper section, overrides remember_spool that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
-        self.u1_rfid_channel: int = config.getint('u1_rfid_channel', -1)               # U1 filament_detect RFID channel for this lane (-1 = disabled)
-        self.spool_scanner: bool = config.getboolean('spool_scanner', False)
         self.map                = config.get('cmd', None)                               # Keeping this in so it does not break others config that may have used this, use map instead
         # Saving to self._map so that if a user has it defined it will be reset back to this when
         # the calling RESET_AFC_MAPPING macro.
@@ -194,6 +194,9 @@ class AFCLane:
         self.rev_long_moves_speed_factor: float = config.getfloat("rev_long_moves_speed_factor", None)     # scalar speed factor when reversing filamentalist
 
         self.dist_hub: float        = config.getfloat('dist_hub', 60)                       # Bowden distance between Box Turtle extruder and hub
+        self.use_feed_assist: bool  = config.getboolean('use_feed_assist', None)            # Enable feed assist motor to push filament to toolhead. Setting value here overrides values set in unit section.
+        self.engagement_length: float = config.getfloat('engagement_length', None)          # Extrude distance for filament engagement verification. Setting value here overrides values set in unit section.
+        self.engagement_speed: float  = config.getfloat('engagement_speed', None)           # Extrude speed for filament engagement verification. Setting value here overrides values set in unit section.
         self.park_dist: float       = config.getfloat('park_dist', 10)                      # Currently unused
 
         self.load_to_hub: bool      = config.getboolean("load_to_hub", self.afc.load_to_hub) # Fast loads filament to hub when inserted, set to False to disable. Setting here overrides global setting in AFC.cfg
@@ -217,7 +220,7 @@ class AFCLane:
         # lane triggers
         buttons = self.printer.load_object(config, "buttons")
         self.prep = config.get('prep', None)                                    # MCU pin for prep trigger
-        self._prep_state = False
+        self.prep_state = False
         if self.prep is not None:
             buttons.register_buttons([self.prep], self.prep_callback)
 
@@ -289,41 +292,19 @@ class AFCLane:
         if (self.hub
             and "direct" not in self.hub):
             self._get_hub_object()
-            hub_pin = getattr(self.hub_obj, "switch_pin", None)
-            if hub_pin and str(hub_pin).lower() != "virtual":
+            if not self.hub_obj.is_virtual_pin():
                 self._set_homing_endstop(query_endstops, ppins,
-                                         hub_pin, AFCHomingPoints.HUB)
+                                         self.hub_obj.switch_pin, AFCHomingPoints.HUB)
         if self.buffer_name:
             self._get_buffer_object()
-            advance_pin = getattr(self.buffer_obj, 'advance_pin', None)
-            if advance_pin:
-                self._set_homing_endstop(query_endstops, ppins,
-                                         advance_pin, AFCHomingPoints.BUFFER)
-            elif hasattr(self.buffer_obj, 'fps_endstop'):
-                # FPS buffer: register advance software endstop (triggers at high_point)
-                endstop = self.buffer_obj.fps_endstop
-                endstop_name = f"{self.name}_{AFCHomingPoints.BUFFER}"
-                try:
-                    query_endstops.register_endstop(endstop, endstop_name)
-                except Exception:
-                    pass
-                self.endstops.update({AFCHomingPoints.BUFFER: {
-                    "endstop": endstop, "endstop_name": endstop_name}})
-                # FPS buffer: register trailing software endstop (triggers at low_point)
-                trail_endstop = self.buffer_obj.fps_trailing_endstop
-                trail_endstop_name = f"{self.name}_{AFCHomingPoints.BUFFER_TRAIL}"
-                try:
-                    query_endstops.register_endstop(trail_endstop, trail_endstop_name)
-                except Exception:
-                    pass
-                self.endstops.update({AFCHomingPoints.BUFFER_TRAIL: {
-                    "endstop": trail_endstop, "endstop_name": trail_endstop_name}})
+            self._set_homing_endstop(query_endstops, ppins,
+                                     self.buffer_obj.advance_pin, AFCHomingPoints.BUFFER)
 
         if (self.extruder_name
             and "extruder" not in self.name): # Protects against standalone lanes
             self._get_extruder_object()
             pin = self.extruder_obj.tool_start
-            if pin and pin not in ("buffer", "internal"):
+            if pin is not None and pin not in ("buffer", "internal"):
                 self._set_homing_endstop(query_endstops, ppins,
                                          pin, AFCHomingPoints.TOOL)
 
@@ -483,12 +464,13 @@ class AFCLane:
         for prefix in ("AFC_buffer", "AFC_FPS"):
             try:
                 self.buffer_obj = self.printer.load_object(self._config, "{} {}".format(prefix, self.buffer_name))
-                return
+                break
             except Exception:
                 pass
-        error_string = 'Error: No config found for buffer: {buffer} in [{stepper}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
-            buffer=self.buffer_name, stepper=self.fullname )
-        raise error(error_string)
+        else:
+            error_string = 'Error: No config found for buffer: {buffer} in [{stepper}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
+                buffer=self.buffer_name, stepper=self.fullname )
+            raise error(error_string)
 
     def _get_extruder_object(self):
         """
@@ -609,35 +591,23 @@ class AFCLane:
             self.extruder_obj.lanes[self.name] = self
             self.extruder_obj.check_lanes()
 
-        # internal is only valid for units with their own filament engagement
-        # verification (currently only ACE). Toolchanger units are also
-        # allowed since they don't do filament loading themselves — the ACE
-        # unit handles load/unload for the shared extruder.
-        _INTERNAL_ALLOWED_TYPES = ("ACE", "Toolchanger")
-        if (self.extruder_obj.tool_start == "internal"
-            and self.unit_obj.type not in _INTERNAL_ALLOWED_TYPES):
-            raise error(
-                "pin_tool_start=internal on extruder {ext} is only supported "
-                "by ACE units, but lane {lane} belongs to a {ut} unit. Use "
-                "'buffer' with an [AFC_buffer]/[AFC_FPS] section, or set "
-                "pin_tool_start to a real sensor pin.".format(
-                    ext=self.extruder_obj.name, lane=self.name,
-                    ut=self.unit_obj.type)
-            )
-
         # Use buffer defined in stepper and override buffers that maybe set at the UNIT or extruder levels
         self.buffer_obj = self.unit_obj.buffer_obj
         if self.buffer_name is not None:
             self._get_buffer_object()
 
-        # Checking if buffer was defined in extruder or unit if not defined in lane/stepper
+        # Checking if buffer was defined in extruder if not defined in unit/stepper
         elif (self.buffer_obj is None
-              and self.extruder_obj.tool_start == "buffer"):
-            # Resolve buffer name: extruder config, then unit config
+              and self.extruder_obj.tool_start == "buffer"
+              and len(self.extruder_obj.lanes) > 1
+              and self.name != self.extruder_obj.name):
             buf_name = self.extruder_obj.buffer_name or getattr(self.unit_obj, 'buffer_name', None)
             if buf_name is not None:
                 self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(buf_name))
-            # No buffer found — valid for units that don't need one on a shared extruder
+            else:
+                error_string = 'Error: Buffer was defined as tool_start in [AFC_extruder {extruder}] config, but buffer variable has not been configured. Please add buffer variable to either [AFC_extruder {extruder}], [AFC_stepper {name}] or [AFC_{unit_type} {unit_name}] section in your config file'.format(
+                    extruder=self.extruder_obj.name, name=self.name, unit_type=self.unit_obj.type.replace("_", ""), unit_name=self.unit_obj.name )
+                raise error(error_string)
 
         # Valid to not have a buffer defined, check to make sure object exists before adding lane to buffer
         if self.buffer_obj is not None and add_to_other_obj:
@@ -957,121 +927,38 @@ class AFCLane:
     def _perform_infinite_runout(self):
         """
         Common function for infinite spool runout
-            - Normalizes runout lane target (resolves aliases, T# maps, case mismatches)
-            - Ensures afc.current is correct before proceeding
             - Unloads current lane and loads the next lane as specified by runout variable.
             - Swaps mapping between current lane and runout lane so correct lane is loaded with T(n) macro
             - Once changeover is successful print is automatically resumed
         """
-        lane_name = self.name
-        lanes = self.afc.lanes
-
-        # Normalize runout target - resolve aliases, T# maps, case mismatches
-        runout_target = None
-        raw = self.runout_lane
-        if raw is not None:
-            lookup = str(raw).strip().lower()
-            if lookup:
-                # Direct name match
-                for key in lanes:
-                    if str(key).lower() == lookup:
-                        runout_target = key
-                        break
-                # Match against lane.map (e.g., T0, t0)
-                if runout_target is None:
-                    for key, lane_obj in lanes.items():
-                        lane_map = getattr(lane_obj, "map", None)
-                        if isinstance(lane_map, str) and lane_map.strip().lower() == lookup:
-                            runout_target = key
-                            break
-                # Match T# aliases to lane indices
-                if runout_target is None and lookup.startswith("t") and lookup[1:].isdigit():
-                    try:
-                        idx = int(lookup[1:])
-                        for key, lane_obj in lanes.items():
-                            lane_idx = getattr(lane_obj, "lane", None)
-                            if lane_idx is not None and int(lane_idx) == idx:
-                                runout_target = key
-                                break
-                    except Exception:
-                        pass
-
-        if not runout_target or runout_target not in lanes:
-            self.afc.error.AFC_error(
-                "Runout lane '{}' unavailable for {} (known lanes: {})".format(
-                    self.runout_lane, lane_name, ', '.join(lanes)))
-            return
-
-        if self.runout_lane != runout_target:
-            self.logger.info("Normalized runout lane '{}' -> '{}'".format(self.runout_lane, runout_target))
-            self.runout_lane = runout_target
-
-        # Ensure afc.current points to this lane
-        current = self.afc.current
-        if current not in lanes and hasattr(current, "name"):
-            current = getattr(current, "name", current)
-        if current != lane_name:
-            self.logger.debug("Setting AFC current lane to {} before infinite runout".format(lane_name))
-            self.afc.current = lane_name
-
         self.status = AFCLaneState.NONE
         self.unit_obj.lane_not_ready(self)
         self.logger.info("Infinite Spool triggered for {}".format(self.name))
-        empty_lane = lanes.get(self.afc.current)
-        change_lane = lanes.get(self.runout_lane)
-
-        # Verifying lanes are valid before continuing
-        if not change_lane:
-            self.afc.error.AFC_error("Error when looking up runout lane:{} for lane:{}".format(self.runout_lane, self.name))
-            return
-        if not empty_lane:
-            self.afc.error.AFC_error("Error when looking up current lane:{}".format(self.afc.current))
-            return
-
+        empty_lane = self.afc.lanes.get(self.afc.current)
+        change_lane = self.afc.lanes.get(self.runout_lane)
         change_lane.status = AFCLaneState.INFINITE_RUNOUT
         # Pause printer with manual command
         self.afc.error.pause_resume.send_pause_command()
         # Saving position after printer is paused
         self.afc.save_pos()
 
-        # Standalone toolchanger lanes (U1-style): filament stays in each tool,
-        # just dock current and pick up next — no filament unload/load needed.
-        if self.extruder_obj.no_lanes and self.extruder_obj.tc_unit_name:
-            pheaters = self.printer.lookup_object('heaters')
-            # Capture current extruder's printing temperature before swap
-            old_heater = self.extruder_obj.get_heater()
-            target_temp = old_heater.target_temp
+        # Verifying lanes are valid before continuing
+        if not change_lane:
+            self.afc.error.AFC_error(f"Error when looking up runout lane:{self.runout_lane} for lane:{self.name}")
+            return
+        if not empty_lane:
+            self.afc.error.AFC_error(f"Error when looking up current lane:{self.afc.current}")
+            return
 
-            # Start heating new extruder before swap so it warms during dock/pick
-            new_extruder = change_lane.extruder_obj
-            new_heater = new_extruder.get_heater()
-            if target_temp > 0:
-                pheaters.set_temperature(new_heater, target_temp, False)
-                self.logger.info("Heating {} to {:.0f} for infinite spool".format(
-                    new_extruder.name, target_temp))
+        # Position will be restored after lane is unloaded so that nozzle does not sit
+        # on print while lane is unloading
+        if not self.afc.TOOL_UNLOAD(empty_lane):
+            return
 
-            # Cool down old extruder
-            pheaters.set_temperature(old_heater, 0, False)
+        # Eject spool before loading next lane
+        self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
 
-            self.set_tool_unloaded()
-            change_lane.tool_swap()
-            change_lane.set_tool_loaded()
-
-            # Wait for new extruder to reach temperature before resuming
-            if target_temp > 0:
-                self.afc._wait_for_temp_within_tolerance(
-                    new_heater, target_temp, new_extruder.deadband)
-                self.logger.info("{} heated and ready".format(new_extruder.name))
-        else:
-            # Position will be restored after lane is unloaded so that nozzle does not sit
-            # on print while lane is unloading
-            if not self.afc.TOOL_UNLOAD(empty_lane):
-                return
-
-            # Eject spool before loading next lane
-            self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
-
-            self.afc.TOOL_LOAD(change_lane)
+        self.afc.TOOL_LOAD(change_lane)
         # Change Mapping
         self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
 
@@ -1093,15 +980,9 @@ class AFCLane:
             return
 
         if self.runout_lane is not None:
-            runout_lane = self.afc.lanes.get(self.runout_lane)
-            if runout_lane is not None:
-                self.logger.info(
-                    "Auto spool switch: switching from {} to {}".format(
-                        self.name, runout_lane.name))
-                self.afc.CHANGE_TOOL(runout_lane)
-                return
-        # No runout lane configured — pause instead
-        self._perform_pause_runout()
+            self._perform_infinite_runout()
+        else:
+            self._perform_pause_runout()
 
     def _perform_pause_runout(self):
         """
@@ -1132,11 +1013,9 @@ class AFCLane:
         Common function to grab TD-1 data once user inserts filament into a lane. Only happens if user has specified
         this by setting `capture_td1_when_loaded: True` and if hub is clear and toolhead is not loaded.
         """
-        # Allow unit to provide custom TD-1 prep capture
         custom_result = self.unit_obj.prep_capture_td1(self)
         if custom_result is not None:
-            return custom_result
-
+            return
         if self.td1_when_loaded:
             if not self.hub_obj.state and self.afc.function.get_current_lane_obj() is None:
                 self.get_td1_data()
@@ -1144,17 +1023,10 @@ class AFCLane:
                 self.logger.info(f"Cannot get TD-1 data for {self.name}, either toolhead is loaded or hub shows filament in path")
 
     @property
-    def _hub_is_virtual(self) -> bool:
-        """True when the lane's hub uses a virtual sensor (no physical switch_pin)."""
-        hub = getattr(self, "hub_obj", None)
-        if hub is None:
-            return True
-        pin = getattr(hub, "switch_pin", "virtual")
-        return str(pin).lower() == "virtual"
-
-    @property
     def load_state(self) -> bool:
-        if self.unit_obj.type in ("ViViD",) and self._hub_is_virtual:
+        if (self.hub_obj is not None
+            and hasattr(self.hub_obj, 'is_virtual_pin')
+            and self.hub_obj.is_virtual_pin()):
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
@@ -1162,14 +1034,6 @@ class AFCLane:
     @property
     def raw_load_state(self) -> bool:
         return bool(self._load_state)
-
-    @property
-    def prep_state(self) -> bool:
-        return self._prep_state
-
-    @prep_state.setter
-    def prep_state(self, state):
-        self._prep_state = bool(state)
 
     def selector_callback(self, eventtime: float, state):
         self._selector_state = state
@@ -1621,10 +1485,10 @@ class AFCLane:
 
         returns Status of toolhead pre sensor or the current buffer advance state
         """
-        if self.extruder_obj.tool_start == "buffer" and self.buffer_obj is not None:
+        if self.extruder_obj.tool_start == "buffer":
             return self.buffer_obj.advance_state
         elif self.extruder_obj.tool_start == "internal":
-            return getattr(self, '_load_confirmed', False)
+            return self.extruder_obj.tool_start_state
         elif self.extruder_obj.tool_start is None and self.extruder_obj.filament_sensor_obj is not None:
             return self.extruder_obj.filament_sensor_obj.runout_helper.filament_present
         else:
@@ -1640,8 +1504,7 @@ class AFCLane:
         if self.extruder_obj.tool_start == "buffer":
             return self.buffer_endstop_name
         elif self.extruder_obj.tool_start == "internal":
-            # No AFC-visible endstop — engagement is verified via unit firmware
-            return None
+            return AFCHomingPoints.TOOL
         else:
             return self.tool_endstop_name
 
@@ -1803,11 +1666,9 @@ class AFCLane:
         Captures TD-1 data for lane. Has error checking to verify that lane is loaded, hub is not blocked
         and that TD-1 device is still detected before trying to capture data.
         """
-        # Allow unit to provide custom TD-1 data capture
         custom_result = self.unit_obj.capture_td1_data(self)
         if custom_result is not None:
             return custom_result
-
         max_move_tries = 0
         status = True
         msg = ""
@@ -1955,15 +1816,7 @@ class AFCLane:
             self.logger.error(msg)
             return
 
-        # Only unset a lane that's loaded on THIS lane's extruder, not the globally active one
-        if self.extruder_obj.lane_loaded is not None and self.extruder_obj.lane_loaded != self.name:
-            prev_lane = self.afc.lanes.get(self.extruder_obj.lane_loaded)
-            if prev_lane is not None:
-                prev_lane.unsync_to_extruder()
-                prev_lane.set_tool_unloaded()
-                prev_lane.unit_obj.return_to_home()
-                self.logger.info("Unset {} from extruder {} before setting {} as loaded".format(
-                    prev_lane.name, self.extruder_obj.name, self.name))
+        self.afc.function.unset_lane_loaded()
 
         self.afc.function.handle_activate_extruder()
         self.set_tool_loaded()

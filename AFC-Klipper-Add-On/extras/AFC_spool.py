@@ -327,9 +327,6 @@ class AFCSpool:
             cur_lane.material = self.afc.default_material_type
             cur_lane.weight = 1000 # Defaulting weight to 1000 upon load
 
-        # Only consume staged scanner data for lanes that don't already have
-        # a spool assigned — prevents ACE unload/reload from stealing the
-        # scanner's next_spool_id meant for a different lane.
         has_spool = getattr(cur_lane, "spool_id", None) not in (None, "", 0)
         if not has_spool and self.afc.spoolman is not None and self.next_spool_id is not None:
             spool_id = self.next_spool_id
@@ -363,6 +360,7 @@ class AFCSpool:
         cur_lane.auto_switch_triggered = False
         cur_lane.extruder_temp = None
         cur_lane.bed_temp = None
+        self.next_spool_info = None
         cur_lane.clear_lane_data()
 
     def set_spoolID(self, cur_lane, SpoolID, save_vars=True):
@@ -381,7 +379,8 @@ class AFCSpool:
                     cur_lane.filament_diameter  = self._get_filament_values(result['filament'], 'diameter')
                     cur_lane.empty_spool_weight = self._get_filament_values(result, 'spool_weight', default=190)
                     cur_lane.weight             = self._get_filament_values(result, 'remaining_weight')
-                    cur_lane.espooler.espooler_values.full_weight = self._get_filament_values(result, 'initial_weight', default=1000)
+                    if hasattr(cur_lane, 'espooler'):
+                        cur_lane.espooler.espooler_values.full_weight = self._get_filament_values(result, 'initial_weight', default=1000)
 
                     weight_check = self.disable_weight_check
 
@@ -527,7 +526,6 @@ class AFCSpool:
         """
         SpoolID = gcmd.get('SPOOL_ID', '')
         previous_id = self.next_spool_id
-        self.next_spool_info = None
         if SpoolID != '':
             try:
                 self.next_spool_id = int(SpoolID)

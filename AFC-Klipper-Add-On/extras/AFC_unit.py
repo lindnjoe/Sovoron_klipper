@@ -73,6 +73,7 @@ class afcUnit:
         self.buffer_name                 = config.get('buffer', None)                                        # Buffer name(AFC_buffer) that belongs to this unit, can be overridden in AFC_stepper section
 
         self.remember_spool              = config.get('remember_spool', False)                               # Turns on/off ability to remember last ejected spool values for all lanes in this unit, can be overridden in AFC_stepper section
+        self.auto_spoolman_create        = config.getboolean('auto_spoolman_create', False)
         # LED SETTINGS
         # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
         self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane
@@ -286,9 +287,9 @@ class afcUnit:
         # Selection buttons
         buttons.append(("Calibrate Lanes", "UNIT_LANE_CALIBRATION UNIT={}".format(self.name), "primary"))
 
-        direct_hubs = any( lane.is_direct_hub() for lane in self.afc.lanes.values())
-        lanes_loaded = any( lane.load_state and not lane.is_direct_hub() for lane in self.afc.lanes.values())
-        any_lane_has_td1_ids = any( lane.td1_device_id for lane in self.afc.lanes.values())
+        direct_hubs = any( lane.is_direct_hub() or getattr(lane.hub_obj, "use_dist_hub", False) for lane in self.lanes.values())
+        lanes_loaded = any( (lane.load_state and not getattr(lane.hub_obj, "use_dist_hub", False)) and not lane.is_direct_hub() for lane in self.lanes.values())
+        any_lane_has_td1_ids = any( lane.td1_device_id for lane in self.lanes.values())
 
         if not direct_hubs or lanes_loaded:
             buttons.append(("Calibrate afc_bowden_length", "UNIT_BOW_CALIBRATION UNIT={}".format(self.name), "secondary"))
@@ -341,7 +342,8 @@ class afcUnit:
                 and not lane.tool_loaded):
                 button_label = "{}".format(lane)
                 # Do a bowden length calibration for direct hubs, dist_hub length gets set properly this way
-                if lane.is_direct_hub():
+                if (lane.is_direct_hub()
+                    or getattr(lane.hub_obj, "use_dist_hub", False)):
                     button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
                 else:
                     button_command = "CALIBRATE_AFC LANE={}".format(lane)
@@ -397,7 +399,9 @@ class afcUnit:
                 'Config option: afc_bowden_length').format(self.name)
 
         for lane in self.lanes.values():
-            if lane.load_state and not lane.is_direct_hub():
+            if (lane.load_state
+                and not lane.is_direct_hub()
+                and not getattr(lane.hub_obj, "use_dist_hub", False)):
                 # Create a button for each lane
                 button_label = "{}".format(lane)
                 button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
@@ -493,19 +497,25 @@ class afcUnit:
 
     def _trigger_led_state(self, lane: AFCLane, static_color, effect_suffix=None):
         """
-        Smart LED Dispatcher:
+        Smart LED Dispatcher: 
         1. Always kills existing effects to reset the state.
         2. Always sets the AFC static status color as the base.
         3. If a dynamic effect is requested, it overlays it.
         """
+        # 1. Clear any running effects
         self._stop_led_effects()
+
+        # 2. Always apply the standard AFC static color first
         if static_color is not None:
             self.afc.function.afc_led(static_color, lane.led_index)
+
+        # 3. If an animation is requested, try to overlay it
         if effect_suffix:
             effect_name = f"{lane.name}_{effect_suffix}"
             try:
                 self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
             except Exception:
+                # If the effect doesn't exist, we just stay on the static color
                 pass
 
     def lane_not_ready(self, lane):
@@ -691,40 +701,28 @@ class afcUnit:
 
     def abort_load(self, cur_lane):
         """Cancel any in-progress load operation on the hardware.
-
-        Called by error handlers before cleanup so that unit-specific hardware
-        (e.g. OpenAMS motors) is stopped before AFC proceeds with error recovery.
-        Override in subclass for hardware-specific cancellation.
-        """
+        Override in subclass for hardware-specific cancellation (ACE, OpenAMS)."""
         pass
 
     def lane_move(self, cur_lane, distance, speed_mode):
         """Move filament in a lane by the given distance.
-
-        Default implementation uses the lane's stepper motor (BoxTurtle, etc.).
-        Override in subclass for hardware-specific movement (ACE serial, OpenAMS).
-
-        :param cur_lane: Lane object to move
-        :param distance: Distance in mm (positive = forward, negative = retract)
-        :param speed_mode: SpeedMode enum for movement speed
-        """
+        Override in subclass for hardware-specific movement (ACE serial, OpenAMS)."""
         cur_lane.move_advanced(distance, speed_mode, assist_active=AssistActive.YES)
 
     def lane_unload(self, cur_lane):
-        """Override in subclass for custom lane unload. Return non-None to skip default lane unload."""
+        """Override in subclass for custom lane unload. Return non-None to skip default."""
         return None
 
     def on_lane_unset_loaded(self, lane, extruder_name):
-        """Called after a lane is manually unset from the toolhead via unset_lane_loaded.
-        Override in subclass for custom post-unset behavior."""
+        """Called after a lane is manually unset from the toolhead via unset_lane_loaded."""
         pass
 
     def prep_capture_td1(self, cur_lane):
-        """Override in subclass for custom TD-1 prep capture. Return non-None to skip default behavior."""
+        """Override in subclass for custom TD-1 prep capture. Return non-None to skip default."""
         return None
 
     def capture_td1_data(self, cur_lane):
-        """Override in subclass for custom TD-1 data capture. Return non-None to skip default behavior."""
+        """Override in subclass for custom TD-1 data capture. Return non-None to skip default."""
         return None
 
     def get_lane_reset_command(self, lane, dis):
@@ -732,8 +730,7 @@ class afcUnit:
         return None
 
     def get_current_lane_fallback(self, tool_obj):
-        """Override in subclass to provide a fallback lane name when on_shuttle() is False.
-        Return lane name string to use, or None to skip."""
+        """Override in subclass to provide a fallback lane name when on_shuttle() is False."""
         return None
 
     def get_calibrated_lanes(self) -> Optional[list[str]]:
@@ -946,9 +943,6 @@ class afcUnit:
         When homing is enabled and enable_buffer_tool_check is enabled, this method will try to
         move the filament so that both advance and trail sensor in buffer are hit. If this is
         successful, then it's deemed that filament is actually loaded to the toolhead.
-
-        Works with both turtleneck buffers (hardware advance switch) and FPS buffers
-        (software endstop that triggers at high_point / 0.9).
 
         :param lane: Lane to check if filament is loaded to toolhead.
         :return: Returns true if check is successful.

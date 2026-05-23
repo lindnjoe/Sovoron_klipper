@@ -34,9 +34,7 @@ if TYPE_CHECKING:
 
 ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
 
-def add_filament_switch(switch_name, switch_pin, printer, show_sensor=True,
-                        runout_callback = None, enable_runout=False,
-                        debounce_delay=0., extruder="extruder" ):
+def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, runout_callback = None, enable_runout=False, debounce_delay=0. ):
     """
     Helper function to register pins as filament switch sensor so it will show up in web guis
 
@@ -55,8 +53,8 @@ def add_filament_switch(switch_name, switch_pin, printer, show_sensor=True,
     filament_switch_config.add_section( new_switch_name )
     filament_switch_config.set( new_switch_name, 'switch_pin', switch_pin)
     filament_switch_config.set( new_switch_name, 'pause_on_runout', 'False')
+    filament_switch_config.set( new_switch_name, 'extruder', 'extruder')
     filament_switch_config.set( new_switch_name, 'debounce_delay', 0.0)
-    filament_switch_config.set( new_switch_name, "extruder") # TODO: put in a proper fix for this
 
     cfg_wrap = configfile.ConfigWrapper( printer, filament_switch_config, {}, new_switch_name)
 
@@ -133,13 +131,10 @@ class DebounceButton:
         # Checking parameter length since kalico's note_filament_present function is different
         # and also checking for older klipper versions before hash 272e8155
         expected_params = ['eventtime', 'is_filament_present', 'force', 'immediate']
-        snapmaker_expected = ['is_filament_present', 'force']
         param_keys = list(sig.parameters.keys())
         if param_keys == expected_params:
             # Exact match for the expected signature
             filament_sensor.runout_helper.note_filament_present = self._button_handler
-        elif param_keys == snapmaker_expected:
-            filament_sensor.runout_helper.note_filament_present = self.button_handler
         elif len(sig.parameters) > 2 or len(sig.parameters) == 1:
             filament_sensor.runout_helper.note_filament_present = self.button_handler
         else:
@@ -368,7 +363,6 @@ class AFC_moonraker:
         :param path: Spoolman API path (e.g. /v1/spool)
         :param body: Optional dict for request body (POST/PATCH)
         :param query: Optional query string (e.g. "material=PLA&limit=10")
-        :param print_error: Whether to log errors to console
         :return: Response dict or None on error
         """
         payload = {
@@ -388,13 +382,7 @@ class AFC_moonraker:
         return self._get_results(req, print_error=print_error)
 
     def search_filaments(self, vendor_name=None, material=None, article_number=None):
-        """Search Spoolman for filaments matching the given criteria.
-
-        :param vendor_name: Vendor name to filter by
-        :param material: Material type to filter by (e.g. PLA)
-        :param article_number: Article/SKU number to filter by
-        :return: List of filament dicts, or empty list on error
-        """
+        """Search Spoolman for filaments matching the given criteria."""
         params = []
         if vendor_name:
             params.append(f"vendor.name={quote(vendor_name)}")
@@ -409,20 +397,12 @@ class AFC_moonraker:
         return []
 
     def create_vendor(self, name):
-        """Create a vendor in Spoolman.
-
-        :param name: Vendor name
-        :return: Vendor dict with 'id' field, or None on error
-        """
+        """Create a vendor in Spoolman."""
         body = {"name": name}
         return self._spoolman_proxy("POST", "/v1/vendor", body=body)
 
     def search_vendors(self, name):
-        """Search Spoolman for vendors by name.
-
-        :param name: Vendor name to search for
-        :return: List of vendor dicts, or empty list on error
-        """
+        """Search Spoolman for vendors by name."""
         query = f"name={quote(name)}"
         result = self._spoolman_proxy("GET", "/v1/vendor", query=query, print_error=False)
         if isinstance(result, list):
@@ -430,11 +410,7 @@ class AFC_moonraker:
         return []
 
     def get_or_create_vendor(self, name):
-        """Find an existing vendor by name or create a new one.
-
-        :param name: Vendor name
-        :return: Vendor dict with 'id' field, or None on error
-        """
+        """Find an existing vendor by name or create a new one."""
         vendors = self.search_vendors(name)
         for v in vendors:
             if v.get("name", "").lower() == name.lower():
@@ -445,10 +421,7 @@ class AFC_moonraker:
                         density=1.24, diameter=1.75, color_hex=None,
                         settings_extruder_temp=None, settings_bed_temp=None,
                         weight=None, spool_weight=None, article_number=None):
-        """Create a filament in Spoolman.
-
-        :return: Filament dict with 'id' field, or None on error
-        """
+        """Create a filament in Spoolman."""
         body = {
             "density": density,
             "diameter": diameter,
@@ -475,14 +448,7 @@ class AFC_moonraker:
 
     def create_spool(self, filament_id, remaining_weight=None, initial_weight=None,
                      spool_weight=None):
-        """Create a spool in Spoolman.
-
-        :param filament_id: ID of the filament this spool uses
-        :param remaining_weight: Remaining filament weight in grams
-        :param initial_weight: Initial filament weight in grams
-        :param spool_weight: Empty spool weight in grams
-        :return: Spool dict with 'id' field, or None on error
-        """
+        """Create a spool in Spoolman."""
         body = {"filament_id": filament_id}
         if remaining_weight is not None:
             body["remaining_weight"] = remaining_weight
@@ -493,11 +459,7 @@ class AFC_moonraker:
         return self._spoolman_proxy("POST", "/v1/spool", body=body)
 
     def search_spools(self, filament_id=None):
-        """Search Spoolman for spools, optionally filtered by filament_id.
-
-        :param filament_id: Filter to spools using this filament
-        :return: List of spool dicts, or empty list on error
-        """
+        """Search Spoolman for spools, optionally filtered by filament_id."""
         params = []
         if filament_id is not None:
             params.append(f"filament.id={filament_id}")

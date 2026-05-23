@@ -19,7 +19,7 @@ except:
     raise_string = "Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc())
     raise error(raise_string)
 
-try: from extras.AFC_lane import AFCLane, SpeedMode, AFCHomingPoints
+try: from extras.AFC_lane import AFCLane, AFCHomingPoints, VALID_DIRECT_HUB
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 if TYPE_CHECKING:
@@ -73,13 +73,11 @@ class AFCExtruderStepper(AFCLane):
 
         if self.motion_queuing is not None:
             self.trapq          = self.motion_queuing.allocate_trapq()
-            self._raw_trapq_append = self.motion_queuing.lookup_trapq_append()
+            self.trapq_append   = self.motion_queuing.lookup_trapq_append()
         else:
             self.trapq                  = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-            self._raw_trapq_append      = ffi_lib.trapq_append
+            self.trapq_append           = ffi_lib.trapq_append
             self.trapq_finalize_moves   = ffi_lib.trapq_finalize_moves
-
-        self._trapq_extra_arg = self._detect_trapq_extra_arg()
 
         self.assist_activate=False
 
@@ -92,21 +90,6 @@ class AFCExtruderStepper(AFCLane):
 
         # Get and save base rotation dist
         self.base_rotation_dist = self.extruder_stepper.stepper.get_rotation_distance()[0]
-
-    def _detect_trapq_extra_arg(self) -> bool:
-        """Detect if trapq_append requires the extra trailing arg (Snapmaker fork)."""
-        ffi_main, ffi_lib = chelper.get_ffi()
-        try:
-            sig = ffi_main.typeof(ffi_lib.trapq_append)
-            return len(sig.args) > 14
-        except Exception:
-            return False
-
-    def trapq_append(self, *args):
-        if self._trapq_extra_arg and len(args) == 14:
-            self._raw_trapq_append(*args, 0)
-        else:
-            self._raw_trapq_append(*args)
 
     def _get_tmc_values(self, config):
         """
@@ -469,7 +452,7 @@ class AFCExtruderStepper(AFCLane):
         hub_pin = self.hub_endstop
         if hub_pin is None:
             hub_name = getattr(self, 'hub', None)
-            if not hub_name or 'direct' in hub_name:
+            if not hub_name or hub_name in VALID_DIRECT_HUB:
                 hub_name = self._inherit_from_unit('hub')
             hub_pin = self._get_section_value('AFC_hub', hub_name, 'switch_pin')
 
@@ -489,17 +472,13 @@ class AFCExtruderStepper(AFCLane):
         if (hub_pin
             and hub_pin.lower() != "virtual"):
             self._add_endstop('hub', hub_pin, 'hub')
-        if tool_start_pin == 'buffer':
-            self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
-        elif tool_start_pin:
+        if tool_start_pin != 'buffer':
             self._add_endstop('tool_start', tool_start_pin, 'tool_start')
+        else:
+            self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
         self._add_endstop('tool_end', tool_end_pin, 'tool_end')
         self._add_endstop('buffer_advance', buffer_adv_pin, 'buffer_adv')
         self._add_endstop('buffer_trailing', buffer_trail_pin, 'buffer_trailing')
-
-        # FPS buffer: if no hardware advance pin, register the software endstop
-        if buffer_adv_pin is None and buffer_name:
-            self._add_fps_endstop(buffer_name)
 
     def _inherit_from_unit(self, target_key: str) -> Optional[str]:
         """
@@ -600,59 +579,6 @@ class AFCExtruderStepper(AFCLane):
             pass
         self.logger.debug(f"{self.name} adding endstop {key}:{name}:{pin}") # TODO:remove once fully tested on toolchanger
         self._endstops[key] = (mcu_endstop, name)
-
-    def _add_fps_endstop(self, buffer_name):
-        """Register FPS buffer software endstops as buffer_advance and buffer_trailing.
-
-        Called when the buffer has no hardware advance_pin (FPS buffer type).
-        Advance endstop triggers when smoothed_fps >= high_point (default 0.9).
-        Trailing endstop triggers when smoothed_fps <= low_point (default 0.1).
-
-        :param buffer_name: Name of the AFC_FPS buffer to look up
-        """
-        try:
-            buffer_obj = self.printer.lookup_object(f'AFC_buffer {buffer_name}')
-        except Exception:
-            buffer_obj = None
-        if buffer_obj is None:
-            try:
-                afc = self.printer.lookup_object('AFC')
-                buffer_obj = afc.buffers.get(buffer_name)
-            except Exception:
-                pass
-        if buffer_obj is None or not hasattr(buffer_obj, 'fps_endstop'):
-            return
-
-        # Register advance endstop (high_point)
-        endstop = buffer_obj.fps_endstop
-        name = 'buffer_adv'
-        try:
-            endstop.add_stepper(self.extruder_stepper.stepper)
-        except Exception:
-            self.logger.info(f"Error adding stepper to FPS endstop for {self.name}")
-            return
-        try:
-            self._qes.register_endstop(endstop, name)
-        except Exception:
-            pass
-        self.logger.debug(f"{self.name} adding FPS software endstop buffer_advance:{buffer_name}")
-        self._endstops['buffer_advance'] = (endstop, name)
-
-        # Register trailing endstop (low_point)
-        if hasattr(buffer_obj, 'fps_trailing_endstop'):
-            trail_endstop = buffer_obj.fps_trailing_endstop
-            trail_name = 'buffer_trailing'
-            try:
-                trail_endstop.add_stepper(self.extruder_stepper.stepper)
-            except Exception:
-                self.logger.info(f"Error adding stepper to FPS trailing endstop for {self.name}")
-                return
-            try:
-                self._qes.register_endstop(trail_endstop, trail_name)
-            except Exception:
-                pass
-            self.logger.debug(f"{self.name} adding FPS software endstop buffer_trailing:{buffer_name}")
-            self._endstops['buffer_trailing'] = (trail_endstop, trail_name)
 
     def do_homing_move(self, movepos: int, speed: int, accel: int, endstop_spec:str,
                        triggered=True, check_trigger=True, assist_active=True) -> tuple[bool, float]:
