@@ -270,48 +270,81 @@ class afcACE(afcUnit):
         return f"ACE_LANE_RESET UNIT={self.name} LANE={lane.name}"
 
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
-        """ACE system test — verify hardware connection and slot status."""
+        """ACE system test — query hardware slot status instead of physical switches."""
         msg = ''
         succeeded = True
 
-        if not self._ace or not self._ace.connected:
+        cur_lane.unsync_to_extruder(False)
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
+
+        # ACE has no physical prep/load switches — determine state from hardware
+        if self._ace is not None and self._ace.connected:
+            slot = self._get_slot(cur_lane.name)
+            try:
+                hw_status = self._ace.get_status(timeout=2.0)
+                if isinstance(hw_status, dict):
+                    slots = hw_status.get("slots", [])
+                    if slot < len(slots) and isinstance(slots[slot], dict):
+                        slot_ready = slots[slot].get("status", "") == "ready"
+                        cur_lane._load_state = slot_ready
+                        cur_lane.prep_state = slot_ready
+                        if not slot_ready:
+                            cur_lane.loaded_to_hub = False
+            except Exception as e:
+                self.logger.debug(f"ACE get_status failed during PREP: {e}")
+        else:
             msg = '<span class=error--text>ACE NOT CONNECTED</span>'
             succeeded = False
-        else:
-            slot = self._get_slot(cur_lane.name)
-            if cur_lane.prep_state:
+
+        if succeeded:
+            if not cur_lane.prep_state:
+                if not cur_lane.load_state:
+                    self.lane_not_ready(cur_lane)
+                    msg += '<span class=success--text>EMPTY READY FOR SPOOL</span>'
+                else:
+                    self.lane_fault(cur_lane)
+                    msg += '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
+                    succeeded = False
+            else:
                 self.lane_loaded(cur_lane)
                 msg += "<span class=success--text>LOCKED</span>"
-                if cur_lane.load_state:
+                if not cur_lane.load_state:
+                    msg += "<span class=error--text> NOT LOADED</span>"
+                    self.lane_not_ready(cur_lane)
+                    succeeded = False
+                else:
                     cur_lane.status = AFCLaneState.LOADED
                     msg += "<span class=success--text> AND LOADED</span>"
                     self.lane_illuminate_spool(cur_lane)
 
+                    # Assume filament staged at hub on startup
+                    if not cur_lane.tool_loaded and not cur_lane.loaded_to_hub:
+                        load_to_hub = getattr(cur_lane, 'load_to_hub',
+                                              getattr(self.afc, 'load_to_hub', False))
+                        if load_to_hub:
+                            cur_lane.loaded_to_hub = True
+
                     if (cur_lane.tool_loaded
                         and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
-                        if cur_lane.get_toolhead_pre_sensor_state():
-                            cur_lane.sync_to_extruder()
-                            msg += "<span class=primary--text> in ToolHead</span>"
-                            if self.afc.current == cur_lane.name:
-                                self.afc.spool.set_active_spool(cur_lane.spool_id)
-                                self.lane_tool_loaded(cur_lane)
-                                cur_lane.status = AFCLaneState.TOOLED
-                            else:
-                                self.lane_tool_loaded_idle(cur_lane)
-                            cur_lane.enable_buffer()
-                else:
-                    msg += "<span class=error--text> NOT LOADED</span>"
-                    self.lane_not_ready(cur_lane)
-                    succeeded = False
-            else:
-                if not cur_lane.load_state:
-                    self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
-                    msg += 'EMPTY READY FOR SPOOL'
-                else:
-                    self.lane_fault(cur_lane)
-                    msg += "<span class=error--text> NOT READY</span>"
-                    msg += '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
-                    succeeded = False
+                        cur_lane.loaded_to_hub = True
+                        cur_lane.sync_to_extruder()
+                        msg += "<span class=primary--text> in ToolHead</span>"
+
+                        if self.afc.current == cur_lane.name:
+                            self.afc.spool.set_active_spool(cur_lane.spool_id)
+                            self.lane_tool_loaded(cur_lane)
+                            cur_lane.status = AFCLaneState.TOOLED
+
+                            # Start feed assist immediately for loaded tool
+                            if self._use_feed_assist(cur_lane) and self._ace is not None:
+                                try:
+                                    self._ace.start_feed_assist(slot)
+                                    self._feed_assist_active.add(slot)
+                                except Exception:
+                                    pass
+                        else:
+                            self.lane_tool_loaded_idle(cur_lane)
+                        cur_lane.enable_buffer()
 
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
