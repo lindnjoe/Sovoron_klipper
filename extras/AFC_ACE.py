@@ -26,8 +26,17 @@ except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.form
 try: from extras.AFC_unit import afcUnit
 except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
-try: from extras.AFC_ACE_serial import ACEConnection
+try: from extras.AFC_ACE_serial import ACEConnection, ACESerialError, ACETimeoutError
 except: raise error(ERROR_STR.format(import_lib="AFC_ACE_serial", trace=traceback.format_exc()))
+
+try:
+    from extras.AFC_RFID import (
+        rgb_array_to_hex, color_name, apply_filament_defaults,
+        sync_rfid_to_spoolman, get_auto_spoolman_create,
+        log_new_filament, log_new_spool,
+    )
+except:
+    rgb_array_to_hex = None
 
 try: from extras.AFC_logger import AFC_QueueListener
 except: AFC_QueueListener = None
@@ -41,6 +50,8 @@ MODE_DIRECT = "direct"
 
 
 class afcACE(afcUnit):
+    SLOTS_PER_UNIT = 4
+
     def __init__(self, config):
         super().__init__(config)
         self.type = config.get('type', 'ACE')
@@ -70,9 +81,12 @@ class afcACE(afcUnit):
         self.fps_confirm_count = config.getint("fps_confirm_count", 3, minval=1)
         self.baud_rate = config.getint("baud_rate", 115200)
 
+        self.auto_spoolman_create = config.getboolean("auto_spoolman_create", False)
+
         self._ace: Optional[ACEConnection] = None
         self._slot_map: dict[str, int] = {}
         self._feed_assist_active: set[int] = set()
+        self._slot_inventory: list[dict] = [{} for _ in range(self.SLOTS_PER_UNIT)]
 
         self.gcode = self.printer.lookup_object('gcode')
         cmd_prefix = self.name.upper().replace(" ", "_")
@@ -214,18 +228,32 @@ class afcACE(afcUnit):
 
         self.logger.info(
             f"ACE {self.name}: connected, mode={self.mode}, "
-            f"port={self.serial_port}")
+            f"port={self.serial_port}, slots={self.SLOTS_PER_UNIT}")
 
-        # Register callback for heartbeat status updates
-        self._ace.status_callback = self._on_hw_status_callback
+        # Enable RFID reader so get_filament_info returns spool data
+        try:
+            self._ace.enable_rfid()
+            self.logger.debug(f"ACE {self.name}: RFID enabled")
+        except Exception as e:
+            self.logger.warning(
+                f"ACE {self.name}: enable_rfid failed (non-fatal): {e}")
 
-        # Seed initial slot state
+        # Seed slot status from get_status
         try:
             hw_status = self._ace.get_status(timeout=2.0)
             if isinstance(hw_status, dict):
-                self._sync_slot_states(hw_status)
+                for i, slot_data in enumerate(hw_status.get("slots", [])):
+                    if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
+                        self._slot_inventory[i]["status"] = slot_data.get("status", "")
         except Exception as e:
             self.logger.debug(f"ACE initial get_status failed: {e}")
+
+        # Sync RFID data and lane loaded states
+        self._sync_inventory()
+        self._sync_slot_loaded_state()
+
+        # Register callback for heartbeat status updates
+        self._ace.status_callback = self._on_hw_status_callback
 
     def _on_hw_status_callback(self, response):
         """Process heartbeat status from ACE — keep lane states in sync."""
@@ -235,6 +263,12 @@ class afcACE(afcUnit):
         if not isinstance(result, dict):
             return
         self._sync_slot_states(result)
+
+    def _is_virtual_hub(self, lane) -> bool:
+        hub = lane.hub_obj
+        return (hub is not None
+                and hasattr(hub, 'is_virtual_pin')
+                and hub.is_virtual_pin())
 
     def _sync_slot_states(self, hw_status):
         """Sync lane prep/load state from ACE hardware slot status."""
@@ -248,6 +282,10 @@ class afcACE(afcUnit):
             slot_ready = slot_status == "ready"
             slot_transient = slot_status in ("shifting", "feeding", "unwinding")
 
+            # Update inventory status cache
+            if slot < self.SLOTS_PER_UNIT:
+                self._slot_inventory[slot]["status"] = slot_status
+
             if slot_transient:
                 continue
 
@@ -255,14 +293,35 @@ class afcACE(afcUnit):
             lane._load_state = slot_ready
             lane.prep_state = slot_ready
 
+            # For virtual hub pins, load_state returns loaded_to_hub.
+            # Keep it in sync with the hardware slot state.
+            if self._is_virtual_hub(lane):
+                if slot_ready and lane.status in (AFCLaneState.LOADED, AFCLaneState.TOOLED):
+                    lane.loaded_to_hub = True
+                elif not slot_ready:
+                    lane.loaded_to_hub = False
+
             prep_done = getattr(lane, '_afc_prep_done', False)
 
             # Filament inserted: slot went from not-ready to ready
             if slot_ready and prev_ready is False and prep_done:
                 if lane.status == AFCLaneState.NONE:
                     self.logger.info(f"ACE: {lane.name} filament inserted")
+                    self.afc.spool.clear_values(lane)
                     lane.set_loaded()
-                    self.lane_loaded(lane)
+                    self._refresh_slot_inventory(slot)
+                    slot_info = self._slot_inventory[slot]
+                    if apply_filament_defaults is not None:
+                        apply_filament_defaults(
+                            lane, slot_info,
+                            color_converter=rgb_array_to_hex,
+                            afc_defaults={
+                                "default_material_type": getattr(self.afc, "default_material_type", None),
+                                "default_color": getattr(self.afc, "default_color", None),
+                            })
+                    if sync_rfid_to_spoolman is not None:
+                        self._sync_rfid_to_spoolman(lane, slot_info)
+                    self.lane_illuminate_spool(lane)
                     self.afc.save_vars()
                     try:
                         self.prep_post_load(lane)
@@ -273,6 +332,8 @@ class afcACE(afcUnit):
             if not slot_ready and prev_ready is True and prep_done:
                 if lane.status not in (AFCLaneState.NONE,):
                     self.logger.info(f"ACE: {lane.name} filament removed")
+                    if slot < self.SLOTS_PER_UNIT:
+                        self._clear_slot_inventory(slot)
                     if getattr(lane, 'tool_loaded', False):
                         try:
                             is_printing = self.afc.function.is_printing()
@@ -283,8 +344,8 @@ class afcACE(afcUnit):
                                 f"ACE runout on {lane.name}", pause=True)
                     else:
                         lane.loaded_to_hub = False
-                        lane.status = AFCLaneState.NONE
-                        self.lane_unloaded(lane)
+                        lane.set_unloaded()
+                        self.lane_not_ready(lane)
                         self.afc.save_vars()
 
             lane._prev_slot_ready = slot_ready
@@ -323,19 +384,47 @@ class afcACE(afcUnit):
 
     def prep_post_load(self, lane: AFCLane):
         """Stage filament to hub via ACE serial feed."""
-        if not lane.load_to_hub or lane.loaded_to_hub:
+        if self._unit_load_to_hub is not None:
+            load_to_hub = self._unit_load_to_hub
+        else:
+            load_to_hub = getattr(lane, 'load_to_hub',
+                                  getattr(self.afc, 'load_to_hub', False))
+        if not load_to_hub or lane.loaded_to_hub:
             return
         if not lane.prep_state:
             return
         slot = self._get_slot(lane.name)
         if not self._ace or not self._ace.connected:
             return
-        try:
-            self._ace.feed_filament(slot, lane.dist_hub, self.feed_speed)
-            self._wait_for_feed_complete()
-            lane.loaded_to_hub = True
-        except Exception as e:
-            self.logger.error(f"ACE prep_post_load failed for {lane.name}: {e}")
+
+        dist_hub = lane.dist_hub
+        if dist_hub <= 0:
+            return
+
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                self._wait_for_ace_ready(timeout=30.0)
+                self._ace.feed_filament(slot, dist_hub, self.feed_speed)
+                self._wait_for_feed_complete(slot, dist_hub, self.feed_speed)
+                lane.loaded_to_hub = True
+                self.afc.save_vars()
+                self.logger.info(
+                    f"ACE prep_post_load: {lane.name} staged at hub "
+                    f"(dist_hub={dist_hub:.0f}mm)")
+                return
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    wait = 5.0 * (attempt + 1)
+                    self.logger.warning(
+                        f"ACE prep_post_load: attempt {attempt + 1}/{max_attempts} "
+                        f"failed, retrying in {wait:.0f}s: {e}")
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + wait)
+                    continue
+                self.logger.error(
+                    f"ACE prep_post_load failed for {lane.name} after "
+                    f"{max_attempts} attempts: {e}")
 
     def eject_lane(self, lane: AFCLane):
         """Retract filament back into ACE unit."""
@@ -343,9 +432,10 @@ class afcACE(afcUnit):
         if self._ace and self._ace.connected:
             try:
                 self._stop_feed_assist(slot)
+                self._wait_for_ace_ready()
                 dist = self._get_unload_length(lane)
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
-                self._wait_for_retract_complete()
+                self._wait_for_feed_complete(slot, dist, self.retract_speed)
             except Exception as e:
                 self.logger.error(f"ACE eject failed for {lane.name}: {e}")
 
@@ -356,11 +446,13 @@ class afcACE(afcUnit):
             self.logger.error("ACE not connected for lane_move")
             return
         try:
+            self._wait_for_ace_ready()
             if distance > 0:
                 self._ace.feed_filament(slot, abs(distance), self.feed_speed)
             else:
                 self._ace.unwind_filament(slot, abs(distance), self.retract_speed)
-            self._wait_for_idle()
+            self._wait_for_feed_complete(slot, abs(distance),
+                                         self.feed_speed if distance > 0 else self.retract_speed)
         except Exception as e:
             self.logger.error(f"ACE lane_move failed: {e}")
 
@@ -370,9 +462,10 @@ class afcACE(afcUnit):
         if self._ace and self._ace.connected:
             try:
                 self._stop_feed_assist(slot)
+                self._wait_for_ace_ready()
                 dist = self._get_unload_length(cur_lane)
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
-                self._wait_for_retract_complete()
+                self._wait_for_feed_complete(slot, dist, self.retract_speed)
             except Exception as e:
                 self.logger.error(f"ACE lane_unload failed for {cur_lane.name}: {e}")
         return True
@@ -409,6 +502,10 @@ class afcACE(afcUnit):
                         cur_lane.prep_state = slot_ready
                         if not slot_ready:
                             cur_lane.loaded_to_hub = False
+                        elif self._is_virtual_hub(cur_lane):
+                            # For virtual hub pins, load_state returns loaded_to_hub,
+                            # so we must set it for load_state to report correctly
+                            cur_lane.loaded_to_hub = True
             except Exception as e:
                 self.logger.debug(f"ACE get_status failed during PREP: {e}")
         else:
@@ -435,6 +532,17 @@ class afcACE(afcUnit):
                     cur_lane.status = AFCLaneState.LOADED
                     msg += "<span class=success--text> AND LOADED</span>"
                     self.lane_illuminate_spool(cur_lane)
+
+                    # Apply RFID data if available and not already set
+                    if apply_filament_defaults is not None:
+                        slot_info = self._slot_inventory[slot] if slot < self.SLOTS_PER_UNIT else {}
+                        apply_filament_defaults(
+                            cur_lane, slot_info,
+                            color_converter=rgb_array_to_hex,
+                            afc_defaults={
+                                "default_material_type": getattr(self.afc, "default_material_type", None),
+                                "default_color": getattr(self.afc, "default_color", None),
+                            })
 
                     # Assume filament staged at hub on startup
                     if not cur_lane.tool_loaded and not cur_lane.loaded_to_hub:
@@ -495,8 +603,9 @@ class afcACE(afcUnit):
             if total_fed >= max_distance:
                 msg = f'Filament did not reach toolhead sensor after {total_fed}mm'
                 return False, msg, total_fed
+            self._wait_for_ace_ready()
             self._ace.feed_filament(slot, step, self.feed_speed)
-            self._wait_for_feed_complete()
+            self._wait_for_feed_complete(slot, step, self.feed_speed)
             total_fed += step
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
 
@@ -509,8 +618,9 @@ class afcACE(afcUnit):
                                          f'\n afc_unload_bowden_length: {bowden_dist}')
 
         # Retract back
+        self._wait_for_ace_ready()
         self._ace.unwind_filament(slot, total_fed, self.retract_speed)
-        self._wait_for_retract_complete()
+        self._wait_for_feed_complete(slot, total_fed, self.retract_speed)
 
         return True, "afc_bowden_length calibration successful", bowden_dist
 
@@ -554,8 +664,9 @@ class afcACE(afcUnit):
 
         # Feed filament
         try:
+            self._wait_for_ace_ready()
             self._ace.feed_filament(slot, feed_dist, self.feed_speed)
-            success = self._wait_for_feed_complete()
+            success = self._wait_for_feed_complete(slot, feed_dist, self.feed_speed)
 
             if not success:
                 # Check if filament reached despite error
@@ -596,9 +707,10 @@ class afcACE(afcUnit):
             cur_lane.disable_buffer()
 
             # ACE rewind — full retract using upstream distance variables
+            self._wait_for_ace_ready()
             retract_dist = self._get_unload_length(cur_lane)
             self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
-            self._wait_for_retract_complete()
+            self._wait_for_feed_complete(slot, retract_dist, self.retract_speed)
 
             # Clear hub state but keep filament staged near hub
             if cur_lane.hub_obj:
@@ -706,34 +818,110 @@ class afcACE(afcUnit):
             except Exception as e:
                 self.logger.error(f"Failed to stop feed assist slot {slot}: {e}")
 
-    def _wait_for_feed_complete(self, timeout: float = 60.0) -> bool:
-        """Wait for ACE feed operation to complete."""
-        if not self._ace:
+    def _wait_for_ace_ready(self, timeout=30.0):
+        """Wait for the overall ACE status to be 'ready' before sending commands.
+
+        After a retract/feed completes, the slot may report 'ready'/'empty'
+        before the ACE controller finishes internal housekeeping. Sending
+        a new feed_filament while the ACE is still busy returns FORBIDDEN.
+        """
+        ace = self._ace
+        if ace is None or not ace.connected:
+            return
+        poll_interval = 0.5
+        elapsed = 0.0
+        while elapsed < timeout:
+            try:
+                hw_status = ace.get_status(timeout=2.0)
+                if isinstance(hw_status, dict):
+                    if hw_status.get("status", "") == "ready":
+                        return
+                    self.logger.debug(
+                        f"ACE: waiting for ready "
+                        f"(status={hw_status.get('status', '?')}, "
+                        f"{elapsed:.1f}s/{timeout:.0f}s)")
+            except Exception:
+                pass
+            self.afc.reactor.pause(
+                self.afc.reactor.monotonic() + poll_interval)
+            elapsed += poll_interval
+        self.logger.warning(
+            f"ACE: did not become ready within {timeout:.0f}s, proceeding anyway")
+
+    def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_s,
+                                 lane=None, poll_interval=0.5) -> bool:
+        """Wait for ACE feed/unwind movement to complete by polling slot status."""
+        ace = self._ace
+        if ace is None or not ace.connected:
             return False
-        deadline = self.afc.reactor.monotonic() + timeout
+
+        max_wait = (length_mm / max(speed_mm_s, 1)) + 10.0
+        deadline = self.afc.reactor.monotonic() + max_wait
+
+        # Phase 0: Wait for slot to leave ready/empty (motor starting)
+        departure_deadline = self.afc.reactor.monotonic() + 3.0
+        motor_started = False
+        while self.afc.reactor.monotonic() < departure_deadline:
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            try:
+                hw_status = ace.get_status(timeout=2.0)
+                if isinstance(hw_status, dict):
+                    slots = hw_status.get("slots", [])
+                    if slot_index < len(slots):
+                        slot_data = slots[slot_index]
+                        if isinstance(slot_data, dict):
+                            status = slot_data.get("status", "")
+                            if status not in ("ready", "empty", ""):
+                                motor_started = True
+                                break
+            except Exception:
+                pass
+        if not motor_started:
+            self.logger.debug(
+                f"ACE wait: slot {slot_index} never left ready state "
+                f"after feed command — motor may not have started")
+            return False
+
+        # Phase 1: Wait for slot to return to ready/empty (motor done)
         while self.afc.reactor.monotonic() < deadline:
-            if not self._ace.is_busy():
+            self.afc.reactor.pause(
+                self.afc.reactor.monotonic() + poll_interval)
+
+            if lane is not None and lane.get_toolhead_pre_sensor_state():
+                self.logger.debug(
+                    f"ACE wait: toolhead sensor triggered for slot {slot_index}")
+                try:
+                    ace.stop_feed_filament(slot_index)
+                except Exception:
+                    pass
                 return True
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
-        self.logger.error("ACE feed timed out")
+
+            try:
+                hw_status = ace.get_status(timeout=2.0)
+                if isinstance(hw_status, dict):
+                    slots = hw_status.get("slots", [])
+                    if slot_index < len(slots):
+                        slot_data = slots[slot_index]
+                        if isinstance(slot_data, dict):
+                            status = slot_data.get("status", "")
+                            if status in ("ready", "empty"):
+                                return True
+            except Exception:
+                pass
+
+        self.logger.debug(
+            f"ACE wait: timeout waiting for slot {slot_index} "
+            f"movement ({max_wait:.1f}s)")
         return False
-
-    def _wait_for_retract_complete(self, timeout: float = 60.0) -> bool:
-        """Wait for ACE retract operation to complete."""
-        return self._wait_for_feed_complete(timeout)
-
-    def _wait_for_idle(self, timeout: float = 30.0) -> bool:
-        """Wait for ACE to become idle."""
-        return self._wait_for_feed_complete(timeout)
 
     def _smart_load_retry(self, cur_lane, slot, max_retries: int = 3) -> bool:
         """Retry loading with incremental feeds when initial feed fails."""
         for attempt in range(max_retries):
             self.logger.info(f"Smart load retry {attempt+1}/{max_retries} for {cur_lane.name}")
             try:
-                # Small incremental feed
+                self._wait_for_ace_ready()
                 self._ace.feed_filament(slot, self.sensor_step, self.feed_speed)
-                self._wait_for_feed_complete()
+                self._wait_for_feed_complete(slot, self.sensor_step, self.feed_speed)
                 if cur_lane.get_toolhead_pre_sensor_state():
                     return True
             except Exception:
@@ -760,8 +948,9 @@ class afcACE(afcUnit):
             if total_fed >= max_distance:
                 msg = f'Filament did not reach hub sensor after {total_fed}mm'
                 return False, msg, total_fed
+            self._wait_for_ace_ready()
             self._ace.feed_filament(slot, step, self.feed_speed)
-            self._wait_for_feed_complete()
+            self._wait_for_feed_complete(slot, step, self.feed_speed)
             total_fed += step
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
 
@@ -771,11 +960,126 @@ class afcACE(afcUnit):
         self.afc.function.ConfigRewrite(cur_lane.fullname, "dist_hub", new_dist, cal_msg)
 
         # Retract to clear hub
+        self._wait_for_ace_ready()
         backoff = getattr(hub, 'hub_clear_move_dis', 50.0)
         self._ace.unwind_filament(slot, backoff, self.retract_speed)
-        self._wait_for_retract_complete()
+        self._wait_for_feed_complete(slot, backoff, self.retract_speed)
 
         return True, "dist_hub calibration successful", new_dist
+
+
+    # ── RFID / Spoolman helpers ─────────────────────────────────────
+
+    def _sync_inventory(self):
+        """Pull RFID/NFC filament data from ACE hardware into slot cache."""
+        if self._ace is None or not self._ace.connected:
+            return
+        for slot in range(self.SLOTS_PER_UNIT):
+            try:
+                info = self._ace.get_filament_info(slot)
+                if isinstance(info, dict):
+                    self._store_slot_rfid(slot, info)
+            except Exception as e:
+                self.logger.debug(
+                    f"ACE {self.name}: slot {slot} inventory query failed: {e}")
+
+    def _store_slot_rfid(self, slot, info):
+        """Store RFID fields from a get_filament_info response into slot cache."""
+        inv = self._slot_inventory[slot]
+        inv["material"] = info.get("material", info.get("type", ""))
+        inv["color"] = info.get("color", [0, 0, 0])
+        inv["sku"] = info.get("sku", "")
+        inv["brand"] = info.get("brand", "")
+        inv["diameter"] = info.get("diameter", 1.75)
+        inv["total_weight"] = info.get("total", 0)
+        inv["current_weight"] = info.get("current", 0)
+        ext_temp = info.get("extruder_temp", {})
+        bed_temp = info.get("hotbed_temp", {})
+        if isinstance(ext_temp, dict) and ext_temp.get("min") and ext_temp.get("max"):
+            inv["extruder_temp"] = (ext_temp["min"] + ext_temp["max"]) // 2
+        elif isinstance(ext_temp, dict) and ext_temp.get("max"):
+            inv["extruder_temp"] = ext_temp["max"]
+        else:
+            inv["extruder_temp"] = None
+        inv["bed_temp"] = bed_temp.get("max") if isinstance(bed_temp, dict) else None
+
+    def _refresh_slot_inventory(self, slot):
+        """Fetch fresh RFID data for a single slot from ACE hardware."""
+        if self._ace is None or not self._ace.connected:
+            return
+        if slot < 0 or slot >= self.SLOTS_PER_UNIT:
+            return
+        try:
+            info = self._ace.get_filament_info(slot)
+            if isinstance(info, dict):
+                self._store_slot_rfid(slot, info)
+        except Exception as e:
+            self.logger.debug(
+                f"ACE {self.name}: slot {slot} RFID refresh failed: {e}")
+
+    def _clear_slot_inventory(self, slot):
+        """Clear cached RFID data for a slot."""
+        if 0 <= slot < self.SLOTS_PER_UNIT:
+            self._slot_inventory[slot]["material"] = ""
+            self._slot_inventory[slot]["color"] = [0, 0, 0]
+
+    def _sync_slot_loaded_state(self):
+        """Sync ACE slot status to lane load/prep state at startup."""
+        if self._ace is None or not self._ace.connected:
+            return
+        for lane in self.lanes.values():
+            slot = self._get_slot(lane.name)
+            if 0 <= slot < self.SLOTS_PER_UNIT:
+                slot_info = self._slot_inventory[slot]
+                slot_loaded = bool(
+                    slot_info and slot_info.get("status", "") == "ready")
+                lane._load_state = slot_loaded
+                lane.prep_state = slot_loaded
+
+                if apply_filament_defaults is not None:
+                    apply_filament_defaults(
+                        lane, slot_info,
+                        color_converter=rgb_array_to_hex,
+                        afc_defaults={
+                            "default_material_type": getattr(self.afc, "default_material_type", None),
+                            "default_color": getattr(self.afc, "default_color", None),
+                        })
+
+                if slot_loaded and sync_rfid_to_spoolman is not None:
+                    self._sync_rfid_to_spoolman(lane, slot_info)
+
+    def _sync_rfid_to_spoolman(self, lane, slot_info):
+        """Sync ACE RFID tag data to Spoolman."""
+        if sync_rfid_to_spoolman is None:
+            return
+        if self.afc.spoolman is None or self.afc.moonraker is None:
+            return
+        if getattr(lane, "spool_id", None) not in (None, "", 0):
+            return
+        sku = slot_info.get("sku", "")
+        if not sku:
+            return
+
+        color_rgb = slot_info.get("color", [0, 0, 0])
+        color_hex = ""
+        if rgb_array_to_hex is not None and color_rgb != [0, 0, 0]:
+            color_hex = rgb_array_to_hex(color_rgb).lstrip("#")
+
+        normalized = dict(slot_info)
+        normalized["color_hex"] = color_hex
+
+        spool_wt = slot_info.get("total_weight", 0)
+        allow_create = self._get_auto_spoolman_create(lane)
+        sync_rfid_to_spoolman(
+            self.afc, lane, normalized, self.logger, "ACE RFID",
+            allow_create=allow_create,
+            spool_weight=spool_wt if spool_wt > 0 else None)
+
+    def _get_auto_spoolman_create(self, lane):
+        """Check if auto Spoolman spool creation is enabled for a lane."""
+        if get_auto_spoolman_create is not None:
+            return get_auto_spoolman_create(lane, self.auto_spoolman_create)
+        return self.auto_spoolman_create
 
 
 def load_config_prefix(config):
