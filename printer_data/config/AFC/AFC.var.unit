@@ -20,7 +20,7 @@
             "remember_spool": false,
             "spool_id": 46,
             "color": "#89A84F",
-            "weight": 52.69058357395403,
+            "weight": 51.62523826832489,
             "extruder_temp": 210,
             "bed_temp": 65,
             "runout_lane": null,
@@ -129,7 +129,7 @@
             "hub": "Hub_1",
             "extruder": "extruder4",
             "buffer": "FPS_buffer1",
-            "buffer_status": "Neutral",
+            "buffer_status": "Trailing",
             "lane": 1,
             "map": "T4",
             "load": false,
@@ -159,7 +159,7 @@
             "hub": "Hub_2",
             "extruder": "extruder4",
             "buffer": "FPS_buffer1",
-            "buffer_status": "Neutral",
+            "buffer_status": "Trailing",
             "lane": 2,
             "map": "T5",
             "load": true,
@@ -189,12 +189,12 @@
             "hub": "Hub_3",
             "extruder": "extruder4",
             "buffer": "FPS_buffer1",
-            "buffer_status": "Neutral",
+            "buffer_status": "Trailing",
             "lane": 3,
             "map": "T6",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
+            "tool_loaded": true,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -207,9 +207,9 @@
             "extruder_temp": 240,
             "bed_temp": 60,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -219,7 +219,7 @@
             "hub": "Hub_4",
             "extruder": "extruder4",
             "buffer": "FPS_buffer1",
-            "buffer_status": "Neutral",
+            "buffer_status": "Trailing",
             "lane": 4,
             "map": "T7",
             "load": true,
@@ -531,7 +531,7 @@
                 "lane_loaded": null
             },
             "extruder4": {
-                "lane_loaded": null
+                "lane_loaded": "lane6"
             },
             "extruder5": {
                 "lane_loaded": "lane12"
