@@ -642,7 +642,7 @@ class afcACE(afcUnit):
         total_fed = 0.0
         step = self.calibration_step
         old_bowden = getattr(cur_hub, 'afc_bowden_length', 0)
-        max_distance = old_bowden + self.max_feed_overshoot
+        max_distance = max(old_bowden + self.max_feed_overshoot, 4000.0)
 
         while not cur_lane.get_toolhead_pre_sensor_state():
             if total_fed >= max_distance:
@@ -1106,7 +1106,7 @@ class afcACE(afcUnit):
         self.logger.raw(f'Calibrating dist_hub for {cur_lane.name}')
         total_fed = 0.0
         step = self.sensor_step
-        max_distance = cur_lane.dist_hub + 200.0
+        max_distance = max(cur_lane.dist_hub + 200.0, 4000.0)
 
         while not hub.state:
             if total_fed >= max_distance:
