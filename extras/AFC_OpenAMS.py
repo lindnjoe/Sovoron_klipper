@@ -1035,8 +1035,9 @@ class afcAMS(afcUnit):
             afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
             afc.toolhead.wait_moves()
 
-        # Verify filament reached toolhead sensor (switch, FPS, or motion sensor)
+        # Verify filament reached toolhead sensor (physical switch or motion sensor)
         has_sensor = (cur_extruder.tool_start is not None
+                      and cur_extruder.tool_start not in ("buffer", "internal")
                       or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
         if has_sensor and not self._toolhead_sensor_triggered(cur_lane):
             afc.reactor.pause(afc.reactor.monotonic() + 0.5)
