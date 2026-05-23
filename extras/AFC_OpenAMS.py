@@ -94,6 +94,11 @@ class afcAMS(afcUnit):
             'AFC_OAMS_CLEAR_ERRORS', self.cmd_AFC_OAMS_CLEAR_ERRORS,
             desc="Clear OpenAMS errors and resync state")
 
+        # Sensor polling state
+        self._last_f1s = [None] * 4
+        self._last_hub = [None] * 4
+        self._poll_timer = None
+
         # Register temperature_oams sensor factory during config parsing
         try:
             from extras.temperature_oams import TemperatureOAMS
@@ -101,6 +106,9 @@ class afcAMS(afcUnit):
             pheaters.add_sensor_factory("temperature_oams", TemperatureOAMS)
         except Exception:
             pass
+
+        # Defer hardware resolution until reactor is running
+        self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
     def handle_connect(self):
         super().handle_connect()
@@ -119,15 +127,11 @@ class afcAMS(afcUnit):
         self.logo_error += 'R  ========</span>\n'
         self.logo_error += '  ' + self.name + '\n'
 
-        # Resolve OAMS hardware object
-        try:
-            self.oams = self.printer.lookup_object(f"oams {self.oams_name}", None)
-        except Exception:
-            self.oams = None
-
         # Build spool map, set custom commands, read per-lane engagement params
         for lane_name, lane in self.lanes.items():
-            slot = getattr(lane, 'index', 0)
+            slot = getattr(lane, 'index', 0) - 1
+            if slot < 0:
+                slot = 0
             self._spool_map[lane_name] = slot
             lane.custom_load_cmd = f"_OAMS_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
             lane.custom_unload_cmd = f"_OAMS_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
@@ -136,8 +140,12 @@ class afcAMS(afcUnit):
                 eng_speed = getattr(lane, 'engagement_speed', None) or self._engagement_speed
                 self._engagement_params[lane_name] = (eng_len, eng_speed)
 
-        # Initialize follower and monitor subsystems
-        self._init_follower_and_monitor()
+            # OpenAMS lanes use virtual sensors driven by hardware polling;
+            # initialize to False until handle_ready syncs from hardware
+            lane.prep_state = False
+            lane._load_state = False
+            lane.loaded_to_hub = False
+            lane.status = AFCLaneState.NONE
 
     def _init_follower_and_monitor(self):
         """Set up follower motor controller and stuck/clog monitor."""
@@ -174,6 +182,119 @@ class afcAMS(afcUnit):
                     on_stuck_cleared=self._on_stuck_spool_cleared)
             except Exception as e:
                 self.logger.error(f"Failed to init monitor: {e}")
+
+    def handle_ready(self):
+        """Resolve OAMS hardware and start sensor polling once reactor is running."""
+        self.oams = self.printer.lookup_object(f"oams {self.oams_name}", None)
+
+        if self.oams is None:
+            self.logger.warning(
+                f"OpenAMS hardware '[oams {self.oams_name}]' not found for "
+                f"'{self.name}'. Sensor state will not update.")
+            return
+
+        self._init_follower_and_monitor()
+
+        # Seed initial state from hardware sensors
+        self._sync_lanes_from_hardware()
+
+        # Start periodic polling (every 2s) for sensor changes
+        self._poll_timer = self.afc.reactor.register_timer(
+            self._poll_oams_sensors,
+            self.afc.reactor.monotonic() + 1.0)
+
+    def _sync_lanes_from_hardware(self):
+        """Read current OAMS sensor values and update all lane states."""
+        if self.oams is None:
+            return
+
+        eventtime = self.afc.reactor.monotonic()
+        f1s_values = getattr(self.oams, 'f1s_hes_value', None) or []
+        hub_values = getattr(self.oams, 'hub_hes_value', None) or []
+
+        for lane_name, lane in self.lanes.items():
+            slot = self._spool_map.get(lane_name, -1)
+            if slot < 0:
+                continue
+
+            f1s_present = bool(f1s_values[slot]) if slot < len(f1s_values) else False
+            hub_present = bool(hub_values[slot]) if slot < len(hub_values) else False
+
+            lane._load_state = f1s_present
+            lane.prep_state = f1s_present
+            lane.loaded_to_hub = hub_present
+
+            if slot < len(f1s_values):
+                self._last_f1s[slot] = f1s_present
+            if slot < len(hub_values):
+                self._last_hub[slot] = hub_present
+
+    def _poll_oams_sensors(self, eventtime):
+        """Periodic timer callback — detect sensor changes and update lane state."""
+        if self.oams is None:
+            return self.afc.reactor.NEVER
+
+        f1s_values = getattr(self.oams, 'f1s_hes_value', None) or []
+        hub_values = getattr(self.oams, 'hub_hes_value', None) or []
+
+        for lane_name, lane in self.lanes.items():
+            slot = self._spool_map.get(lane_name, -1)
+            if slot < 0:
+                continue
+
+            # F1S sensor (filament in spool bay)
+            if slot < len(f1s_values):
+                new_f1s = bool(f1s_values[slot])
+                old_f1s = self._last_f1s[slot] if slot < len(self._last_f1s) else None
+
+                if old_f1s is not None and new_f1s != old_f1s:
+                    lane._load_state = new_f1s
+                    lane.prep_state = new_f1s
+
+                    prep_done = getattr(lane, '_afc_prep_done', False)
+                    if prep_done:
+                        if new_f1s and not old_f1s:
+                            self.logger.info(f"OAMS: {lane.name} filament inserted")
+                            if lane.status == AFCLaneState.NONE:
+                                lane.set_loaded()
+                                self.lane_loaded(lane)
+                                self.afc.save_vars()
+
+                        elif not new_f1s and old_f1s:
+                            self.logger.info(f"OAMS: {lane.name} filament removed")
+                            if getattr(lane, 'tool_loaded', False):
+                                try:
+                                    is_printing = self.afc.function.is_printing()
+                                except Exception:
+                                    is_printing = False
+                                if is_printing:
+                                    self.afc.error.AFC_error(
+                                        f"OAMS runout on {lane.name}", pause=True)
+                            else:
+                                lane.loaded_to_hub = False
+                                lane.status = AFCLaneState.NONE
+                                self.lane_unloaded(lane)
+                                self.afc.save_vars()
+
+                self._last_f1s[slot] = bool(f1s_values[slot]) if slot < len(f1s_values) else None
+
+            # Hub HES sensor (filament at hub)
+            if slot < len(hub_values):
+                new_hub = bool(hub_values[slot])
+                old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
+
+                if old_hub is not None and new_hub != old_hub:
+                    lane.loaded_to_hub = new_hub
+                    hub = getattr(lane, 'hub_obj', None)
+                    if hub is not None and hasattr(hub, 'switch_pin_callback'):
+                        try:
+                            hub.switch_pin_callback(eventtime, new_hub)
+                        except Exception:
+                            pass
+
+                self._last_hub[slot] = bool(hub_values[slot]) if slot < len(hub_values) else None
+
+        return eventtime + 2.0
 
     # ── Engagement verification ─────────────────────────────────────
 
@@ -338,7 +459,7 @@ class afcAMS(afcUnit):
                 pass
 
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
-        """OpenAMS system test — check hardware and lane state."""
+        """OpenAMS system test — query hardware sensors for lane state."""
         msg = ''
         succeeded = True
 
@@ -346,43 +467,44 @@ class afcAMS(afcUnit):
             msg = '<span class=error--text>OAMS NOT CONNECTED</span>'
             succeeded = False
         else:
-            slot = self._spool_map.get(cur_lane.name, 0)
-            if cur_lane.prep_state:
+            slot = self._spool_map.get(cur_lane.name, -1)
+
+            # Read state directly from OAMS hardware sensors
+            f1s_values = getattr(self.oams, 'f1s_hes_value', None) or []
+            hub_values = getattr(self.oams, 'hub_hes_value', None) or []
+
+            f1s_present = bool(f1s_values[slot]) if 0 <= slot < len(f1s_values) else False
+            hub_present = bool(hub_values[slot]) if 0 <= slot < len(hub_values) else False
+
+            # Update lane state from hardware
+            cur_lane._load_state = f1s_present
+            cur_lane.prep_state = f1s_present
+            cur_lane.loaded_to_hub = hub_present
+
+            if f1s_present:
                 self.lane_loaded(cur_lane)
                 msg += "<span class=success--text>LOCKED</span>"
-                if cur_lane.load_state:
-                    cur_lane.status = AFCLaneState.LOADED
-                    msg += "<span class=success--text> AND LOADED</span>"
-                    self.lane_illuminate_spool(cur_lane)
+                cur_lane.status = AFCLaneState.LOADED
+                msg += "<span class=success--text> AND LOADED</span>"
+                self.lane_illuminate_spool(cur_lane)
 
-                    if (cur_lane.tool_loaded
-                        and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
-                        cur_lane.sync_to_extruder()
-                        msg += "<span class=primary--text> in ToolHead</span>"
-                        if self.afc.current == cur_lane.name:
-                            self.afc.spool.set_active_spool(cur_lane.spool_id)
-                            self.lane_tool_loaded(cur_lane)
-                            cur_lane.status = AFCLaneState.TOOLED
-                        else:
-                            self.lane_tool_loaded_idle(cur_lane)
-                        cur_lane.enable_buffer()
-                else:
-                    msg += "<span class=error--text> NOT LOADED</span>"
-                    self.lane_not_ready(cur_lane)
-                    succeeded = False
+                if (cur_lane.tool_loaded
+                    and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+                    cur_lane.sync_to_extruder()
+                    msg += "<span class=primary--text> in ToolHead</span>"
+                    if self.afc.current == cur_lane.name:
+                        self.afc.spool.set_active_spool(cur_lane.spool_id)
+                        self.lane_tool_loaded(cur_lane)
+                        cur_lane.status = AFCLaneState.TOOLED
+                    else:
+                        self.lane_tool_loaded_idle(cur_lane)
+                    cur_lane.enable_buffer()
             else:
-                if not cur_lane.load_state:
-                    self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
-                    msg += 'EMPTY READY FOR SPOOL'
-                else:
-                    self.lane_fault(cur_lane)
-                    msg += "<span class=error--text> NOT READY</span>"
-                    msg += '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
-                    succeeded = False
+                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                msg += 'EMPTY READY FOR SPOOL'
 
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
-        cur_lane.send_lane_data()
         cur_lane.do_enable(False)
         self.logger.info('{lane_name} tool cmd: {tcmd:3} {msg}'.format(
             lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))

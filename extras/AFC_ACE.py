@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import logging
 import traceback
 from configparser import Error as error
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -26,6 +28,12 @@ except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.form
 
 try: from extras.AFC_ACE_serial import ACEConnection
 except: raise error(ERROR_STR.format(import_lib="AFC_ACE_serial", trace=traceback.format_exc()))
+
+try: from extras.AFC_logger import AFC_QueueListener
+except: AFC_QueueListener = None
+
+try: from queuelogger import QueueHandler
+except: QueueHandler = None
 
 
 MODE_COMBINED = "combined"
@@ -116,9 +124,11 @@ class afcACE(afcUnit):
         self.logo_error += 'R  ========</span>\n'
         self.logo_error += '  ' + self.name + '\n'
 
-        # Build slot map and set custom load/unload commands
+        # Build slot map (1-based config index → 0-based ACE slot)
+        # and set custom load/unload commands
         for lane_name, lane in self.lanes.items():
-            slot = getattr(lane, 'index', 0)
+            idx = getattr(lane, 'index', 0)
+            slot = max(0, idx - 1)
             self._slot_map[lane_name] = slot
             lane.custom_load_cmd = f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
             lane.custom_unload_cmd = f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
@@ -128,19 +138,55 @@ class afcACE(afcUnit):
 
     _CONNECT_MAX_RETRIES = 5
     _CONNECT_RETRY_DELAYS = [2.0, 3.0, 5.0, 8.0, 10.0]
+    _SERIAL_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+    def _create_serial_logger(self):
+        """Create a dedicated logger for ACE serial comms (writes to AFC_ACE_serial.log)."""
+        if AFC_QueueListener is None or QueueHandler is None:
+            return None
+        logger = logging.getLogger("AFC_ACE_serial_file")
+        if logger.handlers:
+            return logger
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        try:
+            log_path = self.printer.start_args.get("log_file", None)
+            if log_path:
+                log_file = Path(log_path).parent / "AFC_ACE_serial.log"
+                # Rotate oversized log on startup
+                try:
+                    lp = Path(log_file)
+                    if lp.exists() and lp.stat().st_size > self._SERIAL_LOG_MAX_BYTES:
+                        backup = lp.with_suffix('.log.1')
+                        if backup.exists():
+                            backup.unlink()
+                        lp.rename(backup)
+                except Exception:
+                    pass
+                ql = AFC_QueueListener(log_file)
+                ql.setFormatter(logging.Formatter(
+                    "%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+                handler = QueueHandler(ql.bg_queue)
+                logger.addHandler(handler)
+                self._serial_ql = ql
+                return logger
+        except Exception:
+            pass
+        return None
 
     def _handle_ready(self):
         self.afc.reactor.register_callback(self._deferred_ace_connect)
 
     def _deferred_ace_connect(self, eventtime):
         """Connect to ACE hardware after reactor is fully running."""
+        serial_logger = self._create_serial_logger() or self.logger
         last_err = None
         for attempt in range(self._CONNECT_MAX_RETRIES):
             try:
                 self._ace = ACEConnection(
                     reactor=self.afc.reactor,
                     serial_port=self.serial_port,
-                    logger=self.logger,
+                    logger=serial_logger,
                     baud_rate=self.baud_rate,
                 )
                 self._ace.connect()
@@ -279,10 +325,10 @@ class afcACE(afcUnit):
         """Stage filament to hub via ACE serial feed."""
         if not lane.load_to_hub or lane.loaded_to_hub:
             return
+        if not lane.prep_state:
+            return
         slot = self._get_slot(lane.name)
         if not self._ace or not self._ace.connected:
-            return
-        if not self._ace.is_bay_ready(slot):
             return
         try:
             self._ace.feed_filament(slot, lane.dist_hub, self.feed_speed)
