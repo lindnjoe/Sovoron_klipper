@@ -535,12 +535,25 @@ class afcAMS(afcUnit):
         return succeeded
 
     def calibrate_bowden(self, cur_lane, dis, tol):
-        self._print_function_not_defined("calibrate_bowden")
-        return False, "Bowden calibration not supported for OpenAMS", 0
+        msg = (
+            "OpenAMS units do not support standard AFC bowden calibration. "
+            "Use OpenAMS-specific calibration commands instead:\n"
+            f"  - AFC_OAMS_CALIBRATE_PTFE SPOOL=<spool_index>\n"
+            f"  - AFC_OAMS_CALIBRATE_HUB_HES SPOOL=<spool_index>\n"
+            f"  - AFC_OAMS_CALIBRATE_HUB_HES_ALL"
+        )
+        self.logger.info(msg)
+        return False, msg, 0
 
     def calibrate_lane(self, cur_lane, tol):
-        self._print_function_not_defined("calibrate_lane")
-        return False, "Lane calibration not supported for OpenAMS", 0
+        msg = (
+            "OpenAMS units do not support standard AFC hub calibration. "
+            "Use OpenAMS-specific calibration commands instead:\n"
+            f"  - AFC_OAMS_CALIBRATE_HUB_HES SPOOL=<spool_index>\n"
+            f"  - AFC_OAMS_CALIBRATE_HUB_HES_ALL"
+        )
+        self.logger.info(msg)
+        return False, msg, 0
 
     # ── Custom load/unload gcode handlers ───────────────────────────
 
