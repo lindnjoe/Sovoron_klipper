@@ -111,7 +111,7 @@ class afc_hub:
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
-                if lane.load is None:
+                if lane.load is None and lane.prep is not None:
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
