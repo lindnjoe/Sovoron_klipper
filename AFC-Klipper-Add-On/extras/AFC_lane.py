@@ -220,7 +220,7 @@ class AFCLane:
         # lane triggers
         buttons = self.printer.load_object(config, "buttons")
         self.prep = config.get('prep', None)                                    # MCU pin for prep trigger
-        self.prep_state = False
+        self._prep_state = False
         if self.prep is not None:
             buttons.register_buttons([self.prep], self.prep_callback)
 
@@ -292,9 +292,10 @@ class AFCLane:
         if (self.hub
             and "direct" not in self.hub):
             self._get_hub_object()
-            if self.hub_obj.switch_pin is not None and not self.hub_obj.is_virtual_pin():
+            hub_pin = getattr(self.hub_obj, "switch_pin", None)
+            if hub_pin and str(hub_pin).lower() != "virtual":
                 self._set_homing_endstop(query_endstops, ppins,
-                                         self.hub_obj.switch_pin, AFCHomingPoints.HUB)
+                                         hub_pin, AFCHomingPoints.HUB)
         if self.buffer_name:
             self._get_buffer_object()
             self._set_homing_endstop(query_endstops, ppins,
@@ -590,6 +591,22 @@ class AFCLane:
         if add_to_other_obj:
             self.extruder_obj.lanes[self.name] = self
             self.extruder_obj.check_lanes()
+
+        # internal is only valid for units with their own filament engagement
+        # verification (currently only ACE). Toolchanger units are also
+        # allowed since they don't do filament loading themselves — the ACE
+        # unit handles load/unload for the shared extruder.
+        _INTERNAL_ALLOWED_TYPES = ("ACE", "Toolchanger")
+        if (self.extruder_obj.tool_start == "internal"
+            and self.unit_obj.type not in _INTERNAL_ALLOWED_TYPES):
+            raise error(
+                "pin_tool_start=internal on extruder {ext} is only supported "
+                "by ACE units, but lane {lane} belongs to a {ut} unit. Use "
+                "'buffer' with an [AFC_buffer]/[AFC_FPS] section, or set "
+                "pin_tool_start to a real sensor pin.".format(
+                    ext=self.extruder_obj.name, lane=self.name,
+                    ut=self.unit_obj.type)
+            )
 
         # Use buffer defined in stepper and override buffers that maybe set at the UNIT or extruder levels
         self.buffer_obj = self.unit_obj.buffer_obj
@@ -1034,6 +1051,14 @@ class AFCLane:
     @property
     def raw_load_state(self) -> bool:
         return bool(self._load_state)
+
+    @property
+    def prep_state(self) -> bool:
+        return self._prep_state
+
+    @prep_state.setter
+    def prep_state(self, state):
+        self._prep_state = bool(state)
 
     def selector_callback(self, eventtime: float, state):
         self._selector_state = state
@@ -1485,10 +1510,10 @@ class AFCLane:
 
         returns Status of toolhead pre sensor or the current buffer advance state
         """
-        if self.extruder_obj.tool_start == "buffer":
+        if self.extruder_obj.tool_start == "buffer" and self.buffer_obj is not None:
             return self.buffer_obj.advance_state
         elif self.extruder_obj.tool_start == "internal":
-            return self.extruder_obj.tool_start_state
+            return getattr(self, '_load_confirmed', False)
         elif self.extruder_obj.tool_start is None and self.extruder_obj.filament_sensor_obj is not None:
             return self.extruder_obj.filament_sensor_obj.runout_helper.filament_present
         else:
@@ -1504,7 +1529,8 @@ class AFCLane:
         if self.extruder_obj.tool_start == "buffer":
             return self.buffer_endstop_name
         elif self.extruder_obj.tool_start == "internal":
-            return AFCHomingPoints.TOOL
+            # No AFC-visible endstop — engagement is verified via unit firmware
+            return None
         else:
             return self.tool_endstop_name
 
@@ -1816,7 +1842,15 @@ class AFCLane:
             self.logger.error(msg)
             return
 
-        self.afc.function.unset_lane_loaded()
+        # Only unset a lane that's loaded on THIS lane's extruder, not the globally active one
+        if self.extruder_obj.lane_loaded is not None and self.extruder_obj.lane_loaded != self.name:
+            prev_lane = self.afc.lanes.get(self.extruder_obj.lane_loaded)
+            if prev_lane is not None:
+                prev_lane.unsync_to_extruder()
+                prev_lane.set_tool_unloaded()
+                prev_lane.unit_obj.return_to_home()
+                self.logger.info("Unset {} from extruder {} before setting {} as loaded".format(
+                    prev_lane.name, self.extruder_obj.name, self.name))
 
         self.afc.function.handle_activate_extruder()
         self.set_tool_loaded()

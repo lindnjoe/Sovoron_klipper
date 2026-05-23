@@ -533,21 +533,36 @@ class afcFunction:
         # self.reactor.update_timer( self.activate_extruder_cb, self.reactor.monotonic() + 5 )
         self._handle_activate_extruder(0)
 
-    def _handle_activate_extruder(self, eventtime):
+    def _handle_activate_extruder(self, eventtime, lane=None):
         """
-        Supposed to be a callback function from timer, currently this is not called from timer event.
-        TODO: Update this functionality before pushing to main/dev or once fully moved away from KTC
+        Syncs AFC lane state when the active extruder changes.
+        Optionally activates the klipper extruder for the given lane first,
+        then disables non-active lanes and enables the current one.
         """
+        if lane is not None:
+            lane.activate_toolhead_extruder()
 
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
+        active_buffer_obj = getattr(cur_lane_loaded, "buffer_obj", None) if cur_lane_loaded is not None else None
+        active_buffer_name = getattr(cur_lane_loaded, "buffer_name", None) if cur_lane_loaded is not None else None
 
         self.afc.spool.set_active_spool('')
         # Disable extruder steppers for non active lanes
         for key, obj in self.afc.lanes.items():
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
                 obj.do_enable(False)
-                obj.disable_buffer()
+                if (
+                    cur_lane_loaded is None
+                    or not (
+                        (active_buffer_obj is not None and getattr(obj, "buffer_obj", None) is active_buffer_obj)
+                        or (
+                            active_buffer_name is not None
+                            and getattr(obj, "buffer_name", None) == active_buffer_name
+                        )
+                    )
+                ):
+                    obj.disable_buffer()
                 if (cur_lane_loaded is None
                     or (obj.unit_obj.name != cur_lane_loaded.unit_obj.name)):
                     obj.unit_obj.return_to_home()
@@ -567,7 +582,7 @@ class afcFunction:
 
         # Switch spoolman ID
         self.afc.spool.set_active_spool(cur_lane_loaded.spool_id)
-        # Set lanes tool loaded led (uses filament color when available via _get_lane_color)
+        # Set lanes tool loaded led
         cur_lane_loaded.unit_obj.lane_tool_loaded( cur_lane_loaded )
         # Enable stepper
         cur_lane_loaded.do_enable(True)
@@ -576,23 +591,36 @@ class afcFunction:
         cur_lane_loaded.sync_to_extruder()
         cur_lane_loaded.unit_obj.select_lane( cur_lane_loaded )
         self.logger.debug("Activate extruder done")
-        # TODO: Remove or add back once fully moved away from KTC
-        # return self.reactor.NEVER
 
-    def unset_lane_loaded(self):
+    def unset_lane_loaded(self, lane_name=None):
         """
-        Helper function to get current lane and unsync lane from toolhead extruder
+        Helper function to get current lane and unsync lane from toolhead extruder.
+
+        :param lane_name: Optional lane name to unset. When None, auto-detects
+                          from active extruder or falls back to self.current.
         """
-        cur_lane_loaded = self.get_current_lane_obj()
-        if cur_lane_loaded is not None:
-            extruder_name = getattr(cur_lane_loaded, 'extruder_name', None)
-            cur_lane_loaded.unsync_to_extruder()
-            cur_lane_loaded.set_tool_unloaded()
-            cur_lane_loaded.unit_obj.return_to_home()
-            cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
-            self.afc.function.handle_activate_extruder()
-            self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
-            self.afc.save_vars()
+        cur_lane_loaded = None
+        if lane_name is not None:
+            cur_lane_loaded = self.afc.lanes.get(lane_name)
+            if cur_lane_loaded is None:
+                self.logger.info("UNSET_LANE_LOADED: unknown lane '{}'".format(lane_name))
+                return
+        else:
+            cur_lane_loaded = self.get_current_lane_obj()
+        if cur_lane_loaded is None and self.afc.current is not None:
+            cur_lane_loaded = self.afc.lanes.get(self.afc.current)
+        if cur_lane_loaded is None:
+            self.logger.info("UNSET_LANE_LOADED: no lane currently loaded")
+            return
+        extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
+        cur_lane_loaded.unsync_to_extruder()
+        cur_lane_loaded.set_tool_unloaded()
+        self.afc.current = None
+        cur_lane_loaded.unit_obj.return_to_home()
+        self.afc.function.handle_activate_extruder()
+        self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
+        self.afc.save_vars()
+        cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
 
     def select_loaded_lane(self):
         """
@@ -902,7 +930,7 @@ class afcFunction:
 
         calibration_info = {}
         for lane in calibrate_lanes:
-            if lane.extruder_obj.is_standalone():
+            if lane.extruder_obj.no_lanes:
                 self.logger.info(f"{lane.name} is a standalone lane, skipping calibration")
                 continue
             if not lane.load_state or not lane.prep_state:
@@ -1213,7 +1241,7 @@ class afcFunction:
                 continue
 
             # Filtering out units that only have standalone lanes (toolchanger extruders without assist)
-            if all( lane.extruder_obj.is_standalone() for lane in self.afc.units.get(key).lanes.values() ):
+            if all( lane.extruder_obj.no_lanes for lane in self.afc.units.get(key).lanes.values() ):
                 continue
 
             # Create a button for each unit
@@ -1322,7 +1350,7 @@ class afcFunction:
 
         if (lanes is not None
             and lanes != 'all'
-            and self.afc.lanes.get(lanes).extruder_obj.is_standalone()):
+            and self.afc.lanes.get(lanes).extruder_obj.no_lanes):
             self.afc.error.AFC_error(f"{lanes} is a standalone lane, cannot calibrate", pause=False)
             return
 
