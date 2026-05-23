@@ -628,17 +628,24 @@ class afcACE(afcUnit):
         return succeeded
 
     def _clear_stale_sensor_state(self, cur_lane):
-        """Clear stale filament_present / tool_start_state / FPS latch
-        so calibration reads real-time sensor values."""
-        sensor_obj = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
-        if sensor_obj is not None:
-            sensor_obj.runout_helper.filament_present = False
+        """Clear stale tool_start_state / FPS latch so calibration reads
+        real-time sensor values. For U1 motion sensors, does NOT clear
+        filament_present — the raw button state is used instead."""
         if hasattr(cur_lane.extruder_obj, 'tool_start_state'):
             cur_lane.extruder_obj.tool_start_state = False
         buffer_obj = getattr(cur_lane, 'buffer_obj', None)
         if buffer_obj is not None and hasattr(buffer_obj, 'clear_advance_latch'):
             buffer_obj.clear_advance_latch()
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+
+    def _calibration_sensor_triggered(self, cur_lane):
+        """Check if the toolhead sensor is triggered, using the raw hardware
+        button state for U1 motion sensors (which need encoder rotation for
+        filament_present but have a physical switch for static detection)."""
+        sensor_obj = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
+        if sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state'):
+            return bool(sensor_obj.runout_buttun_state)
+        return cur_lane.get_toolhead_pre_sensor_state()
 
     def _feed_until_sensor(self, slot, cur_lane, max_distance, step_size=None):
         """Feed filament in steps until toolhead sensor triggers.
@@ -659,13 +666,15 @@ class afcACE(afcUnit):
                     f"ACE calibration: feed failed at {total_fed:.0f}mm, retrying: {e}")
                 self._wait_for_ace_ready(timeout=15.0)
                 self._ace.feed_filament(slot, step, self.feed_speed)
-            self._wait_for_feed_complete(slot, step, self.feed_speed)
+            sensor_hit = self._wait_for_feed_complete(
+                slot, step, self.feed_speed, lane=cur_lane, poll_interval=0.3)
             total_fed += step
 
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
-            if cur_lane.get_toolhead_pre_sensor_state():
+            if sensor_hit or self._calibration_sensor_triggered(cur_lane):
                 self.logger.info(f"ACE calibration: sensor triggered at {total_fed:.1f}mm")
                 return total_fed, True
+
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
 
         return total_fed, False
 
@@ -690,7 +699,7 @@ class afcACE(afcUnit):
     def _calibrate_bowden_inner(self, cur_lane, cur_hub, slot):
         self._clear_stale_sensor_state(cur_lane)
 
-        if cur_lane.get_toolhead_pre_sensor_state():
+        if self._calibration_sensor_triggered(cur_lane):
             return False, "Toolhead sensor already triggered — unload first", 0
 
         old_bowden = getattr(cur_hub, 'afc_bowden_length', 0)
