@@ -76,7 +76,7 @@ class afc_hub:
         return self.name
 
     def is_virtual_pin(self):
-        return self.switch_pin.lower() == "virtual"
+        return self.switch_pin is not None and self.switch_pin.lower() == "virtual"
 
     def handle_runout(self, eventtime):
         """
