@@ -57,6 +57,18 @@ class State:
     RESTORING_POS   = "Restoring"
 
 def load_config(config):
+    # Register U1 temperature sensor factories early — Klipper resolves
+    # sensor_type during config parsing, before handle_connect runs.
+    try:
+        from extras.temperature_ace import _register_sensor_factory
+        _register_sensor_factory(config.get_printer())
+    except Exception:
+        pass
+    try:
+        from extras.temperature_oams import _register_sensor_factory
+        _register_sensor_factory(config.get_printer())
+    except Exception:
+        pass
     return afc(config)
 
 class afc:
