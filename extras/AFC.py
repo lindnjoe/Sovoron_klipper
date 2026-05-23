@@ -1875,6 +1875,10 @@ class afc:
 
         # ── Phase 1: Toolhead operations (shared by ALL unit types) ──
 
+        # Let the unit set up hardware (e.g. OAMS follower reverse) before
+        # toolhead moves begin.
+        cur_lane.unit_obj.prepare_unload(cur_lane, cur_hub, cur_extruder)
+
         # LED animation
         cur_lane.unit_obj.lane_unloading(cur_lane)
 

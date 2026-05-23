@@ -556,6 +556,14 @@ class afcUnit:
         if lane.led_spool_index:
             self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
 
+    def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
+        """Called before Phase 1 toolhead operations in unload_sequence.
+
+        Override in subclasses that need hardware setup (e.g. follower
+        reverse) before cut/park/tip runs.
+        """
+        pass
+
     def lane_unloading(self, lane):
         """
         Common function for setting a lanes led when lane is unloading

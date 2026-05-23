@@ -1472,22 +1472,24 @@ class afcAMS(afcUnit):
         cur_lane.loaded_to_hub = True
         return True
 
+    def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
+        """Set OAMS follower to reverse before AFC runs cut/park/tip."""
+        if self._follower is not None and self.oams is not None:
+            fps_state = self._get_monitor_state()
+            if fps_state:
+                self._follower.set_follower_state(
+                    fps_state, self.oams, 1, 0, "before unload cut", force=True)
+
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
         """OpenAMS unload — transport only.
 
         Retracts filament from toolhead back to spool bay via OAMS hardware.
         Toolhead operations (LED, heat, quick pull, sync, cut/park/tip) are
-        handled by AFC.py before this is called. Lane is already unsynced
+        handled by AFC.py before this is called. Follower reverse is set up
+        via prepare_unload() before those ops. Lane is already unsynced
         from the extruder when we enter here.
         """
         afc = self.afc
-
-        # Set follower reverse so it assists the retract
-        if self._follower is not None and self.oams is not None:
-            fps_state = self._get_monitor_state()
-            if fps_state:
-                self._follower.set_follower_state(
-                    fps_state, self.oams, 1, 0, "before unload retract", force=True)
 
         try:
             self.logger.debug(
