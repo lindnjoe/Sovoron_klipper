@@ -132,12 +132,6 @@ class afcPrep:
                   units["system"]["extruders"][extruder_obj.name]['lane_loaded']:
                     extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
 
-        # Restore current_load so CHANGE_TOOL knows which lane is active
-        if 'system' in units and 'current_load' in units["system"]:
-            saved_current = units["system"]["current_load"]
-            if saved_current and saved_current in self.afc.lanes:
-                self.afc.current = saved_current
-
         # Second pass: activate the extruder whose tool is on the shuttle.
         # Only activate one — the first extruder where on_shuttle() is
         # True.  For non-toolchanger (single extruder) setups on_shuttle()
