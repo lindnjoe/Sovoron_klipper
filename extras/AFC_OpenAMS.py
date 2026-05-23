@@ -1030,10 +1030,6 @@ class afcAMS(afcUnit):
                 self.logger.debug(
                     f"Engagement verified for {cur_lane.name} "
                     f"(encoder={encoder_delta}, pressure={fps_pressure:.2f})")
-                # Complete the load with remaining stn distance
-                reload_length, reload_speed = self.get_reload_params(cur_lane.name)
-                if reload_length and reload_speed and reload_length > 0:
-                    self._oams_extrude(reload_length, reload_speed, "post_engagement")
                 return True
 
             # Encoder didn't move enough — retry with short delay
@@ -1045,9 +1041,6 @@ class afcAMS(afcUnit):
                 self.logger.debug(
                     f"Engagement verified on retry for {cur_lane.name} "
                     f"(encoder={encoder_delta})")
-                reload_length, reload_speed = self.get_reload_params(cur_lane.name)
-                if reload_length and reload_speed and reload_length > 0:
-                    self._oams_extrude(reload_length, reload_speed, "post_engagement")
                 return True
 
             self.logger.info(
@@ -1076,10 +1069,10 @@ class afcAMS(afcUnit):
             gcode.run_script_from_command(f"RESTORE_GCODE_STATE NAME={context} MOVE=0")
 
     def _oams_unload(self, cur_lane):
-        """Unload filament via OAMS hardware directly.
+        """Unload filament via OAMS hardware — transport only.
 
-        Retracts filament from extruder gears first, then tells OAMS
-        hardware to pull it back to the spool bay.
+        AFC.py Phase 1 already handled toolhead disengagement (cut/park/tip).
+        This just tells OAMS hardware to pull filament back to the spool bay.
 
         :param cur_lane: Lane to unload
         :return: (success, message) tuple
@@ -1095,28 +1088,14 @@ class afcAMS(afcUnit):
         if self._monitor is not None:
             self._monitor.stop()
 
-        # Retract filament from extruder gears before OAMS hardware unload.
-        # The OAMS firmware handles follower direction internally during unload.
-        unload_length, unload_speed = self.get_unload_params(cur_lane.name)
-        if unload_length and unload_length > 0:
-            unload_length += 10.0  # Extra margin to fully clear extruder gears
-            retract_speed = unload_speed if unload_speed else 25.0 * 60.0
-            self.logger.debug(
-                f"Retracting {unload_length:.1f}mm from extruder before OAMS unload")
-            try:
-                self._oams_extrude(-unload_length, retract_speed, "pre_oams_unload_retract")
-            except Exception as e:
-                self.logger.warning(f"Extruder retract before OAMS unload failed: {e}")
-
         try:
             # Queue a 20mm extruder retract WITHOUT waiting — it runs
             # concurrently with the OAMS hardware unload so the extruder
-            # helps pull filament back as the spool motor rewinds.
+            # helps pull filament out of extruder gears as the spool rewinds.
             try:
                 gcode = self.afc.gcode
                 gcode.run_script_from_command("M83")
                 gcode.run_script_from_command("G1 E-20.00 F1500")
-                # No M400 — let it run in parallel with unload_spool
             except Exception as e:
                 self.logger.warning(f"Concurrent retract failed: {e}")
 

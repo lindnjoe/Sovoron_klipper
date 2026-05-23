@@ -1422,8 +1422,7 @@ class afcACE(afcUnit):
                     )
                     return False
 
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+        # Extruder heating is handled by AFC.py before calling custom_load_cmd.
 
         return self._load_sequence_feed_and_verify(
             cur_lane, cur_hub, cur_extruder, afc
@@ -1720,9 +1719,7 @@ class afcACE(afcUnit):
 
         # AFC's unload_sequence handles shared toolhead operations
         # (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
-        # before calling this via custom_unload_cmd.
-
-        cur_lane.unsync_to_extruder()
+        # and unsync_to_extruder before calling this via custom_unload_cmd.
 
         local_slot = self._get_local_slot_for_lane(cur_lane)
         full_retract = self._get_retract_length(cur_lane)
@@ -2110,24 +2107,7 @@ class afcACE(afcUnit):
                     f"{slot_index}: {e}"
                 )
 
-            # Use extruder motor to pull filament into hotend
-            if self.extruder_assist_length > 0:
-                ext_spd = self._quiet_speed(self.extruder_assist_speed)
-                self.afc.gcode.run_script_from_command(
-                    f"G92 E0\n"
-                    f"G1 E{self.extruder_assist_length} F{ext_spd}"
-                )
-
-            # U1: re-check sensor after extruder assist — the encoder
-            # can only fire when the extruder motor pulls filament.
-            if is_u1 and not sensor_triggered and lane is not None:
-                self.afc.reactor.pause(
-                    self.afc.reactor.monotonic() + 0.2)
-                if lane.get_toolhead_pre_sensor_state():
-                    sensor_triggered = True
-                    self.logger.info(
-                        "ACE feed: U1 sensor triggered after "
-                        "extruder assist")
+            # Extruder pull into hotend is handled by AFC.py tool_stn.
 
         return total_fed, sensor_triggered, early_engage
 
