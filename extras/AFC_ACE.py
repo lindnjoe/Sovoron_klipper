@@ -108,8 +108,8 @@ class afcACE(afcUnit):
         # Feed/retract parameters — speeds are in mm/s (matches ACE firmware expectation)
         self.feed_speed = config.getfloat("feed_speed", 60.0)             # mm/s — ACE firmware expects mm/s
         self.retract_speed = config.getfloat("retract_speed", 50.0)       # mm/s — ACE firmware expects mm/s
-        self.feed_length = config.getfloat("feed_length", 500.0)        # mm
-        self.retract_length = config.getfloat("retract_length", 500.0)  # mm
+        self.feed_length = config.getfloat("feed_length", None)          # mm — None means derive from hub bowden
+        self.retract_length = config.getfloat("retract_length", None)  # mm — None means derive from hub bowden
         self.unload_preretract = config.getfloat("unload_preretract", 50.0) # mm - ACE rewind before cut to tighten spool
 
         # Hub distance: slot-to-hub/combiner distance.  Used for two-phase
@@ -434,20 +434,34 @@ class afcACE(afcUnit):
         return self._default_feed_assist
 
     def _get_feed_length(self, lane=None) -> float:
-        """Get effective feed_length, checking lane override first."""
+        """Get effective feed_length: per-lane override > unit config > hub bowden + dist_hub."""
         if lane is not None:
             name = getattr(lane, 'name', None)
             if name and name in self._lane_feed_length:
                 return self._lane_feed_length[name]
-        return self.feed_length
+        if self.feed_length is not None:
+            return self.feed_length
+        if lane is not None:
+            hub = getattr(lane, 'hub_obj', None)
+            if hub is not None:
+                dist_hub = self._get_dist_hub(lane)
+                return getattr(hub, 'afc_bowden_length', 500.0) + dist_hub
+        return 500.0
 
     def _get_retract_length(self, lane=None) -> float:
-        """Get effective retract_length, checking lane override first."""
+        """Get effective retract_length: per-lane override > unit config > hub unload bowden + dist_hub."""
         if lane is not None:
             name = getattr(lane, 'name', None)
             if name and name in self._lane_retract_length:
                 return self._lane_retract_length[name]
-        return self.retract_length
+        if self.retract_length is not None:
+            return self.retract_length
+        if lane is not None:
+            hub = getattr(lane, 'hub_obj', None)
+            if hub is not None:
+                dist_hub = self._get_dist_hub(lane)
+                return getattr(hub, 'afc_unload_bowden_length', 500.0) + dist_hub
+        return 500.0
 
     def _get_dist_hub(self, lane=None) -> float:
         """Get effective dist_hub, checking lane override first."""
@@ -3165,8 +3179,8 @@ class afcACE(afcUnit):
         new_retract_length = round(distance - 20, 0)
 
         # Update in-memory unit-level values
-        old_feed = self.feed_length
-        old_retract = self.retract_length
+        old_feed = self._get_feed_length(cur_lane)
+        old_retract = self._get_retract_length(cur_lane)
         self.feed_length = new_feed_length
         self.retract_length = new_retract_length
 
