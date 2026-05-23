@@ -93,28 +93,30 @@ class afcACE(afcUnit):
         self._hub_load_suppressed: set[str] = set()
 
         self.gcode = self.printer.lookup_object('gcode')
-        cmd_prefix = self.name.upper().replace(" ", "_")
+        unit_suffix = self.name.upper().replace(" ", "_")
+        self._custom_load_cmd_name = f'_ACE_CUSTOM_LOAD_{unit_suffix}'
+        self._custom_unload_cmd_name = f'_ACE_CUSTOM_UNLOAD_{unit_suffix}'
         self.gcode.register_command(
-            f'_ACE_CUSTOM_LOAD', self._cmd_ace_custom_load,
-            desc="ACE internal load command")
+            self._custom_load_cmd_name, self._cmd_ace_custom_load,
+            desc=f"ACE internal load command ({self.name})")
         self.gcode.register_command(
-            f'_ACE_CUSTOM_UNLOAD', self._cmd_ace_custom_unload,
-            desc="ACE internal unload command")
+            self._custom_unload_cmd_name, self._cmd_ace_custom_unload,
+            desc=f"ACE internal unload command ({self.name})")
         self.gcode.register_command(
-            'ACE_CALIBRATE', self.cmd_ACE_CALIBRATE,
-            desc="Calibrate ACE feed distance to toolhead")
+            f'ACE_CALIBRATE_{unit_suffix}', self.cmd_ACE_CALIBRATE,
+            desc=f"Calibrate ACE feed distance to toolhead ({self.name})")
         self.gcode.register_command(
-            'ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB,
-            desc="Calibrate ACE feed distance to hub")
+            f'ACE_CALIBRATE_HUB_{unit_suffix}', self.cmd_ACE_CALIBRATE_HUB,
+            desc=f"Calibrate ACE feed distance to hub ({self.name})")
         self.gcode.register_command(
-            'ACE_STATUS', self.cmd_ACE_STATUS,
-            desc="Query ACE hardware status")
+            f'ACE_STATUS_{unit_suffix}', self.cmd_ACE_STATUS,
+            desc=f"Query ACE hardware status ({self.name})")
         self.gcode.register_command(
-            'ACE_DRY', self.cmd_ACE_DRY,
-            desc="Start ACE filament dryer")
+            f'ACE_DRY_{unit_suffix}', self.cmd_ACE_DRY,
+            desc=f"Start ACE filament dryer ({self.name})")
         self.gcode.register_command(
-            'ACE_LANE_RESET', self.cmd_ACE_LANE_RESET,
-            desc="Retract ACE lane filament back into unit")
+            f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
+            desc=f"Retract ACE lane filament back into unit ({self.name})")
 
         # Register temperature_ace sensor factory during config parsing
         # so [temperature_sensor] sections can resolve sensor_type: temperature_ace
@@ -148,8 +150,8 @@ class afcACE(afcUnit):
             idx = getattr(lane, 'index', 0)
             slot = max(0, idx - 1)
             self._slot_map[lane_name] = slot
-            lane.custom_load_cmd = f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
-            lane.custom_unload_cmd = f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
+            lane.custom_load_cmd = f"{self._custom_load_cmd_name} UNIT={self.name} LANE={lane_name}"
+            lane.custom_unload_cmd = f"{self._custom_unload_cmd_name} UNIT={self.name} LANE={lane_name}"
 
         # Defer serial connection until reactor is running (klippy:ready)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
