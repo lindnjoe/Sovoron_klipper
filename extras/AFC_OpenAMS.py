@@ -606,6 +606,12 @@ class afcAMS(afcUnit):
             self._poll_oams_sensors,
             self.afc.reactor.monotonic() + 1.0)
 
+    def _is_virtual_hub(self, lane) -> bool:
+        hub = lane.hub_obj
+        return (hub is not None
+                and hasattr(hub, 'is_virtual_pin')
+                and hub.is_virtual_pin())
+
     def _sync_lanes_from_hardware(self):
         """Read current OAMS sensor values and update all lane states."""
         if self.oams is None:
@@ -625,7 +631,10 @@ class afcAMS(afcUnit):
 
             lane._load_state = f1s_present
             lane.prep_state = f1s_present
-            lane.loaded_to_hub = hub_present
+            if self._is_virtual_hub(lane):
+                lane.loaded_to_hub = f1s_present
+            else:
+                lane.loaded_to_hub = hub_present
 
             if slot < len(f1s_values):
                 self._last_f1s[slot] = f1s_present
@@ -652,11 +661,14 @@ class afcAMS(afcUnit):
                 continue
 
             # F1S sensor (filament in spool bay)
+            virtual_hub = self._is_virtual_hub(lane)
             if slot < len(f1s_values):
                 new_f1s = bool(f1s_values[slot])
 
                 lane._load_state = new_f1s
                 lane.prep_state = new_f1s
+                if virtual_hub:
+                    lane.loaded_to_hub = new_f1s
 
                 if resync_prev:
                     self._last_f1s[slot] = new_f1s
@@ -700,12 +712,14 @@ class afcAMS(afcUnit):
 
                 if resync_prev:
                     self._last_hub[slot] = new_hub
-                    lane.loaded_to_hub = new_hub
+                    if not virtual_hub:
+                        lane.loaded_to_hub = new_hub
                 else:
                     old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
 
                     if old_hub is not None and new_hub != old_hub:
-                        lane.loaded_to_hub = new_hub
+                        if not virtual_hub:
+                            lane.loaded_to_hub = new_hub
                         hub = getattr(lane, 'hub_obj', None)
                         if hub is not None and hasattr(hub, 'switch_pin_callback'):
                             try:
@@ -900,7 +914,10 @@ class afcAMS(afcUnit):
             # Update lane state from hardware
             cur_lane._load_state = f1s_present
             cur_lane.prep_state = f1s_present
-            cur_lane.loaded_to_hub = hub_present
+            if self._is_virtual_hub(cur_lane):
+                cur_lane.loaded_to_hub = f1s_present
+            else:
+                cur_lane.loaded_to_hub = hub_present
 
             if f1s_present:
                 self.lane_loaded(cur_lane)

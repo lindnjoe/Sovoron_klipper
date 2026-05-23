@@ -535,19 +535,30 @@ class afcFunction:
 
     def _handle_activate_extruder(self, eventtime):
         """
-        Supposed to be a callback function from timer, currently this is not called from timer event.
-        TODO: Update this functionality before pushing to main/dev or once fully moved away from KTC
+        Syncs AFC lane state when the active extruder changes.
+        Disables non-active lanes and enables the current one.
         """
-
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
+        active_buffer_obj = getattr(cur_lane_loaded, "buffer_obj", None) if cur_lane_loaded is not None else None
+        active_buffer_name = getattr(cur_lane_loaded, "buffer_name", None) if cur_lane_loaded is not None else None
 
         self.afc.spool.set_active_spool('')
         # Disable extruder steppers for non active lanes
         for key, obj in self.afc.lanes.items():
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
                 obj.do_enable(False)
-                obj.disable_buffer()
+                if (
+                    cur_lane_loaded is None
+                    or not (
+                        (active_buffer_obj is not None and getattr(obj, "buffer_obj", None) is active_buffer_obj)
+                        or (
+                            active_buffer_name is not None
+                            and getattr(obj, "buffer_name", None) == active_buffer_name
+                        )
+                    )
+                ):
+                    obj.disable_buffer()
                 if (cur_lane_loaded is None
                     or (obj.unit_obj.name != cur_lane_loaded.unit_obj.name)):
                     obj.unit_obj.return_to_home()
@@ -567,7 +578,7 @@ class afcFunction:
 
         # Switch spoolman ID
         self.afc.spool.set_active_spool(cur_lane_loaded.spool_id)
-        # Set lanes tool loaded led (uses filament color when available via _get_lane_color)
+        # Set lanes tool loaded led
         cur_lane_loaded.unit_obj.lane_tool_loaded( cur_lane_loaded )
         # Enable stepper
         cur_lane_loaded.do_enable(True)
@@ -902,7 +913,7 @@ class afcFunction:
 
         calibration_info = {}
         for lane in calibrate_lanes:
-            if lane.extruder_obj.is_standalone():
+            if lane.extruder_obj.no_lanes:
                 self.logger.info(f"{lane.name} is a standalone lane, skipping calibration")
                 continue
             if not lane.load_state or not lane.prep_state:
@@ -1213,7 +1224,7 @@ class afcFunction:
                 continue
 
             # Filtering out units that only have standalone lanes (toolchanger extruders without assist)
-            if all( lane.extruder_obj.is_standalone() for lane in self.afc.units.get(key).lanes.values() ):
+            if all( lane.extruder_obj.no_lanes for lane in self.afc.units.get(key).lanes.values() ):
                 continue
 
             # Create a button for each unit
@@ -1322,7 +1333,7 @@ class afcFunction:
 
         if (lanes is not None
             and lanes != 'all'
-            and self.afc.lanes.get(lanes).extruder_obj.is_standalone()):
+            and self.afc.lanes.get(lanes).extruder_obj.no_lanes):
             self.afc.error.AFC_error(f"{lanes} is a standalone lane, cannot calibrate", pause=False)
             return
 

@@ -19,7 +19,7 @@ except:
     raise_string = "Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc())
     raise error(raise_string)
 
-try: from extras.AFC_lane import AFCLane, AFCHomingPoints, VALID_DIRECT_HUB
+try: from extras.AFC_lane import AFCLane, AFCHomingPoints
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 if TYPE_CHECKING:
@@ -452,7 +452,7 @@ class AFCExtruderStepper(AFCLane):
         hub_pin = self.hub_endstop
         if hub_pin is None:
             hub_name = getattr(self, 'hub', None)
-            if not hub_name or hub_name in VALID_DIRECT_HUB:
+            if not hub_name or 'direct' in hub_name:
                 hub_name = self._inherit_from_unit('hub')
             hub_pin = self._get_section_value('AFC_hub', hub_name, 'switch_pin')
 
@@ -472,10 +472,10 @@ class AFCExtruderStepper(AFCLane):
         if (hub_pin
             and hub_pin.lower() != "virtual"):
             self._add_endstop('hub', hub_pin, 'hub')
-        if tool_start_pin != 'buffer':
-            self._add_endstop('tool_start', tool_start_pin, 'tool_start')
-        else:
+        if tool_start_pin == 'buffer':
             self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
+        elif tool_start_pin:
+            self._add_endstop('tool_start', tool_start_pin, 'tool_start')
         self._add_endstop('tool_end', tool_end_pin, 'tool_end')
         self._add_endstop('buffer_advance', buffer_adv_pin, 'buffer_adv')
         self._add_endstop('buffer_trailing', buffer_trail_pin, 'buffer_trailing')
