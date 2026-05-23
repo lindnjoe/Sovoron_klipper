@@ -1673,20 +1673,8 @@ class afcACE(afcUnit):
             self._fps_latched = False
             self._fps_consecutive_hits = 0
 
-    def _unload_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
-        afc = self.afc
-
-        if self._ace is None or not self._ace.connected:
-            afc.error.handle_lane_failure(
-                cur_lane,
-                f"ACE unload failed: ACE not connected ({self.serial_port})",
-            )
-            return False
-
-        # Disable any active buffers on the shared extruder from other units
-        self._disable_extruder_buffers(cur_extruder, cur_lane)
-
-        # Stop feed assist before unloading - it was kept running while loaded
+    def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
+        """Stop ACE feed assist before AFC runs cut/park/tip."""
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot >= 0 and self._ace is not None:
             try:
@@ -1700,6 +1688,21 @@ class afcACE(afcUnit):
                 self.logger.warning(
                     f"ACE unload: failed to stop feed assist for slot {local_slot}: {e}"
                 )
+
+    def _unload_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
+        afc = self.afc
+
+        if self._ace is None or not self._ace.connected:
+            afc.error.handle_lane_failure(
+                cur_lane,
+                f"ACE unload failed: ACE not connected ({self.serial_port})",
+            )
+            return False
+
+        # Disable any active buffers on the shared extruder from other units
+        self._disable_extruder_buffers(cur_extruder, cur_lane)
+
+        # Feed assist already stopped by prepare_unload() before cut/park/tip.
 
         # AFC's unload_sequence handles shared toolhead operations
         # (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
