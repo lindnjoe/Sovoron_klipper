@@ -865,6 +865,12 @@ class afcACE(afcUnit):
         afc.afcDeltaTime.log_with_time("ACE load transport complete")
         return True
 
+    def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
+        """Stop ACE feed assist before AFC runs cut/park/tip."""
+        slot = self._get_slot(cur_lane.name)
+        if slot >= 0:
+            self._stop_feed_assist(slot)
+
     def _ace_unload_sequence(self, cur_lane, cur_extruder) -> bool:
         """Full ACE unload: heat → cut → park → tip → retract → ACE serial unwind."""
         self._operation_active = True
@@ -889,8 +895,7 @@ class afcACE(afcUnit):
                 cur_lane, f"ACE not connected ({self.serial_port})")
             return False
 
-        # Stop feed assist
-        self._stop_feed_assist(slot)
+        # Feed assist already stopped by prepare_unload() before cut/park/tip.
 
         # Retract from extruder gears
         if cur_extruder.tool_stn_unload > 0:
