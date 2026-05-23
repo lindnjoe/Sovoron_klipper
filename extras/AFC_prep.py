@@ -121,21 +121,35 @@ class afcPrep:
             self.afc.error.AFC_error(error_string, False)
 
         # check if Lane is supposed to be loaded in tool head from saved file
+        # First pass: restore lane_loaded from saved state
         for extruder in self.afc.tools.keys():
             extruder_obj=self.afc.tools[extruder]
             extruder_obj.set_status_led( self.afc.led_tool_unloaded )
-            if extruder_obj.on_shuttle():
-                # Calls ACTIVATE_EXTRUDER if current toolhead on shuttle is not the active extruder
-                if self.afc.function.get_current_extruder() != extruder_obj.name:
-                    self.afc.gcode.run_script_from_command(
-                        f"ACTIVATE_EXTRUDER EXTRUDER={extruder_obj.name}"
-                    )
             if 'system' in units and "extruders" in units["system"]:
                 # Check to see if lane_loaded is in dictionary and its not an empty string
                 if extruder_obj.name in units["system"]["extruders"] and \
                   'lane_loaded' in units["system"]["extruders"][extruder_obj.name] and \
                   units["system"]["extruders"][extruder_obj.name]['lane_loaded']:
                     extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
+
+        # Restore current_load so CHANGE_TOOL knows which lane is active
+        if 'system' in units and 'current_load' in units["system"]:
+            saved_current = units["system"]["current_load"]
+            if saved_current and saved_current in self.afc.lanes:
+                self.afc.current = saved_current
+
+        # Second pass: activate the extruder whose tool is on the shuttle.
+        # Only activate one — the first extruder where on_shuttle() is
+        # True.  For non-toolchanger (single extruder) setups on_shuttle()
+        # always returns True so the default extruder stays active.
+        active_extruder = self.afc.toolhead.get_extruder().name
+        for extruder in self.afc.tools.keys():
+            extruder_obj=self.afc.tools[extruder]
+            if extruder_obj.on_shuttle() and active_extruder != extruder_obj.name:
+                self.afc.gcode.run_script_from_command(
+                    f"ACTIVATE_EXTRUDER EXTRUDER={extruder_obj.name}"
+                )
+                break
 
 
         for lane in self.afc.lanes.keys():
