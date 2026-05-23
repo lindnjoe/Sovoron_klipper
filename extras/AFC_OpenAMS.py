@@ -1030,7 +1030,7 @@ class afcAMS(afcUnit):
         return True
 
     def _oams_unload_sequence(self, cur_lane, cur_extruder) -> bool:
-        """Full OAMS unload: heat → cut → park → tip → OAMS hardware unload."""
+        """OAMS unload transport — OAMS hardware unload back to spool bay."""
         self._operation_active = True
         try:
             return self._oams_unload_inner(cur_lane, cur_extruder)
@@ -1051,21 +1051,9 @@ class afcAMS(afcUnit):
 
         AFC's unload_sequence handles the shared toolhead operations
         (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
-        before calling this via custom_unload_cmd.
+        and unsync_to_extruder before calling this via custom_unload_cmd.
         """
         afc = self.afc
-
-        # Retract from extruder gears
-        if cur_extruder.tool_stn_unload > 0:
-            afc.move_e_pos(
-                cur_extruder.tool_stn_unload * -1,
-                cur_extruder.tool_unload_speed,
-                "Retract from extruder", wait_tool=True)
-
-        # Unsync before hardware unload
-        cur_lane.unsync_to_extruder()
-
-        afc.afcDeltaTime.log_with_time("Toolhead retract complete")
 
         # OAMS hardware unload
         if not self._oams_unload(cur_lane):
@@ -1185,13 +1173,14 @@ class afcAMS(afcUnit):
             self._monitor.stop()
 
         try:
-            # Retract from extruder gears
-            unload_length, _ = self.get_engagement_params(cur_lane.name)
-            self._oams_extrude(
-                -(unload_length + 10.0), 1500, "unload_retract")
-
-            # Queue concurrent extruder retract
-            self.afc.gcode.run_script_from_command("G92 E0\nG1 E-20 F1500")
+            # Queue a 20mm extruder retract WITHOUT waiting — it runs
+            # concurrently with the OAMS hardware unload so the extruder
+            # helps pull filament out of extruder gears as the spool rewinds.
+            try:
+                self.afc.gcode.run_script_from_command("M83")
+                self.afc.gcode.run_script_from_command("G1 E-20.00 F1500")
+            except Exception as e:
+                self.logger.warning(f"Concurrent retract failed: {e}")
 
             # Hardware unload
             success, msg = self.oams.unload_spool_with_retry()
