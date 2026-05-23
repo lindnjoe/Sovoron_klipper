@@ -1659,21 +1659,21 @@ class afc:
         if self.is_u1_motion_sensor(cur_extruder):
             self.reactor.pause(self.reactor.monotonic() + 0.5)
             if cur_extruder.filament_sensor_obj.runout_buttun_state:
-                    helper = cur_extruder.filament_sensor_obj.runout_helper
-                    if not helper.filament_present:
-                        helper.filament_present = True
-                    cur_extruder.tool_start_state = True
-                else:
-                    msg = ("Filament engagement failed: U1 sensor physical switch "
-                           "does not detect filament after tool_stn load.\n"
-                           "Check that extruder gears are gripping filament and "
-                           "filament path is clear.\n"
-                           f"To resolve, manually load filament and run "
-                           f"SET_LANE_LOADED LANE={cur_lane.name}")
-                    if self.function.in_print():
-                        msg += '\nOnce issue is resolved click resume to continue printing'
-                    self.error.handle_lane_failure(cur_lane, msg)
-                    return False
+                helper = cur_extruder.filament_sensor_obj.runout_helper
+                if not helper.filament_present:
+                    helper.filament_present = True
+                cur_extruder.tool_start_state = True
+            else:
+                msg = ("Filament engagement failed: U1 sensor physical switch "
+                       "does not detect filament after tool_stn load.\n"
+                       "Check that extruder gears are gripping filament and "
+                       "filament path is clear.\n"
+                       f"To resolve, manually load filament and run "
+                       f"SET_LANE_LOADED LANE={cur_lane.name}")
+                if self.function.in_print():
+                    msg += '\nOnce issue is resolved click resume to continue printing'
+                self.error.handle_lane_failure(cur_lane, msg)
+                return False
 
         # Buffer ram: retract to compress buffer and confirm engagement.
         # Only runs when buffer-based tool_start AND lane has a physical stepper.
