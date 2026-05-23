@@ -36,6 +36,7 @@ class afcACE(afcUnit):
     def __init__(self, config):
         super().__init__(config)
         self.type = config.get('type', 'ACE')
+        self._config_name = config.get_name()
 
         self.serial_port = config.get("serial_port")
         mode = config.get("mode", MODE_COMBINED).lower().strip()
@@ -68,25 +69,8 @@ class afcACE(afcUnit):
 
         self._ace: Optional[ACEConnection] = None
         self._slot_map: dict[str, int] = {}
-        self._lane_feed_length: dict[str, float] = {}
-        self._lane_retract_length: dict[str, float] = {}
         self._lane_dist_hub: dict[str, float] = {}
-        self._lane_feed_assist: dict[str, Optional[bool]] = {}
         self._feed_assist_active: set[int] = set()
-        self._hub_load_suppressed: set[str] = set()
-
-        # Parse per-lane overrides from config subsections
-        for section in config.get_prefix_sections(config.get_name()):
-            if section.get_name() == config.get_name():
-                continue
-            lane_cfg = section
-            lane_name = section.get_name().split()[-1]
-            self._lane_feed_length[lane_name] = lane_cfg.getfloat("feed_length", self.feed_length)
-            self._lane_retract_length[lane_name] = lane_cfg.getfloat("retract_length", self.retract_length)
-            self._lane_dist_hub[lane_name] = lane_cfg.getfloat("dist_hub", self.dist_hub)
-            fa = lane_cfg.getboolean("use_feed_assist", None)
-            if fa is not None:
-                self._lane_feed_assist[lane_name] = fa
 
         self.gcode = self.printer.lookup_object('gcode')
         cmd_prefix = self.name.upper().replace(" ", "_")
@@ -144,28 +128,28 @@ class afcACE(afcUnit):
             poll_interval=self.poll_interval,
             logger=self.logger)
 
-        # Build slot map from lane indices
+        # Build slot map and set custom load/unload commands
         for lane_name, lane in self.lanes.items():
             slot = getattr(lane, 'index', 0)
             self._slot_map[lane_name] = slot
-            # Set custom load/unload commands on lanes
             lane.custom_load_cmd = f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
             lane.custom_unload_cmd = f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
+            # Read per-lane dist_hub (upstream lane variable)
+            if getattr(lane, 'dist_hub', None) is not None:
+                self._lane_dist_hub[lane_name] = lane.dist_hub
 
     # ── Lane parameter helpers ──────────────────────────────────────
 
-    def _get_feed_length(self, lane_name: str) -> float:
-        return self._lane_feed_length.get(lane_name, self.feed_length)
+    def _get_feed_length(self) -> float:
+        return self.feed_length
 
-    def _get_retract_length(self, lane_name: str) -> float:
-        return self._lane_retract_length.get(lane_name, self.retract_length)
+    def _get_retract_length(self) -> float:
+        return self.retract_length
 
     def _get_dist_hub(self, lane_name: str) -> float:
         return self._lane_dist_hub.get(lane_name, self.dist_hub)
 
-    def _use_feed_assist(self, lane_name: str) -> bool:
-        if lane_name in self._lane_feed_assist:
-            return self._lane_feed_assist[lane_name]
+    def _use_feed_assist(self) -> bool:
         return self._default_feed_assist
 
     def _get_slot(self, lane_name: str) -> int:
@@ -199,7 +183,7 @@ class afcACE(afcUnit):
         if self._ace and self._ace.connected:
             try:
                 self._stop_feed_assist(slot)
-                dist = self._get_retract_length(lane.name)
+                dist = self._get_retract_length()
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
                 self._wait_for_retract_complete()
             except Exception as e:
@@ -226,7 +210,7 @@ class afcACE(afcUnit):
         if self._ace and self._ace.connected:
             try:
                 self._stop_feed_assist(slot)
-                dist = self._get_retract_length(cur_lane.name)
+                dist = self._get_retract_length()
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
                 self._wait_for_retract_complete()
             except Exception as e:
@@ -306,7 +290,7 @@ class afcACE(afcUnit):
         self.logger.raw(f'Calibrating ACE feed length for {cur_lane.name}')
         total_fed = 0.0
         step = self.calibration_step
-        max_distance = self._get_feed_length(cur_lane.name) + self.max_feed_overshoot
+        max_distance = self._get_feed_length() + self.max_feed_overshoot
 
         while not cur_lane.get_toolhead_pre_sensor_state():
             if total_fed >= max_distance:
@@ -317,14 +301,14 @@ class afcACE(afcUnit):
             total_fed += step
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
 
-        # Save calibrated values with margin
+        # Save calibrated values with margin (unit-level config)
         new_feed = round(total_fed + 200.0, 2)
         new_retract = round(total_fed - 20.0, 2)
-        cal_msg = f'\n feed_length: New: {new_feed} Old: {self._get_feed_length(cur_lane.name)}'
-        self._lane_feed_length[cur_lane.name] = new_feed
-        self._lane_retract_length[cur_lane.name] = new_retract
-        self.afc.function.ConfigRewrite(cur_lane.fullname, "feed_length", new_feed, cal_msg)
-        self.afc.function.ConfigRewrite(cur_lane.fullname, "retract_length", new_retract,
+        cal_msg = f'\n feed_length: New: {new_feed} Old: {self.feed_length}'
+        self.feed_length = new_feed
+        self.retract_length = new_retract
+        self.afc.function.ConfigRewrite(self._config_name, "feed_length", new_feed, cal_msg)
+        self.afc.function.ConfigRewrite(self._config_name, "retract_length", new_retract,
                                          f'\n retract_length: {new_retract}')
 
         # Retract back
@@ -359,7 +343,7 @@ class afcACE(afcUnit):
                     self._stop_feed_assist(other_slot)
 
         # Calculate effective feed distance
-        feed_dist = self._get_feed_length(lane_name)
+        feed_dist = self._get_feed_length()
         if cur_lane.loaded_to_hub:
             hub_dist = self._get_dist_hub(lane_name)
             feed_dist = max(feed_dist - hub_dist, 50.0)
@@ -385,7 +369,7 @@ class afcACE(afcUnit):
                         return
 
             # Enable feed assist
-            if self._use_feed_assist(lane_name):
+            if self._use_feed_assist():
                 self._start_feed_assist(slot)
 
         except Exception as e:

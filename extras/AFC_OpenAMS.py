@@ -63,17 +63,9 @@ class afcAMS(afcUnit):
         # Clog detection
         self.clog_sensitivity = config.get("clog_sensitivity", "medium").lower()
 
-        # Per-lane engagement params (populated from config subsections)
-        self._engagement_params: dict[str, tuple[float, float]] = {}
-        for section in config.get_prefix_sections(config.get_name()):
-            if section.get_name() == config.get_name():
-                continue
-            lane_name = section.get_name().split()[-1]
-            eng_len = section.getfloat("engagement_length", None)
-            eng_speed = section.getfloat("engagement_speed", None)
-            if eng_len is not None:
-                self._engagement_params[lane_name] = (
-                    eng_len, eng_speed or 300.0)
+        # Engagement params — unit-level defaults
+        self._engagement_length = config.getfloat("engagement_length", 20.0, minval=1.0)
+        self._engagement_speed = config.getfloat("engagement_speed", 300.0, minval=10.0)
 
         # Runtime state
         self.oams = None
@@ -130,7 +122,7 @@ class afcAMS(afcUnit):
         except Exception:
             self.oams = None
 
-        # Build spool map and set custom commands on lanes
+        # Build spool map and set custom load/unload commands
         for lane_name, lane in self.lanes.items():
             slot = getattr(lane, 'index', 0)
             self._spool_map[lane_name] = slot
@@ -180,9 +172,7 @@ class afcAMS(afcUnit):
 
     def get_engagement_params(self, lane_name: str) -> tuple:
         """Return (engagement_length, engagement_speed) for a lane."""
-        if lane_name in self._engagement_params:
-            return self._engagement_params[lane_name]
-        return (20.0, 300.0)
+        return (self._engagement_length, self._engagement_speed)
 
     def _verify_engagement(self, cur_lane) -> bool:
         """Verify filament engagement by extruding and checking encoder/FPS movement."""
