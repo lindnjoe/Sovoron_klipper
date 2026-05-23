@@ -635,13 +635,13 @@ class afcAMS(afcUnit):
             cur_lane.extruder_obj.estats.increase_cut_total()
             afc.gcode.run_script_from_command(
                 "{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
-            if afc.park and not afc.park_pre_load:
+            if afc.park:
                 afc.gcode.run_script_from_command(
                     "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
 
         # Form tip
         if afc.form_tip:
-            if afc.park and not afc.park_pre_load:
+            if afc.park:
                 afc.gcode.run_script_from_command(
                     "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
             if afc.form_tip_cmd == "AFC":
