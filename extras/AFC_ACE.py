@@ -680,8 +680,7 @@ class afcACE(afcUnit):
         else:
             feed_dist = self._get_bowden_length(cur_lane)
 
-        if self._is_virtual_hub(cur_lane):
-            cur_lane.loaded_to_hub = True
+        cur_lane.loaded_to_hub = True
 
         # ACE serial feed to toolhead area
         try:
@@ -704,17 +703,12 @@ class afcACE(afcUnit):
             return False
 
         # Sync to extruder and load into toolhead
-        cur_lane.status = AFCLaneState.TOOL_LOADED
-        afc.save_vars()
         cur_lane.sync_to_extruder()
 
         # Extruder load (tool_stn)
         if cur_extruder.tool_stn > 0:
             afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
             afc.toolhead.wait_moves()
-
-        # Enable buffer
-        cur_lane.enable_buffer()
 
         # Enable feed assist
         if self._use_feed_assist(cur_lane):
@@ -798,10 +792,14 @@ class afcACE(afcUnit):
 
         afc.afcDeltaTime.log_with_time("ACE unwind complete")
 
-        # Finalize state — filament staged near hub
+        # Finalize state — filament fully retracted to ACE
         cur_lane.set_tool_unloaded()
-        cur_lane.loaded_to_hub = True
+        cur_lane.loaded_to_hub = False
         self.lane_tool_unloaded(cur_lane)
+
+        if afc.post_unload_macro is not None:
+            afc.gcode.run_script_from_command(afc.post_unload_macro)
+
         afc.save_vars()
 
         return True

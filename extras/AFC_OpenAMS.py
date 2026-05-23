@@ -556,17 +556,13 @@ class afcAMS(afcUnit):
             return False
 
         # Sync to extruder and finalize
-        cur_lane.status = AFCLaneState.TOOL_LOADED
-        afc.save_vars()
+        cur_lane.loaded_to_hub = True
         cur_lane.sync_to_extruder()
 
         # Extruder load (tool_stn)
         if cur_extruder.tool_stn > 0:
             afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
             afc.toolhead.wait_moves()
-
-        # Enable buffer
-        cur_lane.enable_buffer()
 
         afc.afcDeltaTime.log_with_time("OAMS load complete")
         return True
@@ -633,6 +629,10 @@ class afcAMS(afcUnit):
         # Finalize state
         cur_lane.set_tool_unloaded()
         self.lane_tool_unloaded(cur_lane)
+
+        if afc.post_unload_macro is not None:
+            afc.gcode.run_script_from_command(afc.post_unload_macro)
+
         afc.save_vars()
 
         afc.afcDeltaTime.log_with_time("OAMS unload complete")
