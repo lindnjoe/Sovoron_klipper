@@ -1601,10 +1601,21 @@ class afc:
         if cur_lane.custom_load_cmd and cur_extruder.tool_start:
             if not cur_lane.get_toolhead_pre_sensor_state():
                 if self.is_u1_motion_sensor(cur_extruder):
-                    # U1 motion sensors detect via encoder rotation during
-                    # extruder pulls, not ACE/OAMS push. The unit's load
-                    # verified the feed internally.
-                    pass
+                    # U1 motion sensors need encoder rotation to set filament_present,
+                    # but ACE/OAMS push doesn't spin the encoder reliably.
+                    # Use the physical switch (runout_buttun_state) as ground truth.
+                    if not cur_extruder.filament_sensor_obj.runout_buttun_state:
+                        message = (
+                            f"Custom load did not reach U1 sensor for {cur_lane.name}.\n"
+                            "Physical switch not triggered — filament may not have "
+                            "reached the toolhead.\n"
+                            f"To resolve set lane loaded with "
+                            f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                        )
+                        if self.function.in_print():
+                            message += '\nOnce filament is fully loaded click resume to continue printing'
+                        self.error.handle_lane_failure(cur_lane, message)
+                        return False
                 else:
                     message = 'Custom load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
                     message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
@@ -1649,17 +1660,17 @@ class afc:
             self.reactor.pause(self.reactor.monotonic() + 0.5)
             if (cur_extruder._clog_last_motion_time is None
                     or cur_extruder._clog_last_motion_time <= pre_stn_time):
-                # For custom load units, force the sensor state since the
-                # encoder only fires during extruder pulls — the unit's
-                # own feed verification confirmed filament is present.
-                if cur_lane.custom_load_cmd:
+                # Encoder didn't see motion during tool_stn.
+                # Use physical switch as ground truth — if the switch
+                # confirms filament is present, sync the encoder state.
+                if cur_extruder.filament_sensor_obj.runout_buttun_state:
                     helper = cur_extruder.filament_sensor_obj.runout_helper
                     if not helper.filament_present:
                         helper.filament_present = True
                     cur_extruder.tool_start_state = True
                 else:
-                    msg = ("Filament engagement failed: motion sensor did not detect "
-                           "movement during tool_stn load.\n"
+                    msg = ("Filament engagement failed: U1 sensor physical switch "
+                           "does not detect filament after tool_stn load.\n"
                            "Check that extruder gears are gripping filament and "
                            "filament path is clear.\n"
                            f"To resolve, manually load filament and run "
@@ -1839,6 +1850,23 @@ class afc:
 
             if cur_extruder.filament_sensor_obj is not None:
                 cur_extruder.filament_sensor_obj.runout_helper.note_filament_present(False)
+
+            # Verify U1 motion sensor physical switch confirms filament cleared
+            if self.is_u1_motion_sensor(cur_extruder):
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+                if cur_extruder.filament_sensor_obj.runout_buttun_state:
+                    message = (
+                        "Unload completed but U1 sensor still detects filament "
+                        f"in toolhead for {cur_lane.name}.\n"
+                        "Filament may be stuck in extruder gears.\n"
+                        "Please manually retract filament from the toolhead."
+                    )
+                    if self.function.in_print() and self.next_lane_load is not None:
+                        message += f"\nOnce cleared, manually load {self.next_lane_load} "
+                        message += f"with {self.lanes[self.next_lane_load].map} macro."
+                        message += "\nOnce lane is loaded click resume to continue printing"
+                    self.error.handle_lane_failure(cur_lane, message)
+                    return False
 
             unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
             self.afc_stats.average_tool_unload_time.average_time(unload_time)
