@@ -1141,7 +1141,7 @@ class AfcToolchanger(afcUnit):
             fan_obj = self.printer.lookup_object(
                 "fan_generic " + fan_name, None)
             if fan_obj and hasattr(fan_obj, 'fan'):
-                fan_obj.fan.set_speed(self.dock_cooling_fan_speed)
+                fan_obj.fan.set_speed_from_command(self.dock_cooling_fan_speed)
                 if tool.tool_number not in self._dock_cooled_tools:
                     self._dock_cooled_tools.add(tool.tool_number)
                     self.logger.info(
@@ -1163,7 +1163,7 @@ class AfcToolchanger(afcUnit):
             fan_obj = self.printer.lookup_object(
                 "fan_generic " + fan_name, None)
             if fan_obj and hasattr(fan_obj, 'fan'):
-                fan_obj.fan.set_speed(0.)
+                fan_obj.fan.set_speed_from_command(0.)
                 if tool.tool_number in self._dock_cooled_tools:
                     self._dock_cooled_tools.discard(tool.tool_number)
                     self.logger.info(

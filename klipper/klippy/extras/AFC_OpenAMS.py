@@ -1038,6 +1038,14 @@ class afcAMS(afcUnit):
             self._operation_active = False
             self._prev_states_stale = True
 
+    def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
+        """Set OAMS follower to reverse before AFC runs cut/park/tip."""
+        if self._follower:
+            fps_state = self._get_monitor_state()
+            if fps_state:
+                self._follower.set_follower_state(
+                    fps_state, self.oams, 1, 0, "before unload cut", force=True)
+
     def _oams_unload_inner(self, cur_lane, cur_extruder) -> bool:
         """OAMS custom unload — filament transport only.
 
@@ -1166,13 +1174,8 @@ class afcAMS(afcUnit):
 
         spool_index = self._spool_map.get(cur_lane.name, 0)
 
-        # Set follower reverse for retraction assist
-        if self._follower:
-            fps_state = self._get_monitor_state()
-            if fps_state:
-                self._follower.set_follower_state(
-                    fps_state, self.oams, 1, 0,
-                    "before unload", force=True)
+        # Follower reverse is set up by prepare_unload() before AFC's
+        # Phase 1 toolhead ops — no need to set it again here.
 
         # Wait for idle
         self._wait_for_idle()
