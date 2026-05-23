@@ -915,6 +915,12 @@ class afcACE(afcUnit):
             self._prev_states_stale = True
 
     def _ace_unload_inner(self, cur_lane, cur_extruder) -> bool:
+        """ACE custom unload — filament transport only.
+
+        AFC's unload_sequence handles the shared toolhead operations
+        (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
+        before calling this via custom_unload_cmd.
+        """
         afc = self.afc
         slot = self._get_slot(cur_lane.name)
 
@@ -926,57 +932,19 @@ class afcACE(afcUnit):
         # Stop feed assist
         self._stop_feed_assist(slot)
 
-        # Disable buffer
-        cur_lane.disable_buffer()
-
-        # LED animation
-        self.lane_unloading(cur_lane)
-
-        # Heat extruder
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
-
-        # Quick pull to prevent oozing
-        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
-
-        # Sync to extruder for cut/park/tip operations
-        cur_lane.sync_to_extruder()
-        cur_lane.do_enable(True)
-
-        # Cut
-        if afc.tool_cut:
-            cur_lane.extruder_obj.estats.increase_cut_total()
-            afc.gcode.run_script_from_command(
-                "{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
-            if afc.park:
-                afc.gcode.run_script_from_command(
-                    "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-
-        # Form tip
-        if afc.form_tip:
-            if afc.park:
-                afc.gcode.run_script_from_command(
-                    "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-            if afc.form_tip_cmd == "AFC":
-                tip = afc.printer.lookup_object('AFC_form_tip')
-                tip.tip_form()
-            else:
-                afc.gcode.run_script_from_command(afc.form_tip_cmd)
-
-        # Retract from extruder (tool_stn_unload via extruder motor)
+        # Retract from extruder gears
         if cur_extruder.tool_stn_unload > 0:
             afc.move_e_pos(
                 cur_extruder.tool_stn_unload * -1,
                 cur_extruder.tool_unload_speed,
                 "Retract from extruder", wait_tool=True)
 
-        # Unsync from extruder
+        # Unsync before serial unwind
         cur_lane.unsync_to_extruder()
 
-        afc.afcDeltaTime.log_with_time("Toolhead operations complete")
+        afc.afcDeltaTime.log_with_time("Toolhead retract complete")
 
         # ACE serial unwind — retract to hub staging point
-        # Subtract dist_hub so filament stops at the hub, not past it
         hub = cur_lane.hub_obj
         bowden = getattr(hub, 'afc_unload_bowden_length', getattr(hub, 'afc_bowden_length', 0)) if hub else 0
         retract_dist = bowden - cur_lane.dist_hub
@@ -993,15 +961,9 @@ class afcACE(afcUnit):
 
         # Filament staged near hub, ready for fast reload.
         self._set_hub_state(cur_lane, False)
-        cur_lane.set_tool_unloaded()
         cur_lane.loaded_to_hub = True
         self.lane_tool_unloaded(cur_lane)
         self._hub_load_suppressed.add(cur_lane.name)
-
-        if afc.post_unload_macro is not None:
-            afc.gcode.run_script_from_command(afc.post_unload_macro)
-
-        afc.save_vars()
 
         return True
 

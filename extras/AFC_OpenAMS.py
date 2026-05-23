@@ -1066,56 +1066,25 @@ class afcAMS(afcUnit):
             self._prev_states_stale = True
 
     def _oams_unload_inner(self, cur_lane, cur_extruder) -> bool:
+        """OAMS custom unload — filament transport only.
+
+        AFC's unload_sequence handles the shared toolhead operations
+        (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
+        before calling this via custom_unload_cmd.
+        """
         afc = self.afc
 
-        # Disable buffer
-        cur_lane.disable_buffer()
-
-        # LED animation
-        self.lane_unloading(cur_lane)
-
-        # Heat extruder
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
-
-        # Quick pull
-        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
-
-        # Sync for cut/park/tip
-        cur_lane.sync_to_extruder()
-        cur_lane.do_enable(True)
-
-        # Cut
-        if afc.tool_cut:
-            cur_lane.extruder_obj.estats.increase_cut_total()
-            afc.gcode.run_script_from_command(
-                "{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
-            if afc.park:
-                afc.gcode.run_script_from_command(
-                    "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-
-        # Form tip
-        if afc.form_tip:
-            if afc.park:
-                afc.gcode.run_script_from_command(
-                    "{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-            if afc.form_tip_cmd == "AFC":
-                tip = afc.printer.lookup_object('AFC_form_tip')
-                tip.tip_form()
-            else:
-                afc.gcode.run_script_from_command(afc.form_tip_cmd)
-
-        # Retract from extruder
+        # Retract from extruder gears
         if cur_extruder.tool_stn_unload > 0:
             afc.move_e_pos(
                 cur_extruder.tool_stn_unload * -1,
                 cur_extruder.tool_unload_speed,
                 "Retract from extruder", wait_tool=True)
 
-        # Unsync
+        # Unsync before hardware unload
         cur_lane.unsync_to_extruder()
 
-        afc.afcDeltaTime.log_with_time("Toolhead operations complete")
+        afc.afcDeltaTime.log_with_time("Toolhead retract complete")
 
         # OAMS hardware unload
         if not self._oams_unload(cur_lane):
@@ -1124,13 +1093,9 @@ class afcAMS(afcUnit):
             return False
 
         # Finalize state
-        cur_lane.set_tool_unloaded()
         cur_lane.loaded_to_hub = True
         self.lane_tool_unloaded(cur_lane)
         self._hub_load_suppressed.add(cur_lane.name)
-
-        if afc.post_unload_macro is not None:
-            afc.gcode.run_script_from_command(afc.post_unload_macro)
 
         afc.afcDeltaTime.log_with_time("OAMS unload complete")
         return True

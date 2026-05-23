@@ -1837,74 +1837,80 @@ class afc:
 
     def unload_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
-        This function controls the unloading sequence and allows for custom gcode commands to be executed
-        during the loading process.
+        This function controls the unloading sequence. The toolhead operations
+        (cut/park/tip) run for ALL unit types, then the filament transport is
+        handled either by a custom unload command or by the standard stepper path.
 
-        :param cur_lane: The lane object to be loaded.
+        :param cur_lane: The lane object to be unloaded.
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
+        use_direct_dist = False
+        if (cur_lane.hub_obj
+            and getattr(cur_lane.hub_obj, "use_dist_hub", False)):
+            use_direct_dist = True
+
+        # ── Phase 1: Toolhead operations (shared by ALL unit types) ──
+
+        # LED animation
+        cur_lane.unit_obj.lane_unloading(cur_lane)
+
+        # Prepare the extruder and heater for unloading.
+        if self._check_extruder_temp(cur_lane):
+            self.afcDeltaTime.log_with_time("Done heating toolhead")
+
+        # Quick pull to prevent oozing.
+        self.move_e_pos( -2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+        self.function.log_toolhead_pos("TOOL_UNLOAD quick pull: ")
+
+        # Disable the buffer if it's active.
+        cur_lane.disable_buffer()
+
+        # Synchronize the extruder stepper with the lane.
+        cur_lane.sync_to_extruder()
+
+        cur_lane.select_lane()
+        # Perform filament cutting and parking if specified.
+        if self.tool_cut:
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.tool_cut_cmd, cur_extruder.name))
+            self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
+            self.function.log_toolhead_pos()
+
+            if self.park:
+                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After park")
+                self.function.log_toolhead_pos()
+
+        # Form filament tip if necessary.
+        if self.form_tip:
+            if self.park:
+                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After form tip park")
+                self.function.log_toolhead_pos()
+
+            if self.form_tip_cmd == "AFC":
+                self.tip = self.printer.lookup_object('AFC_form_tip')
+                self.tip.tip_form()
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After afc form tip")
+                self.function.log_toolhead_pos()
+
+            else:
+                self.gcode.run_script_from_command(self.form_tip_cmd)
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After custom form tip")
+                self.function.log_toolhead_pos()
+
+        # ── Phase 2: Filament transport (custom or stepper) ──
+
         if cur_lane.custom_unload_cmd:
             self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
+            cur_lane.unsync_to_extruder()
             self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()
         else:
-            use_direct_dist = False
-            if (cur_lane.hub_obj
-                and getattr(cur_lane.hub_obj, "use_dist_hub", False)):
-                use_direct_dist = True
-            # START THE ANIMATION IMMEDIATELY (Plays while heating!)
-            # Activate LED indicator for unloading.
-            cur_lane.unit_obj.lane_unloading(cur_lane)
-
-            # Prepare the extruder and heater for unloading.
-            if self._check_extruder_temp(cur_lane):
-                self.afcDeltaTime.log_with_time("Done heating toolhead")
-
-            # Quick pull to prevent oozing.
-            self.move_e_pos( -2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
-            self.function.log_toolhead_pos("TOOL_UNLOAD quick pull: ")
-
-            # Disable the buffer if it's active.
-            cur_lane.disable_buffer()
-
-            # Synchronize the extruder stepper with the lane.
-            cur_lane.sync_to_extruder()
-
-            cur_lane.select_lane()
-            # Perform filament cutting and parking if specified.
-            if self.tool_cut:
-                cur_lane.extruder_obj.estats.increase_cut_total()
-                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.tool_cut_cmd, cur_extruder.name))
-                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
-                self.function.log_toolhead_pos()
-
-                if self.park:
-                    self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
-                    self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After park")
-                    self.function.log_toolhead_pos()
-
-            # Form filament tip if necessary.
-            if self.form_tip:
-                if self.park:
-                    self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
-                    self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After form tip park")
-                    self.function.log_toolhead_pos()
-
-                if self.form_tip_cmd == "AFC":
-                    self.tip = self.printer.lookup_object('AFC_form_tip')
-                    self.tip.tip_form()
-                    self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After afc form tip")
-                    self.function.log_toolhead_pos()
-
-                else:
-                    self.gcode.run_script_from_command(self.form_tip_cmd)
-                    self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After custom form tip")
-                    self.function.log_toolhead_pos()
-
             # Attempt to unload the filament from the extruder, retrying if needed.
             num_tries = 0
             if cur_extruder.tool_start == "buffer":
