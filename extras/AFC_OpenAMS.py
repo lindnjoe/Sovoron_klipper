@@ -4902,17 +4902,21 @@ class afcAMS(afcUnit):
             # stayed True between polls, so no event fires to re-set it.
             lane.loaded_to_hub = True
             if afc_function is not None:
+                # Look up previously loaded lane on THIS lane's extruder, not
+                # the active toolhead — avoids clearing unrelated extruders in
+                # multi-extruder setups.
                 previous_lane = None
-                try:
-                    previous_lane = afc_function.get_current_lane_obj()
-                except Exception:
-                    previous_lane = None
+                lane_extruder_obj = getattr(lane, "extruder_obj", None)
+                prev_lane_name_on_ext = getattr(lane_extruder_obj, "lane_loaded", None) if lane_extruder_obj else None
+                if prev_lane_name_on_ext and prev_lane_name_on_ext in self.afc.lanes:
+                    previous_lane = self.afc.lanes[prev_lane_name_on_ext]
 
                 previous_lane_name = getattr(previous_lane, "name", None) if previous_lane is not None else None
                 current_lane_name = getattr(lane, "name", None)
                 if previous_lane_name and previous_lane_name != current_lane_name:
                     try:
-                        afc_function.unset_lane_loaded()
+                        previous_lane.unsync_to_extruder()
+                        previous_lane.set_tool_unloaded()
                     except Exception as e:
                         self.logger.error(f"Failed to unset previously loaded lane {previous_lane_name}: {e}")
 
@@ -4973,21 +4977,13 @@ class afcAMS(afcUnit):
                     self.logger.error(f"Failed to mirror tool sensor state for loaded lane {lane.name}: {e}")
             return True
 
-        current_lane = None
-        if afc_function is not None:
-            try:
-                current_lane = afc_function.get_current_lane_obj()
-            except Exception:
-                current_lane = None
+        # Check if lane is currently loaded on its own extruder (not the
+        # active toolhead) to avoid cross-extruder interference.
+        lane_extruder_obj = getattr(lane, "extruder_obj", None)
+        ext_lane_loaded = getattr(lane_extruder_obj, "lane_loaded", None) if lane_extruder_obj else None
+        is_loaded_on_own_extruder = (ext_lane_loaded == getattr(lane, "name", None))
 
-        if current_lane is lane and afc_function is not None:
-            try:
-                afc_function.unset_lane_loaded()
-            except Exception as e:
-                self.logger.error(f"Failed to unset currently loaded lane {lane.name}: {e}")
-            return True
-
-        if getattr(lane, "tool_loaded", False):
+        if is_loaded_on_own_extruder or getattr(lane, "tool_loaded", False):
             try:
                 lane.unsync_to_extruder()
                 # Do not block on toolhead.wait_moves() in tool-state callbacks.
@@ -5273,14 +5269,14 @@ class afcAMS(afcUnit):
             if self._monitor is not None:
                 self._monitor.state.reset()
 
-            # Clear AFC lane_loaded state
-            try:
-                afc_fn = getattr(self.afc, "function", None)
-                unset_fn = getattr(afc_fn, "unset_lane_loaded", None)
-                if unset_fn:
-                    unset_fn()
-            except Exception as e:
-                self.logger.warning(f"Failed to clear AFC lane_loaded state: {e}")
+            # Clear AFC lane_loaded state for this unit's lanes only
+            for lane_name, lane in self.lanes.items():
+                try:
+                    if getattr(lane, "tool_loaded", False):
+                        lane.unsync_to_extruder()
+                        lane.set_tool_unloaded()
+                except Exception as e:
+                    self.logger.warning(f"Failed to clear lane_loaded state for {lane_name}: {e}")
 
             # Reconcile from hardware sensors
             try:
