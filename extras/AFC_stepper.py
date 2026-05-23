@@ -38,6 +38,8 @@ DRIP_SEGMENT_TIME=0.050
 class AFCExtruderStepper(AFCLane):
     def __init__(self, config):
         super().__init__(config)
+        self.printer.register_event_handler("klippy:connect",
+                                            self._handle_connect_endstops)
 
         self.extruder_stepper   = extruder.ExtruderStepper(config)
         self.stepper_enable     = self.printer.lookup_object('stepper_enable')
@@ -481,7 +483,10 @@ class AFCExtruderStepper(AFCLane):
         self._add_endstop('buffer_trailing', buffer_trail_pin, 'buffer_trailing')
 
         if buffer_adv_pin is None and buffer_name:
+            self._pending_fps_buffer = buffer_name
             self._add_fps_endstop(buffer_name)
+        else:
+            self._pending_fps_buffer = None
 
     def _inherit_from_unit(self, target_key: str) -> Optional[str]:
         """
@@ -582,6 +587,21 @@ class AFCExtruderStepper(AFCLane):
                 pass
             self.logger.debug(f"{self.name} adding FPS software endstop buffer_trailing:{buffer_name}")
             self._endstops['buffer_trailing'] = (trail_endstop, trail_name)
+
+    def _handle_connect_endstops(self):
+        """Retry FPS endstop registration at connect time.
+
+        FPS buffer objects may not exist at config time if their config
+        section is loaded after the lane. Software endstops don't need
+        MCU setup, so registering at connect time is safe.
+        """
+        if (self._pending_fps_buffer
+                and 'buffer_advance' not in self._endstops):
+            self._add_fps_endstop(self._pending_fps_buffer)
+            if 'buffer_advance' not in self._endstops:
+                self.logger.warning(
+                    f"{self.name}: FPS buffer '{self._pending_fps_buffer}' "
+                    f"endstop not registered — buffer homing will fail")
 
     def _add_endstop(self, key: str, pin: str, suffix: str, fullname:str=None):
         """
