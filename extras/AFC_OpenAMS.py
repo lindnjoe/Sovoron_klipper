@@ -9,6 +9,8 @@ clog detection, and engagement verification."""
 
 from __future__ import annotations
 
+import time
+import threading
 import traceback
 from configparser import Error as error
 from typing import Optional, TYPE_CHECKING
@@ -35,6 +37,399 @@ try:
 except Exception:
     OAMSMonitor = None
 
+
+# ── Support classes used by external oams.py module ────────────────
+
+class AMSEventBus:
+    _instance = None
+    _lock = threading.RLock()
+    _MAX_HISTORY = 500
+    _HISTORY_TTL = 3600.0
+
+    def __init__(self):
+        self._subscribers = {}
+        self._event_history = []
+        self.logger = None
+
+    @classmethod
+    def get_instance(cls, logger=None):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            if logger is not None and cls._instance.logger is None:
+                cls._instance.logger = logger
+            return cls._instance
+
+    def subscribe(self, event_type, callback, *, priority=0):
+        with self._lock:
+            if event_type not in self._subscribers:
+                self._subscribers[event_type] = []
+            subscribers = self._subscribers[event_type]
+            insert_idx = 0
+            for i, (existing_callback, existing_priority) in enumerate(subscribers):
+                if priority > existing_priority:
+                    insert_idx = i
+                    break
+                insert_idx = i + 1
+            subscribers.insert(insert_idx, (callback, priority))
+
+    def publish(self, event_type, **kwargs):
+        eventtime = kwargs.get('eventtime', time.time())
+        with self._lock:
+            self._event_history.append((event_type, eventtime, dict(kwargs)))
+            if len(self._event_history) > self._MAX_HISTORY:
+                cutoff = time.monotonic() - self._HISTORY_TTL
+                self._event_history = [e for e in self._event_history if e[1] > cutoff]
+                if len(self._event_history) > self._MAX_HISTORY:
+                    self._event_history = self._event_history[-self._MAX_HISTORY:]
+            subscribers = list(self._subscribers.get(event_type, []))
+        if not subscribers:
+            return 0
+        success_count = 0
+        for callback, priority in subscribers:
+            try:
+                callback(event_type=event_type, **kwargs)
+                success_count += 1
+            except Exception:
+                pass
+        return success_count
+
+
+class LaneInfo:
+    def __init__(self, lane_name, unit_name, spool_index, extruder,
+                 fps_name=None, hub_name=None, led_index=None,
+                 custom_load_cmd=None, custom_unload_cmd=None):
+        self.lane_name = lane_name
+        self.unit_name = unit_name
+        self.spool_index = spool_index
+        self.extruder = extruder
+        self.fps_name = fps_name
+        self.hub_name = hub_name
+        self.led_index = led_index
+        self.custom_load_cmd = custom_load_cmd
+        self.custom_unload_cmd = custom_unload_cmd
+
+
+class LaneRegistry:
+    _instances = {}
+    _lock = threading.RLock()
+
+    def __init__(self, printer, logger=None):
+        self.printer = printer
+        self.logger = logger
+        self._lanes = []
+        self._by_lane_name = {}
+        self._by_lane_name_lower = {}
+        self._by_spool = {}
+        self._by_extruder = {}
+        self.event_bus = AMSEventBus.get_instance(logger=self.logger)
+
+    @classmethod
+    def for_printer(cls, printer, logger=None):
+        with cls._lock:
+            key = id(printer)
+            if key not in cls._instances:
+                cls._instances[key] = cls(printer, logger=logger)
+            elif logger is not None:
+                cls._instances[key].logger = logger
+            return cls._instances[key]
+
+    def register_lane(self, lane_name, unit_name, spool_index, extruder, *,
+                      fps_name=None, hub_name=None, led_index=None,
+                      custom_load_cmd=None, custom_unload_cmd=None):
+        with self._lock:
+            existing = self._by_lane_name.get(lane_name)
+            if existing is not None:
+                self._unregister_lane(existing)
+            info = LaneInfo(
+                lane_name=lane_name, unit_name=unit_name,
+                spool_index=spool_index, extruder=extruder,
+                fps_name=fps_name, hub_name=hub_name, led_index=led_index,
+                custom_load_cmd=custom_load_cmd, custom_unload_cmd=custom_unload_cmd,
+            )
+            self._lanes.append(info)
+            self._by_lane_name[lane_name] = info
+            self._by_lane_name_lower[lane_name.lower()] = info
+            self._by_spool[(unit_name, spool_index)] = info
+            if extruder not in self._by_extruder:
+                self._by_extruder[extruder] = []
+            self._by_extruder[extruder].append(info)
+            return info
+
+    def _unregister_lane(self, info):
+        if info in self._lanes:
+            self._lanes.remove(info)
+        self._by_lane_name.pop(info.lane_name, None)
+        self._by_lane_name_lower.pop(info.lane_name.lower(), None)
+        self._by_spool.pop((info.unit_name, info.spool_index), None)
+        extruder_lanes = self._by_extruder.get(info.extruder, [])
+        if info in extruder_lanes:
+            extruder_lanes.remove(info)
+            if not extruder_lanes:
+                self._by_extruder.pop(info.extruder, None)
+
+    def get_by_lane(self, lane_name):
+        with self._lock:
+            return self._by_lane_name.get(lane_name)
+
+    def get_by_spool(self, unit_name, spool_index):
+        with self._lock:
+            return self._by_spool.get((unit_name, spool_index))
+
+    def resolve_lane_token(self, token):
+        with self._lock:
+            return self._by_lane_name_lower.get(token.lower())
+
+    def resolve_lane_name(self, unit_name, spool_index):
+        info = self.get_by_spool(unit_name, spool_index)
+        return info.lane_name if info else None
+
+    def resolve_extruder(self, lane_name):
+        info = self.get_by_lane(lane_name)
+        return info.extruder if info else None
+
+
+class AMSHardwareService:
+    _instances = {}
+
+    def __init__(self, printer, name, logger=None):
+        self.printer = printer
+        self.name = name
+        if logger is not None:
+            self.logger = logger
+        else:
+            self.logger = printer.lookup_object("AFC").logger
+        self._controller = None
+        self._lock = threading.RLock()
+        self._status = {}
+        self._lane_snapshots = {}
+        self._status_callbacks = []
+        self.registry = LaneRegistry.for_printer(printer, logger=self.logger)
+        self.event_bus = AMSEventBus.get_instance(logger=self.logger)
+        self._reactor = None
+        self._polling_timer = None
+        self._polling_interval = 2.0
+        self._polling_interval_idle = 4.0
+        self._consecutive_idle_polls = 0
+        self._idle_poll_threshold = 3
+        self._last_encoder_clicks = None
+        self._last_f1s_hes = [None, None, None, None]
+        self._last_hub_hes = [None, None, None, None]
+        self._last_fps_value = None
+        self._polling_enabled = False
+
+    @classmethod
+    def for_printer(cls, printer, name="default", logger=None):
+        key = (id(printer), name)
+        try:
+            service = cls._instances[key]
+        except KeyError:
+            service = cls(printer, name, logger)
+            cls._instances[key] = service
+        else:
+            if logger is not None:
+                service.logger = logger
+        return service
+
+    def attach_controller(self, controller):
+        with self._lock:
+            self._controller = controller
+        if controller is not None:
+            try:
+                status = controller.get_status(self._monotonic())
+            except Exception:
+                status = None
+            if status:
+                self._update_status(status)
+
+    def resolve_controller(self):
+        with self._lock:
+            controller = self._controller
+        if controller is not None:
+            return controller
+        lookup_name = f"oams {self.name}"
+        try:
+            controller = self.printer.lookup_object(lookup_name, None)
+        except Exception:
+            controller = None
+        if controller is not None:
+            self.attach_controller(controller)
+        return controller
+
+    def _monotonic(self):
+        if self._reactor is None:
+            self._reactor = self.printer.get_reactor()
+        return self._reactor.monotonic()
+
+    def start_polling(self):
+        if self._polling_timer is not None:
+            return
+        if self._reactor is None:
+            self._monotonic()
+        if self._reactor is None:
+            return
+        self._polling_enabled = True
+        self._polling_timer = self._reactor.register_timer(
+            self._polling_callback, self._reactor.NOW + 1.0)
+
+    def stop_polling(self):
+        self._polling_enabled = False
+        if self._polling_timer is not None and self._reactor is not None:
+            self._reactor.unregister_timer(self._polling_timer)
+            self._polling_timer = None
+
+    def _polling_callback(self, eventtime):
+        if not self._polling_enabled:
+            return self._reactor.NEVER
+        try:
+            status = self.poll_status()
+            if not status:
+                return eventtime + self._polling_interval_idle
+            f1s_values = status.get("f1s_hes_value", [])
+            for bay in range(min(len(f1s_values), 4)):
+                new_val = bool(f1s_values[bay])
+                old_val = self._last_f1s_hes[bay]
+                if old_val is None or new_val != old_val:
+                    self.event_bus.publish(
+                        "f1s_changed", unit_name=self.name, bay=bay,
+                        value=new_val, eventtime=eventtime)
+                self._last_f1s_hes[bay] = new_val
+            hub_values = status.get("hub_hes_value", [])
+            for bay in range(min(len(hub_values), 4)):
+                new_val = bool(hub_values[bay])
+                old_val = self._last_hub_hes[bay]
+                if old_val is None or new_val != old_val:
+                    self.event_bus.publish(
+                        "hub_changed", unit_name=self.name, bay=bay,
+                        value=new_val, eventtime=eventtime)
+                self._last_hub_hes[bay] = new_val
+            encoder_clicks = status.get("encoder_clicks")
+            if encoder_clicks is not None:
+                if self._last_encoder_clicks is not None and encoder_clicks != self._last_encoder_clicks:
+                    self._consecutive_idle_polls = 0
+                self._last_encoder_clicks = encoder_clicks
+            self._consecutive_idle_polls += 1
+            if self._consecutive_idle_polls > self._idle_poll_threshold:
+                return eventtime + self._polling_interval_idle
+            return eventtime + self._polling_interval
+        except Exception:
+            return eventtime + self._polling_interval_idle
+
+    def poll_status(self):
+        controller = self.resolve_controller()
+        if controller is None:
+            return None
+        eventtime = self._monotonic()
+        try:
+            status = controller.get_status(eventtime)
+        except Exception:
+            status = {
+                "current_spool": getattr(controller, "current_spool", None),
+                "f1s_hes_value": list(getattr(controller, "f1s_hes_value", []) or []),
+                "hub_hes_value": list(getattr(controller, "hub_hes_value", []) or []),
+                "fps_value": getattr(controller, "fps_value", 0.0),
+            }
+            encoder = getattr(controller, "encoder_clicks", None)
+            if encoder is not None:
+                status["encoder_clicks"] = encoder
+        self._update_status(status)
+        return status
+
+    def _update_status(self, status):
+        with self._lock:
+            self._status = dict(status)
+
+    def latest_status(self):
+        with self._lock:
+            return dict(self._status)
+
+    def update_lane_snapshot(self, unit_name, lane_name, lane_state,
+                             hub_state, eventtime, *,
+                             spool_index=None, tool_state=None,
+                             emit_spool_event=True):
+        key = f"{unit_name}:{lane_name}"
+        normalized_index = None
+        if spool_index is not None:
+            try:
+                normalized_index = int(spool_index)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if normalized_index < 0:
+                    normalized_index = None
+        with self._lock:
+            old_snapshot = self._lane_snapshots.get(key, {})
+            self._lane_snapshots[key] = {
+                "unit": unit_name, "lane": lane_name,
+                "lane_state": bool(lane_state),
+                "hub_state": None if hub_state is None else bool(hub_state),
+                "timestamp": eventtime,
+            }
+            if normalized_index is not None:
+                self._lane_snapshots[key]["spool_index"] = normalized_index
+            elif "spool_index" in old_snapshot:
+                self._lane_snapshots[key]["spool_index"] = old_snapshot["spool_index"]
+            if tool_state is not None:
+                self._lane_snapshots[key]["tool_state"] = bool(tool_state)
+        event_spool_index = normalized_index if normalized_index is not None else old_snapshot.get("spool_index")
+        old_lane_state = old_snapshot.get("lane_state")
+        new_lane_state = bool(lane_state)
+        if emit_spool_event and old_lane_state is not None and old_lane_state != new_lane_state and event_spool_index is not None:
+            event_type = "spool_loaded" if new_lane_state else "spool_unloaded"
+            self.event_bus.publish(event_type, unit_name=unit_name,
+                                  lane_name=lane_name, spool_index=event_spool_index,
+                                  eventtime=eventtime)
+
+    def latest_lane_snapshot(self, unit_name, lane_name):
+        key = f"{unit_name}:{lane_name}"
+        with self._lock:
+            snapshot = self._lane_snapshots.get(key)
+        return dict(snapshot) if snapshot else None
+
+    def resolve_lane_for_spool(self, unit_name, spool_index):
+        if spool_index is None:
+            return None
+        try:
+            normalized = int(spool_index)
+        except (TypeError, ValueError):
+            return None
+        return self.registry.resolve_lane_name(unit_name, normalized)
+
+    def resolve_lane_for_spool_with_afc(self, unit_name, spool_index):
+        lane_name = self.resolve_lane_for_spool(unit_name, spool_index)
+        if lane_name is not None:
+            return lane_name
+        return self._resolve_lane_name_from_afc(unit_name, spool_index)
+
+    def _resolve_lane_name_from_afc(self, unit_name, spool_index):
+        if spool_index is None:
+            return None
+        try:
+            normalized_index = int(spool_index)
+        except (TypeError, ValueError):
+            return None
+        try:
+            afc = self.printer.lookup_object("AFC", None)
+        except Exception:
+            afc = None
+        if afc is None or not hasattr(afc, 'units'):
+            return None
+        for unit_obj in afc.units.values():
+            if not hasattr(unit_obj, 'oams_name'):
+                continue
+            if unit_obj.oams_name != unit_name:
+                continue
+            target_slot = normalized_index + 1
+            for lane_name, lane_obj in getattr(unit_obj, 'lanes', {}).items():
+                lane_unit = getattr(lane_obj, 'unit', None)
+                if lane_unit and ':' in lane_unit:
+                    try:
+                        slot = int(lane_unit.split(':', 1)[1])
+                    except (ValueError, IndexError):
+                        continue
+                    if slot == target_slot:
+                        return lane_name
+        return None
 
 
 class afcAMS(afcUnit):
