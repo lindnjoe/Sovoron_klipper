@@ -855,22 +855,46 @@ class afcACE(afcUnit):
             afc.toolhead.wait_moves()
 
         # Verify filament reached toolhead sensor (switch, buffer, FPS, or motion sensor)
+        # Pulse ACE feed in small increments if sensor not yet triggered
         has_sensor = (cur_extruder.tool_start is not None
                       or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
         if has_sensor and not self._toolhead_sensor_triggered(cur_lane):
             afc.reactor.pause(afc.reactor.monotonic() + 0.5)
             if not self._toolhead_sensor_triggered(cur_lane):
-                cur_lane.unsync_to_extruder()
-                message = (
-                    f"ACE load: filament did not reach toolhead sensor for "
-                    f"{cur_lane.name}. Spool may be stuck or PTFE path blocked.\n"
-                    f"To resolve set lane loaded with "
-                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                )
-                if afc.function.in_print():
-                    message += "\nOnce filament is fully loaded click resume to continue printing"
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
+                pulse_step = cur_lane.short_move_dis
+                max_pulse_dist = afc.tool_homing_distance
+                total_pulsed = 0.0
+                self.logger.info(
+                    f"ACE load: sensor not triggered, pulsing up to "
+                    f"{max_pulse_dist:.0f}mm in {pulse_step:.0f}mm steps")
+                while total_pulsed < max_pulse_dist:
+                    try:
+                        self._wait_for_ace_ready()
+                        self._ace.feed_filament(slot, pulse_step, self.feed_speed)
+                        self._wait_for_feed_complete(slot, pulse_step, self.feed_speed)
+                    except Exception as e:
+                        self.logger.warning(f"ACE load pulse failed: {e}")
+                        break
+                    total_pulsed += pulse_step
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.3)
+                    if self._toolhead_sensor_triggered(cur_lane):
+                        self.logger.info(
+                            f"ACE load: sensor triggered after "
+                            f"{total_pulsed:.0f}mm of extra feed")
+                        break
+                else:
+                    cur_lane.unsync_to_extruder()
+                    message = (
+                        f"ACE load: filament did not reach toolhead sensor for "
+                        f"{cur_lane.name} after {total_pulsed:.0f}mm of retry pulses. "
+                        f"Spool may be stuck or PTFE path blocked.\n"
+                        f"To resolve set lane loaded with "
+                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                    )
+                    if afc.function.in_print():
+                        message += "\nOnce filament is fully loaded click resume to continue printing"
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
 
         # Enable feed assist
         if self._use_feed_assist(cur_lane):
