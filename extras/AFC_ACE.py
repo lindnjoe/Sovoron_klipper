@@ -858,13 +858,6 @@ class afcACE(afcUnit):
         # Set loaded_to_hub AFTER successful feed
         cur_lane.loaded_to_hub = True
 
-        # Force FPS advance latch so get_toolhead_pre_sensor_state()
-        # returns True — FPS pressure may drop below threshold
-        # even though filament is confirmed present via feed success.
-        if buffer_obj is not None and hasattr(buffer_obj, '_advance_latched'):
-            buffer_obj._advance_latched = True
-            buffer_obj.advance_state = True
-
         # Enable feed assist
         if self._use_feed_assist(cur_lane):
             self._start_feed_assist(slot)

@@ -1111,13 +1111,6 @@ class afcAMS(afcUnit):
                 # Verify engagement
                 engaged = self._verify_engagement(cur_lane)
                 if engaged:
-                    # Force FPS advance latch so get_toolhead_pre_sensor_state()
-                    # returns True — FPS pressure may drop below threshold
-                    # even though filament is confirmed present via encoder.
-                    if buffer_obj is not None and hasattr(buffer_obj, '_advance_latched'):
-                        buffer_obj._advance_latched = True
-                        buffer_obj.advance_state = True
-
                     # Enable follower and start monitor
                     if self._follower:
                         fps_state = self._get_monitor_state()
