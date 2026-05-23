@@ -61,7 +61,7 @@ class afc_hub:
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
         self.use_dist_hub           = config.getboolean("use_dist_hub", False)
 
-        if self.switch_pin.lower() != "virtual":
+        if self.switch_pin is not None and self.switch_pin.lower() != "virtual":
             buttons = self.printer.load_object(config, "buttons")
             self.fila, self.debounce_button = add_filament_switch(f"{self.name}_Hub", self.switch_pin,
                                                                   self.printer, self.enable_sensors_in_gui,
@@ -76,7 +76,7 @@ class afc_hub:
         return self.name
 
     def is_virtual_pin(self):
-        return self.switch_pin.lower() == "virtual"
+        return self.switch_pin is not None and self.switch_pin.lower() == "virtual"
 
     def handle_runout(self, eventtime):
         """
