@@ -373,9 +373,11 @@ class afcACE(afcUnit):
             # Filament removed — skip on first callback after operation
             # to avoid false triggers from stale _prev_slot_states.
             if not slot_ready and not slot_transient and not resync_prev:
+                # Spool physically removed — clear suppression so the next
+                # new spool insertion gets a fresh prep_post_load cycle.
+                self._hub_load_suppressed.discard(lane.name)
                 prev_ready = self._prev_slot_states.get(lane.name)
                 if prev_ready:
-                    self._hub_load_suppressed.discard(lane.name)
                     if getattr(lane, 'tool_loaded', False):
                         try:
                             is_printing = self.afc.function.is_printing()
