@@ -555,6 +555,15 @@ class afcAMS(afcUnit):
         self.logger.info(msg)
         return False, msg, 0
 
+    def _toolhead_sensor_triggered(self, cur_lane):
+        """Check if the toolhead sensor is triggered, using the raw hardware
+        button state for U1 motion sensors (which need encoder rotation for
+        filament_present but have a physical switch for static detection)."""
+        sensor_obj = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
+        if sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state'):
+            return bool(sensor_obj.runout_buttun_state)
+        return cur_lane.get_toolhead_pre_sensor_state()
+
     # ── Custom load/unload gcode handlers ───────────────────────────
 
     def _cmd_oams_custom_load(self, gcmd):
@@ -614,9 +623,9 @@ class afcAMS(afcUnit):
         # Verify filament reached toolhead sensor (switch, FPS, or motion sensor)
         has_sensor = (cur_extruder.tool_start is not None
                       or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
-        if has_sensor and not cur_lane.get_toolhead_pre_sensor_state():
+        if has_sensor and not self._toolhead_sensor_triggered(cur_lane):
             afc.reactor.pause(afc.reactor.monotonic() + 0.5)
-            if not cur_lane.get_toolhead_pre_sensor_state():
+            if not self._toolhead_sensor_triggered(cur_lane):
                 cur_lane.unsync_to_extruder()
                 message = (
                     f"OAMS load: filament did not reach toolhead sensor for "

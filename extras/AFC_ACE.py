@@ -640,7 +640,7 @@ class afcACE(afcUnit):
             buffer_obj.clear_advance_latch()
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
-    def _calibration_sensor_triggered(self, cur_lane):
+    def _toolhead_sensor_triggered(self, cur_lane):
         """Check if the toolhead sensor is triggered, using the raw hardware
         button state for U1 motion sensors (which need encoder rotation for
         filament_present but have a physical switch for static detection)."""
@@ -672,7 +672,7 @@ class afcACE(afcUnit):
             total_fed += step
 
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
-            if self._calibration_sensor_triggered(cur_lane):
+            if self._toolhead_sensor_triggered(cur_lane):
                 self.logger.info(f"ACE calibration: sensor triggered at {total_fed:.1f}mm")
                 return total_fed, True
 
@@ -699,7 +699,7 @@ class afcACE(afcUnit):
     def _calibrate_bowden_inner(self, cur_lane, cur_hub, slot):
         self._clear_stale_sensor_state(cur_lane)
 
-        if self._calibration_sensor_triggered(cur_lane):
+        if self._toolhead_sensor_triggered(cur_lane):
             return False, "Toolhead sensor already triggered — unload first", 0
 
         old_bowden = getattr(cur_hub, 'afc_bowden_length', 0)
@@ -857,9 +857,9 @@ class afcACE(afcUnit):
         # Verify filament reached toolhead sensor (switch, buffer, FPS, or motion sensor)
         has_sensor = (cur_extruder.tool_start is not None
                       or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
-        if has_sensor and not cur_lane.get_toolhead_pre_sensor_state():
+        if has_sensor and not self._toolhead_sensor_triggered(cur_lane):
             afc.reactor.pause(afc.reactor.monotonic() + 0.5)
-            if not cur_lane.get_toolhead_pre_sensor_state():
+            if not self._toolhead_sensor_triggered(cur_lane):
                 cur_lane.unsync_to_extruder()
                 message = (
                     f"ACE load: filament did not reach toolhead sensor for "
