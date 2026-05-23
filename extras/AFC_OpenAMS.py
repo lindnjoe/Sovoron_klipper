@@ -598,23 +598,23 @@ class afcAMS(afcUnit):
             afc.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn")
             afc.toolhead.wait_moves()
 
-        # Verify filament reached toolhead via U1 motion sensor or tool_start
-        if not cur_lane.get_toolhead_pre_sensor_state():
-            sensor_obj = getattr(cur_extruder, 'filament_sensor_obj', None)
-            if sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state'):
-                afc.reactor.pause(afc.reactor.monotonic() + 0.5)
-                if not cur_lane.get_toolhead_pre_sensor_state():
-                    cur_lane.unsync_to_extruder()
-                    message = (
-                        f"OAMS load: filament did not reach toolhead sensor for "
-                        f"{cur_lane.name}. Spool may be stuck or PTFE path blocked.\n"
-                        f"To resolve set lane loaded with "
-                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                    )
-                    if afc.function.in_print():
-                        message += "\nOnce filament is fully loaded click resume to continue printing"
-                    afc.error.handle_lane_failure(cur_lane, message)
-                    return False
+        # Verify filament reached toolhead sensor (switch, FPS, or motion sensor)
+        has_sensor = (cur_extruder.tool_start is not None
+                      or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
+        if has_sensor and not cur_lane.get_toolhead_pre_sensor_state():
+            afc.reactor.pause(afc.reactor.monotonic() + 0.5)
+            if not cur_lane.get_toolhead_pre_sensor_state():
+                cur_lane.unsync_to_extruder()
+                message = (
+                    f"OAMS load: filament did not reach toolhead sensor for "
+                    f"{cur_lane.name}. Spool may be stuck or PTFE path blocked.\n"
+                    f"To resolve set lane loaded with "
+                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                )
+                if afc.function.in_print():
+                    message += "\nOnce filament is fully loaded click resume to continue printing"
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         afc.afcDeltaTime.log_with_time("OAMS load complete")
         return True
