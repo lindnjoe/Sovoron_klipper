@@ -93,28 +93,30 @@ class afcACE(afcUnit):
         self._hub_load_suppressed: set[str] = set()
 
         self.gcode = self.printer.lookup_object('gcode')
-        cmd_prefix = self.name.upper().replace(" ", "_")
+        unit_suffix = self.name.upper().replace(" ", "_")
+        self._custom_load_cmd_name = f'_ACE_CUSTOM_LOAD_{unit_suffix}'
+        self._custom_unload_cmd_name = f'_ACE_CUSTOM_UNLOAD_{unit_suffix}'
         self.gcode.register_command(
-            f'_ACE_CUSTOM_LOAD', self._cmd_ace_custom_load,
-            desc="ACE internal load command")
+            self._custom_load_cmd_name, self._cmd_ace_custom_load,
+            desc=f"ACE internal load command ({self.name})")
         self.gcode.register_command(
-            f'_ACE_CUSTOM_UNLOAD', self._cmd_ace_custom_unload,
-            desc="ACE internal unload command")
+            self._custom_unload_cmd_name, self._cmd_ace_custom_unload,
+            desc=f"ACE internal unload command ({self.name})")
         self.gcode.register_command(
-            'ACE_CALIBRATE', self.cmd_ACE_CALIBRATE,
-            desc="Calibrate ACE feed distance to toolhead")
+            f'ACE_CALIBRATE_{unit_suffix}', self.cmd_ACE_CALIBRATE,
+            desc=f"Calibrate ACE feed distance to toolhead ({self.name})")
         self.gcode.register_command(
-            'ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB,
-            desc="Calibrate ACE feed distance to hub")
+            f'ACE_CALIBRATE_HUB_{unit_suffix}', self.cmd_ACE_CALIBRATE_HUB,
+            desc=f"Calibrate ACE feed distance to hub ({self.name})")
         self.gcode.register_command(
-            'ACE_STATUS', self.cmd_ACE_STATUS,
-            desc="Query ACE hardware status")
+            f'ACE_STATUS_{unit_suffix}', self.cmd_ACE_STATUS,
+            desc=f"Query ACE hardware status ({self.name})")
         self.gcode.register_command(
-            'ACE_DRY', self.cmd_ACE_DRY,
-            desc="Start ACE filament dryer")
+            f'ACE_DRY_{unit_suffix}', self.cmd_ACE_DRY,
+            desc=f"Start ACE filament dryer ({self.name})")
         self.gcode.register_command(
-            'ACE_LANE_RESET', self.cmd_ACE_LANE_RESET,
-            desc="Retract ACE lane filament back into unit")
+            f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
+            desc=f"Retract ACE lane filament back into unit ({self.name})")
 
         # Register temperature_ace sensor factory during config parsing
         # so [temperature_sensor] sections can resolve sensor_type: temperature_ace
@@ -148,8 +150,8 @@ class afcACE(afcUnit):
             idx = getattr(lane, 'index', 0)
             slot = max(0, idx - 1)
             self._slot_map[lane_name] = slot
-            lane.custom_load_cmd = f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
-            lane.custom_unload_cmd = f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
+            lane.custom_load_cmd = f"{self._custom_load_cmd_name} UNIT={self.name} LANE={lane_name}"
+            lane.custom_unload_cmd = f"{self._custom_unload_cmd_name} UNIT={self.name} LANE={lane_name}"
 
         # Defer serial connection until reactor is running (klippy:ready)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -855,22 +857,46 @@ class afcACE(afcUnit):
             afc.toolhead.wait_moves()
 
         # Verify filament reached toolhead sensor (switch, buffer, FPS, or motion sensor)
+        # Pulse ACE feed in small increments if sensor not yet triggered
         has_sensor = (cur_extruder.tool_start is not None
                       or getattr(cur_extruder, 'filament_sensor_obj', None) is not None)
         if has_sensor and not self._toolhead_sensor_triggered(cur_lane):
             afc.reactor.pause(afc.reactor.monotonic() + 0.5)
             if not self._toolhead_sensor_triggered(cur_lane):
-                cur_lane.unsync_to_extruder()
-                message = (
-                    f"ACE load: filament did not reach toolhead sensor for "
-                    f"{cur_lane.name}. Spool may be stuck or PTFE path blocked.\n"
-                    f"To resolve set lane loaded with "
-                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                )
-                if afc.function.in_print():
-                    message += "\nOnce filament is fully loaded click resume to continue printing"
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
+                pulse_step = cur_lane.short_move_dis
+                max_pulse_dist = afc.tool_homing_distance
+                total_pulsed = 0.0
+                self.logger.info(
+                    f"ACE load: sensor not triggered, pulsing up to "
+                    f"{max_pulse_dist:.0f}mm in {pulse_step:.0f}mm steps")
+                while total_pulsed < max_pulse_dist:
+                    try:
+                        self._wait_for_ace_ready()
+                        self._ace.feed_filament(slot, pulse_step, self.feed_speed)
+                        self._wait_for_feed_complete(slot, pulse_step, self.feed_speed)
+                    except Exception as e:
+                        self.logger.warning(f"ACE load pulse failed: {e}")
+                        break
+                    total_pulsed += pulse_step
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.3)
+                    if self._toolhead_sensor_triggered(cur_lane):
+                        self.logger.info(
+                            f"ACE load: sensor triggered after "
+                            f"{total_pulsed:.0f}mm of extra feed")
+                        break
+                else:
+                    cur_lane.unsync_to_extruder()
+                    message = (
+                        f"ACE load: filament did not reach toolhead sensor for "
+                        f"{cur_lane.name} after {total_pulsed:.0f}mm of retry pulses. "
+                        f"Spool may be stuck or PTFE path blocked.\n"
+                        f"To resolve set lane loaded with "
+                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                    )
+                    if afc.function.in_print():
+                        message += "\nOnce filament is fully loaded click resume to continue printing"
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
 
         # Enable feed assist
         if self._use_feed_assist(cur_lane):
