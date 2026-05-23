@@ -125,9 +125,8 @@ class afcACE(afcUnit):
 
         # Connect to ACE hardware
         self._ace = ACEConnection(
-            self.printer, self.serial_port,
+            self.afc.reactor, self.serial_port,
             baud_rate=self.baud_rate,
-            poll_interval=self.poll_interval,
             logger=self.logger)
 
         # Build slot map and read per-lane overrides from lane objects
