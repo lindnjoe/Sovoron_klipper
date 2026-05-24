@@ -1188,20 +1188,31 @@ class afcAMS(afcUnit):
         if self._monitor:
             self._monitor.stop()
 
-        try:
-            # Start OAMS hardware rewind first (non-blocking MCU command),
-            # then retract through extruder gears concurrently while the
-            # spool is being pulled back.
-            success, msg = self.oams.unload_spool_with_retry()
-
+        # Blocking pre-retract: clear filament from extruder gears before
+        # OAMS hardware starts rewinding. Without this the hardware fights
+        # against the extruder grip and can't pull the filament back.
+        retract_dist = getattr(cur_lane.extruder_obj, 'tool_stn_unload', 0)
+        if retract_dist and retract_dist > 0:
+            unload_length = retract_dist + 10.0
+            retract_speed = getattr(cur_lane.extruder_obj, 'tool_unload_speed', 25.0) * 60.0
+            self.logger.debug(
+                f"Retracting {unload_length:.1f}mm from extruder before OAMS unload")
             try:
-                retract_dist = cur_lane.extruder_obj.tool_stn_unload
-                retract_speed = cur_lane.extruder_obj.tool_unload_speed * 60
-                self.afc.gcode.run_script_from_command("M83")
-                self.afc.gcode.run_script_from_command(
-                    f"G1 E-{retract_dist:.2f} F{retract_speed:.0f}")
+                self._oams_extrude(-unload_length, retract_speed, "pre_oams_unload_retract")
             except Exception as e:
-                self.logger.warning(f"Extruder retract failed: {e}")
+                self.logger.warning(f"Extruder retract before OAMS unload failed: {e}")
+
+        try:
+            # Queue a 20mm extruder retract WITHOUT waiting — it runs
+            # concurrently with the OAMS hardware unload so the extruder
+            # helps pull filament back as the spool motor rewinds.
+            try:
+                self.afc.gcode.run_script_from_command("M83")
+                self.afc.gcode.run_script_from_command("G1 E-20.00 F1500")
+            except Exception as e:
+                self.logger.warning(f"Concurrent retract failed: {e}")
+
+            success, msg = self.oams.unload_spool_with_retry()
             self._wait_for_idle()
 
             if self._monitor:
