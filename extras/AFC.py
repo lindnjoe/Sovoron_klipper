@@ -458,31 +458,6 @@ class afc:
 
         self.logger.info(string, console_only)
 
-    def _resolve_macro_cmd(self, vars_prefix, extruder_name, default_cmd):
-        """Check per-extruder macro vars for redirect_cmd and enabled overrides.
-
-        Looks up ``gcode_macro {vars_prefix}_{extruder_name}`` and inspects its
-        variables for ``redirect_cmd`` (string) and ``enabled`` (0/1).
-
-        Returns (cmd, enabled) where *cmd* is the redirect target or
-        *default_cmd*, and *enabled* is False when the operation should be
-        skipped entirely.
-        """
-        th_key = f"gcode_macro {vars_prefix}_{extruder_name}"
-        obj = self.printer.lookup_object(th_key, None)
-        if obj is None:
-            return default_cmd, True
-        v = obj.variables
-        enabled = v.get('enabled', 1)
-        if isinstance(enabled, str):
-            enabled = int(enabled)
-        redirect = v.get('redirect_cmd', '')
-        if isinstance(redirect, str):
-            redirect = redirect.strip().strip('"').strip("'")
-        if redirect:
-            return redirect, bool(enabled)
-        return default_cmd, bool(enabled)
-
     def verify_macro_positions(self) -> str:
         """
         Verifies that cut, park, poop, kick, wipe positions are set correctly if these
@@ -1402,40 +1377,29 @@ class afc:
                     cur_lane.espooler.do_assist_move()
                     self.printer.send_event("afc:tool_loaded", cur_lane)
                     if self.poop:
-                        poop_cmd, poop_enabled = self._resolve_macro_cmd(
-                            '_AFC_POOP_VARS', cur_extruder.name, self.poop_cmd)
-                        if poop_enabled:
-                            if purge_length is not None:
-                                self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(poop_cmd, purge_length, cur_extruder.name))
-                            else:
-                                self.gcode.run_script_from_command("{} EXTRUDER={}".format(poop_cmd, cur_extruder.name))
+                        if purge_length is not None:
+                            self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))
 
-                            self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
+                        else:
+                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.poop_cmd, cur_extruder.name))
+
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
+                        self.function.log_toolhead_pos()
+
+                        if self.wipe:
+                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
+                            self.afcDeltaTime.log_with_time("TOOL_LOAD: After first wipe")
                             self.function.log_toolhead_pos()
-
-                            if self.wipe:
-                                wipe_cmd, wipe_enabled = self._resolve_macro_cmd(
-                                    '_AFC_BRUSH_VARS', cur_extruder.name, self.wipe_cmd)
-                                if wipe_enabled:
-                                    self.gcode.run_script_from_command("{} EXTRUDER={}".format(wipe_cmd, cur_extruder.name))
-                                    self.afcDeltaTime.log_with_time("TOOL_LOAD: After first wipe")
-                                    self.function.log_toolhead_pos()
 
                     if self.kick:
-                        kick_cmd, kick_enabled = self._resolve_macro_cmd(
-                            '_AFC_KICK_VARS', cur_extruder.name, self.kick_cmd)
-                        if kick_enabled:
-                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(kick_cmd, cur_extruder.name))
-                            self.afcDeltaTime.log_with_time("TOOL_LOAD: After kick")
-                            self.function.log_toolhead_pos()
+                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.kick_cmd, cur_extruder.name))
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After kick")
+                        self.function.log_toolhead_pos()
 
                     if self.wipe:
-                        wipe_cmd, wipe_enabled = self._resolve_macro_cmd(
-                            '_AFC_BRUSH_VARS', cur_extruder.name, self.wipe_cmd)
-                        if wipe_enabled:
-                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(wipe_cmd, cur_extruder.name))
-                            self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
-                            self.function.log_toolhead_pos()
+                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
+                        self.function.log_toolhead_pos()
 
                     # Wait for moves to finish
                     self.toolhead.wait_moves()
@@ -1936,27 +1900,20 @@ class afc:
         cur_lane.select_lane()
         # Perform filament cutting and parking if specified.
         if self.tool_cut:
-            cut_cmd, cut_enabled = self._resolve_macro_cmd(
-                '_AFC_CUT_TIP_VARS', cur_extruder.name, self.tool_cut_cmd)
-            if cut_enabled:
-                cur_lane.extruder_obj.estats.increase_cut_total()
-                self.gcode.run_script_from_command("{} EXTRUDER={}".format(cut_cmd, cur_extruder.name))
-                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
-                self.function.log_toolhead_pos()
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.tool_cut_cmd, cur_extruder.name))
+            self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
+            self.function.log_toolhead_pos()
 
-            park_cmd, park_enabled = self._resolve_macro_cmd(
-                '_AFC_PARK_VARS', cur_extruder.name, self.park_cmd)
-            if self.park and park_enabled:
-                self.gcode.run_script_from_command("{} EXTRUDER={}".format(park_cmd, cur_extruder.name))
+            if self.park:
+                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After park")
                 self.function.log_toolhead_pos()
 
         # Form filament tip if necessary.
         if self.form_tip:
-            park_cmd, park_enabled = self._resolve_macro_cmd(
-                '_AFC_PARK_VARS', cur_extruder.name, self.park_cmd)
-            if self.park and park_enabled:
-                self.gcode.run_script_from_command("{} EXTRUDER={}".format(park_cmd, cur_extruder.name))
+            if self.park:
+                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After form tip park")
                 self.function.log_toolhead_pos()
 
