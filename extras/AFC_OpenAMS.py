@@ -1191,12 +1191,15 @@ class afcAMS(afcUnit):
             self._monitor.stop()
 
         try:
-            # Queue a 20mm extruder retract WITHOUT waiting — it runs
-            # concurrently with the OAMS hardware unload so the extruder
-            # helps pull filament out of extruder gears as the spool rewinds.
+            # Retract tool_stn_unload distance through extruder gears WITHOUT
+            # waiting — runs concurrently with OAMS hardware unload so the
+            # extruder actively assists pulling filament out as the spool rewinds.
             try:
+                retract_dist = cur_lane.extruder_obj.tool_stn_unload
+                retract_speed = cur_lane.extruder_obj.tool_unload_speed
                 self.afc.gcode.run_script_from_command("M83")
-                self.afc.gcode.run_script_from_command("G1 E-20.00 F1500")
+                self.afc.gcode.run_script_from_command(
+                    f"G1 E-{retract_dist:.2f} F{retract_speed:.0f}")
             except Exception as e:
                 self.logger.warning(f"Concurrent retract failed: {e}")
 
