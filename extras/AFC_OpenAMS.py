@@ -676,33 +676,10 @@ class afcAMS(afcUnit):
                     old_f1s = self._last_f1s[slot] if slot < len(self._last_f1s) else None
 
                     if old_f1s is not None and new_f1s != old_f1s:
-                        prep_done = getattr(lane, '_afc_prep_done', False)
-                        if prep_done:
-                            if new_f1s and not old_f1s:
-                                if lane_name in self._hub_load_suppressed:
-                                    self._hub_load_suppressed.discard(lane_name)
-                                else:
-                                    self.logger.info(f"OAMS: {lane.name} filament inserted")
-                                    if lane.status == AFCLaneState.NONE:
-                                        lane.set_loaded()
-                                        self.lane_loaded(lane)
-                                        self.afc.save_vars()
-
-                            elif not new_f1s and old_f1s:
-                                self.logger.info(f"OAMS: {lane.name} filament removed")
-                                if getattr(lane, 'tool_loaded', False):
-                                    try:
-                                        is_printing = self.afc.function.is_printing()
-                                    except Exception:
-                                        is_printing = False
-                                    if is_printing:
-                                        self.afc.error.AFC_error(
-                                            f"OAMS runout on {lane.name}", pause=True)
-                                else:
-                                    lane.loaded_to_hub = False
-                                    lane.status = AFCLaneState.NONE
-                                    self.lane_unloaded(lane)
-                                    self.afc.save_vars()
+                        if lane_name in self._hub_load_suppressed:
+                            lane._load_suppressed = True
+                            self._hub_load_suppressed.discard(lane_name)
+                        lane.handle_load_runout(eventtime, new_f1s)
 
                     self._last_f1s[slot] = new_f1s
 
@@ -1425,7 +1402,43 @@ class afcAMS(afcUnit):
             f"Runout detected on {lane.name}", pause=True)
 
     def check_runout(self, lane=None):
-        pass
+        """OAMS runout: only trigger when printing AND this lane is loaded to its extruder."""
+        if lane is None:
+            return False
+        try:
+            is_printing = self.afc.function.is_printing()
+        except Exception:
+            return False
+        if not is_printing:
+            return False
+        if not getattr(lane, 'tool_loaded', False):
+            return False
+        ext = getattr(lane, 'extruder_obj', None)
+        if ext is not None and getattr(ext, 'lane_loaded', None) != lane.name:
+            return False
+        return True
+
+    def on_filament_insert(self, lane):
+        """OAMS insert: update lane state and publish event."""
+        self.lane_loaded(lane)
+        self.lane_illuminate_spool(lane)
+        spool_index = self._spool_map.get(lane.name)
+        if spool_index is not None:
+            hw = AMSHardwareService.for_printer(self.printer, self.oams_name, logger=self.logger)
+            hw.update_lane_snapshot(
+                self.oams_name, lane.name, True, lane.loaded_to_hub,
+                self.afc.reactor.monotonic(), spool_index=spool_index)
+
+    def on_filament_remove(self, lane):
+        """OAMS removal: update lane state and publish event."""
+        lane.loaded_to_hub = False
+        self.lane_unloaded(lane)
+        spool_index = self._spool_map.get(lane.name)
+        if spool_index is not None:
+            hw = AMSHardwareService.for_printer(self.printer, self.oams_name, logger=self.logger)
+            hw.update_lane_snapshot(
+                self.oams_name, lane.name, False, False,
+                self.afc.reactor.monotonic(), spool_index=spool_index)
 
     # ── Internal helpers ────────────────────────────────────────────
 
