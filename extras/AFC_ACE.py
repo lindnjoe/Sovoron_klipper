@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import traceback
 from configparser import Error as error
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -433,6 +434,179 @@ class afcACE(afcUnit):
         lane.loaded_to_hub = False
         self._set_hub_state(lane, False)
 
+    # ── TD-1 support ────────────────────────────────────────────────
+
+    def calibrate_td1(self, cur_lane, dis, tol):
+        """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament."""
+        self._operation_active = True
+        try:
+            return self._calibrate_td1_inner(cur_lane, dis, tol)
+        finally:
+            self._operation_active = False
+            self._prev_states_stale = True
+
+    def prep_capture_td1(self, cur_lane):
+        """ACE TD-1 capture is triggered from prep_post_load (after hub feed).
+
+        Return non-None to prevent the base _prep_capture_td1 from running
+        the stepper-based path.
+        """
+        if cur_lane.td1_when_loaded and cur_lane.loaded_to_hub:
+            return True, "TD-1 capture handled by prep_post_load"
+        return None
+
+    def capture_td1_data(self, cur_lane):
+        """ACE TD-1 data capture using feed_filament instead of stepper moves."""
+        if self._ace is None or not self._ace.connected:
+            return None
+        if cur_lane.td1_device_id is None:
+            return None
+        if cur_lane.td1_bowden_length is None:
+            return False, "td1_bowden_length not set — run TD-1 calibration first"
+
+        slot = self._get_slot(cur_lane.name)
+        valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
+        if not valid:
+            return False, msg
+
+        self._operation_active = True
+        try:
+            return self._capture_td1_data_inner(cur_lane, slot)
+        finally:
+            self._operation_active = False
+
+    def _capture_td1_data_inner(self, cur_lane, slot):
+        dist_hub = cur_lane.dist_hub
+
+        if not cur_lane.loaded_to_hub:
+            self.logger.info(f"ACE TD-1 capture: feeding {dist_hub}mm to hub for {cur_lane.name}")
+            self._wait_for_ace_ready()
+            self._ace.feed_filament(slot, dist_hub, self.feed_speed)
+            self._wait_for_ace_ready()
+
+        feed_dist = cur_lane.td1_bowden_length
+        self.logger.info(
+            f"ACE TD-1 capture: feeding {feed_dist}mm to TD-1 for {cur_lane.name}")
+
+        compare_time = datetime.now()
+        self._wait_for_ace_ready()
+        self._ace.feed_filament(slot, feed_dist, self.feed_speed)
+        self._wait_for_ace_ready()
+
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 5.0)
+
+        success = self.get_td1_data(cur_lane, compare_time)
+        if not success:
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.0)
+            success = self.get_td1_data(cur_lane, compare_time)
+
+        retract_dist = feed_dist + (0 if cur_lane.loaded_to_hub else dist_hub)
+        self.logger.info(f"ACE TD-1 capture: retracting {retract_dist}mm for {cur_lane.name}")
+        try:
+            self._wait_for_ace_ready()
+            self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
+            self._wait_for_feed_complete(slot, retract_dist, self.retract_speed)
+        except Exception as e:
+            self.logger.error(f"ACE TD-1 capture retract failed: {e}")
+
+        if success:
+            return True, f"TD-1 data captured for {cur_lane.name}"
+        return False, "TD-1 data not captured (unload completed)"
+
+    def _calibrate_td1_inner(self, cur_lane, dis, tol):
+        if self._ace is None or not self._ace.connected:
+            return False, "ACE not connected", 0
+
+        if cur_lane.td1_device_id is None:
+            return False, (
+                f"Cannot calibrate TD-1 for {cur_lane.name}, td1_device_id "
+                "is a required field in AFC_hub or per AFC_lane"), 0
+
+        valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
+        if not valid:
+            return False, msg, 0
+
+        slot = self._get_slot(cur_lane.name)
+        step_size = dis if dis > 0 else 50.0
+        max_bowden_length = 6000
+        cur_hub = cur_lane.hub_obj
+        dist_hub = cur_lane.dist_hub
+
+        self.logger.info(
+            f"ACE calibrate_td1: feeding slot {slot} in {step_size}mm steps, "
+            f"max {max_bowden_length}mm, TD-1 device={cur_lane.td1_device_id}")
+
+        self._wait_for_ace_ready()
+
+        # Phase 1: Get filament to hub position
+        has_real_hub = (cur_hub is not None
+                        and hasattr(cur_hub, 'switch_pin')
+                        and getattr(cur_hub, 'switch_pin', 'virtual').lower() != 'virtual')
+        if cur_lane.loaded_to_hub:
+            self.logger.info("ACE calibrate_td1: filament already at hub, skipping hub feed")
+        elif has_real_hub:
+            self.logger.info("ACE calibrate_td1: feeding to hub sensor")
+            self._ace.feed_filament(slot, dist_hub + 200, self.feed_speed)
+            hub_timeout = self.afc.reactor.monotonic() + 15.0
+            while self.afc.reactor.monotonic() < hub_timeout:
+                if cur_hub.state:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+            self._wait_for_ace_ready()
+            if not cur_hub.state:
+                self._ace.unwind_filament(slot, dist_hub + 200, self.retract_speed)
+                self._wait_for_ace_ready()
+                return False, f"Hub sensor did not trigger for {cur_lane.name}", 0
+        elif dist_hub > 0:
+            self.logger.info(f"ACE calibrate_td1: feeding {dist_hub}mm to virtual hub")
+            self._ace.feed_filament(slot, dist_hub, self.feed_speed)
+            self._wait_for_ace_ready()
+
+        # Phase 2: Feed incrementally from hub, checking TD-1 after each step
+        bow_pos = 0.0
+        compare_time = datetime.now()
+        while not self.get_td1_data(cur_lane, compare_time):
+            if bow_pos > max_bowden_length:
+                retract = bow_pos + (0 if cur_lane.loaded_to_hub else dist_hub)
+                self._ace.unwind_filament(slot, retract, self.retract_speed)
+                self._wait_for_ace_ready()
+                return False, f"TD-1 failed to detect filament after {bow_pos:.0f}mm", bow_pos
+
+            compare_time = datetime.now()
+            bow_pos += step_size
+            self._ace.feed_filament(slot, step_size, self.feed_speed)
+            self._wait_for_ace_ready()
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 5.0)
+
+        self.logger.info(f"ACE calibrate_td1: TD-1 detected filament at {bow_pos:.1f}mm")
+
+        # Retract back
+        if cur_lane.loaded_to_hub:
+            retract_dist = bow_pos
+        else:
+            retract_dist = bow_pos + dist_hub
+        try:
+            self._wait_for_ace_ready()
+            self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
+            self._wait_for_feed_complete(slot, retract_dist, self.retract_speed)
+        except Exception as e:
+            self.logger.error(f"ACE calibrate_td1: retract failed: {e}")
+
+        # Save td1_bowden_length
+        old_td1 = getattr(cur_lane, "td1_bowden_length", None)
+        cur_lane.td1_bowden_length = bow_pos
+        cal_msg = f"\n td1_bowden_length: New: {bow_pos} Old: {old_td1}"
+        self.afc.function.ConfigRewrite(
+            cur_lane.fullname, "td1_bowden_length", bow_pos, cal_msg)
+        self.afc.save_vars()
+
+        return True, (
+            f"ACE TD-1 calibration: filament detected at {bow_pos:.1f}mm.\n"
+            f"td1_bowden_length: {bow_pos:.0f} (was {old_td1})\n"
+            f"Value saved to config."), bow_pos
+
+    # ── Prep and post-load ─────────────────────────────────────────
+
     def prep_post_load(self, lane: AFCLane):
         """Stage filament to hub via ACE serial feed."""
         if self._unit_load_to_hub is not None:
@@ -463,6 +637,12 @@ class afcACE(afcUnit):
                 self.logger.info(
                     f"ACE prep_post_load: {lane.name} staged at hub "
                     f"(dist_hub={dist_hub:.0f}mm)")
+                # Capture TD-1 data now that filament is at hub
+                if (lane.td1_when_loaded
+                    and lane.td1_device_id
+                    and self.afc.td1_present):
+                    self.logger.info(f"ACE prep_post_load: capturing TD-1 data for {lane.name}")
+                    self.capture_td1_data(lane)
                 return
             except Exception as e:
                 if attempt < max_attempts - 1:
