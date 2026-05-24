@@ -1938,8 +1938,8 @@ class afc:
             if self.error_state:
                 return False
             cur_lane.set_tool_unloaded()
+            cur_lane.unit_obj.lane_tool_unloaded(cur_lane)
             cur_lane.status = AFCLaneState.NONE
-            self.save_vars()
         else:
             # Attempt to unload the filament from the extruder, retrying if needed.
             num_tries = 0
@@ -2138,16 +2138,13 @@ class afc:
                                            assist_active=AssistActive.YES)
                 cur_lane.move_advanced(cur_lane.short_move_dis * -5, SpeedMode.SHORT)
 
-            if self.post_unload_macro is not None:
-                self.gcode.run_script_from_command(self.post_unload_macro)
-                # TODO: Add afcDeltaTime log
+        if self.post_unload_macro is not None:
+            self.gcode.run_script_from_command(self.post_unload_macro)
 
-            cur_lane.do_enable(False)
-            cur_lane.unit_obj.return_to_home()
-
-            cur_lane.espooler.stats.update_database()
-
-            self.save_vars()
+        cur_lane.do_enable(False)
+        cur_lane.unit_obj.return_to_home()
+        cur_lane.espooler.stats.update_database()
+        self.save_vars()
 
         # Update tool and lane status.
         cur_lane.disable_buffer()
