@@ -47,9 +47,6 @@ except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_ex
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
-try: from extras.AFC_stats import AFCStats_var
-except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
-
 LARGE_TIME_OFFSET = 99999.9
 
 class AFCExtruderStats:
@@ -221,7 +218,6 @@ class AFCExtruder:
         self.mutex                      = self.reactor.mutex()
 
         self.name: str                  = self.fullname.split(' ')[-1]
-        # self.extruder_name: str         = config.get("extruder_name", self.name)    # Add support for this, not sure where all this will have to be updated
         self.tool_start                 = config.get('pin_tool_start', None)                                            # Pin for sensor before(pre) extruder gears
         self.tool_end                   = config.get('pin_tool_end', None)                                              # Pin for sensor after(post) extruder gears (optional)
         self.tool_stn                   = config.getfloat("tool_stn", 72)                                               # Distance in mm from the toolhead sensor to the tip of the nozzle in mm, if `tool_end` is defined then distance is from this sensor
@@ -391,7 +387,6 @@ class AFCExtruder:
                     f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
 
-
     def handle_connect(self):
         """
         Handle the connection event.
@@ -445,7 +440,7 @@ class AFCExtruder:
                         self.set_status_color_fn = led_helper.set_color
                         self.check_transmit_status_fn = led_helper.check_transmit
 
-        except error:
+        except configfile.error:
             raise error(
                 f"{self.toolhead_leds} not found in config file for led_name variable in " \
                 f"{self.fullname} config section"
