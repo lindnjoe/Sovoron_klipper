@@ -44,6 +44,9 @@ class AfcToolchanger(afcUnit):
         self.logo_error = '<span class=error--text>Toolchanger Not Ready</span>\n'
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
 
+        # Load U1 bridge (no-ops gracefully on non-U1 printers)
+        self.printer.load_object(config, 'AFC_bridge_U1')
+
         self.functions.register_commands(self.afc.show_macros, "AFC_SELECT_TOOL",
                                          self.cmd_AFC_SELECT_TOOL, self.cmd_AFC_SELECT_TOOL_help,
                                          self.cmd_AFC_SELECT_TOOL_options )
