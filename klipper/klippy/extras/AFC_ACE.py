@@ -373,9 +373,11 @@ class afcACE(afcUnit):
             # Filament removed — skip on first callback after operation
             # to avoid false triggers from stale _prev_slot_states.
             if not slot_ready and not slot_transient and not resync_prev:
+                # Spool physically removed — clear suppression so the next
+                # new spool insertion gets a fresh prep_post_load cycle.
+                self._hub_load_suppressed.discard(lane.name)
                 prev_ready = self._prev_slot_states.get(lane.name)
                 if prev_ready:
-                    self._hub_load_suppressed.discard(lane.name)
                     if getattr(lane, 'tool_loaded', False):
                         try:
                             is_printing = self.afc.function.is_printing()
@@ -872,7 +874,7 @@ class afcACE(afcUnit):
             self._stop_feed_assist(slot)
 
     def _ace_unload_sequence(self, cur_lane, cur_extruder) -> bool:
-        """Full ACE unload: heat → cut → park → tip → retract → ACE serial unwind."""
+        """ACE unload transport — ACE serial unwind back to hub."""
         self._operation_active = True
         try:
             return self._ace_unload_inner(cur_lane, cur_extruder)
@@ -885,7 +887,7 @@ class afcACE(afcUnit):
 
         AFC's unload_sequence handles the shared toolhead operations
         (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
-        before calling this via custom_unload_cmd.
+        and unsync_to_extruder before calling this via custom_unload_cmd.
         """
         afc = self.afc
         slot = self._get_slot(cur_lane.name)
@@ -896,18 +898,7 @@ class afcACE(afcUnit):
             return False
 
         # Feed assist already stopped by prepare_unload() before cut/park/tip.
-
-        # Retract from extruder gears
-        if cur_extruder.tool_stn_unload > 0:
-            afc.move_e_pos(
-                cur_extruder.tool_stn_unload * -1,
-                cur_extruder.tool_unload_speed,
-                "Retract from extruder", wait_tool=True)
-
-        # Unsync before serial unwind
-        cur_lane.unsync_to_extruder()
-
-        afc.afcDeltaTime.log_with_time("Toolhead retract complete")
+        # Extruder retract and unsync handled by AFC.py before custom_unload_cmd.
 
         # ACE serial unwind — retract to hub staging point
         hub = cur_lane.hub_obj

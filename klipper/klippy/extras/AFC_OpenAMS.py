@@ -582,7 +582,13 @@ class afcAMS(afcUnit):
                     clog_sensitivity=self.clog_sensitivity,
                     on_stuck_spool=self._on_stuck_spool_detected,
                     on_clog=self._on_clog_detected,
-                    on_stuck_cleared=self._on_stuck_spool_cleared)
+                    on_stuck_cleared=self._on_stuck_spool_cleared,
+                    is_printing_fn=lambda: self.afc.function.in_print(),
+                    is_lane_loaded_fn=lambda: any(
+                        getattr(l, 'tool_loaded', False)
+                        and getattr(l, 'extruder_obj', None) is not None
+                        and l.extruder_obj.on_shuttle()
+                        for l in self.lanes.values()))
             except Exception as e:
                 self.logger.error(f"Failed to init monitor: {e}")
 
@@ -712,22 +718,40 @@ class afcAMS(afcUnit):
 
                 if resync_prev:
                     self._last_hub[slot] = new_hub
-                    if not virtual_hub:
-                        lane.loaded_to_hub = new_hub
+                    lane.loaded_to_hub = new_hub
                 else:
                     old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
 
                     if old_hub is not None and new_hub != old_hub:
-                        if not virtual_hub:
-                            lane.loaded_to_hub = new_hub
+                        lane.loaded_to_hub = new_hub
                         hub = getattr(lane, 'hub_obj', None)
                         if hub is not None and hasattr(hub, 'switch_pin_callback'):
+                            any_hub_loaded = any(
+                                getattr(l, "loaded_to_hub", False)
+                                for l in hub.lanes.values()
+                            )
                             try:
-                                hub.switch_pin_callback(eventtime, new_hub)
+                                hub.switch_pin_callback(eventtime, any_hub_loaded)
                             except Exception:
                                 pass
 
                     self._last_hub[slot] = new_hub
+
+        # Reconcile virtual hub _state from per-lane loaded_to_hub
+        hubs_updated = set()
+        for lane in self.lanes.values():
+            hub = getattr(lane, 'hub_obj', None)
+            if hub is None or not hub.is_virtual_pin() or id(hub) in hubs_updated:
+                continue
+            hubs_updated.add(id(hub))
+            any_loaded = any(
+                getattr(l, "loaded_to_hub", False)
+                for l in hub.lanes.values()
+            )
+            try:
+                hub.switch_pin_callback(eventtime, any_loaded)
+            except Exception:
+                pass
 
         return eventtime + 2.0
 
@@ -805,30 +829,32 @@ class afcAMS(afcUnit):
 
     # ── Stuck spool / clog detection callbacks ──────────────────────
 
-    def _on_stuck_spool_detected(self, lane_name: str = None):
+    def _on_stuck_spool_detected(self, fps_name: str = None, message: str = None):
         """Called by OAMSMonitor when stuck spool detected during print."""
-        msg = f"OpenAMS stuck spool detected"
-        if lane_name:
-            msg += f" on {lane_name}"
+        msg = message or "OpenAMS stuck spool detected"
+        if fps_name and fps_name not in msg:
+            msg = f"{msg} (FPS: {fps_name})"
 
         if self.stuck_spool_auto_recovery:
             self.logger.info(f"{msg} — attempting auto recovery")
             # TODO: implement auto-recovery (unload + reload + resume)
         else:
-            msg += ". Print paused — check spool and resume."
+            if "paused" not in msg.lower():
+                msg += ". Print paused — check spool and resume."
             self.afc.error.AFC_error(msg, pause=True)
 
-    def _on_clog_detected(self, lane_name: str = None):
+    def _on_clog_detected(self, fps_name: str = None, message: str = None):
         """Called by OAMSMonitor when clog detected during print."""
-        msg = "OpenAMS clog detected"
-        if lane_name:
-            msg += f" on {lane_name}"
-        msg += ". Print paused — check filament path."
+        msg = message or "OpenAMS clog detected"
+        if fps_name and fps_name not in msg:
+            msg = f"{msg} (FPS: {fps_name})"
+        if "paused" not in msg.lower():
+            msg += ". Print paused — check filament path."
         self.afc.error.AFC_error(msg, pause=True)
 
-    def _on_stuck_spool_cleared(self, lane_name: str = None):
+    def _on_stuck_spool_cleared(self, fps_name: str = None):
         """Called by OAMSMonitor when stuck spool condition clears."""
-        self.logger.info(f"Stuck spool cleared{' for ' + lane_name if lane_name else ''}")
+        self.logger.info(f"Stuck spool cleared{' on ' + fps_name if fps_name else ''}")
 
     # ── Unit interface overrides ────────────────────────────────────
 
@@ -1027,10 +1053,14 @@ class afcAMS(afcUnit):
             return False
 
         cur_lane.loaded_to_hub = True
+        hub_obj = getattr(cur_lane, "hub_obj", None)
+        if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
+            hub_obj.switch_pin_callback(self.afc.reactor.monotonic(), True)
+
         return True
 
     def _oams_unload_sequence(self, cur_lane, cur_extruder) -> bool:
-        """Full OAMS unload: heat → cut → park → tip → OAMS hardware unload."""
+        """OAMS unload transport — OAMS hardware unload back to spool bay."""
         self._operation_active = True
         try:
             return self._oams_unload_inner(cur_lane, cur_extruder)
@@ -1051,21 +1081,9 @@ class afcAMS(afcUnit):
 
         AFC's unload_sequence handles the shared toolhead operations
         (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
-        before calling this via custom_unload_cmd.
+        and unsync_to_extruder before calling this via custom_unload_cmd.
         """
         afc = self.afc
-
-        # Retract from extruder gears
-        if cur_extruder.tool_stn_unload > 0:
-            afc.move_e_pos(
-                cur_extruder.tool_stn_unload * -1,
-                cur_extruder.tool_unload_speed,
-                "Retract from extruder", wait_tool=True)
-
-        # Unsync before hardware unload
-        cur_lane.unsync_to_extruder()
-
-        afc.afcDeltaTime.log_with_time("Toolhead retract complete")
 
         # OAMS hardware unload
         if not self._oams_unload(cur_lane):
@@ -1185,13 +1203,14 @@ class afcAMS(afcUnit):
             self._monitor.stop()
 
         try:
-            # Retract from extruder gears
-            unload_length, _ = self.get_engagement_params(cur_lane.name)
-            self._oams_extrude(
-                -(unload_length + 10.0), 1500, "unload_retract")
-
-            # Queue concurrent extruder retract
-            self.afc.gcode.run_script_from_command("G92 E0\nG1 E-20 F1500")
+            # Queue a 20mm extruder retract WITHOUT waiting — it runs
+            # concurrently with the OAMS hardware unload so the extruder
+            # helps pull filament out of extruder gears as the spool rewinds.
+            try:
+                self.afc.gcode.run_script_from_command("M83")
+                self.afc.gcode.run_script_from_command("G1 E-20.00 F1500")
+            except Exception as e:
+                self.logger.warning(f"Concurrent retract failed: {e}")
 
             # Hardware unload
             success, msg = self.oams.unload_spool_with_retry()
@@ -1209,9 +1228,13 @@ class afcAMS(afcUnit):
                     # Update virtual hub sensor
                     hub = cur_lane.hub_obj
                     if hub and hub.is_virtual_pin():
+                        any_hub_loaded = any(
+                            getattr(l, "loaded_to_hub", False)
+                            for l in hub.lanes.values()
+                        )
                         try:
                             eventtime = self.afc.reactor.monotonic()
-                            hub.switch_pin_callback(eventtime, cur_lane.loaded_to_hub)
+                            hub.switch_pin_callback(eventtime, any_hub_loaded)
                         except Exception:
                             pass
 
