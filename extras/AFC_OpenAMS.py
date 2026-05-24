@@ -1089,20 +1089,20 @@ class afcAMS(afcUnit):
             self._monitor.stop()
 
         try:
-            # Retract tool_stn_unload distance through extruder gears WITHOUT
-            # waiting — runs concurrently with OAMS hardware unload so the
-            # extruder actively assists pulling filament out as the spool rewinds.
+            # Start OAMS hardware rewind first (non-blocking MCU command),
+            # then retract through extruder gears concurrently while the
+            # spool is being pulled back.
+            result = oams.unload_spool_with_retry()
+
             try:
                 retract_dist = cur_lane.extruder_obj.tool_stn_unload
-                retract_speed = cur_lane.extruder_obj.tool_unload_speed
+                retract_speed = cur_lane.extruder_obj.tool_unload_speed * 60
                 gcode = self.afc.gcode
                 gcode.run_script_from_command("M83")
                 gcode.run_script_from_command(
                     f"G1 E-{retract_dist:.2f} F{retract_speed:.0f}")
             except Exception as e:
-                self.logger.warning(f"Concurrent retract failed: {e}")
-
-            result = oams.unload_spool_with_retry()
+                self.logger.warning(f"Extruder retract failed: {e}")
             success = bool(result) if not isinstance(result, tuple) else bool(result[0])
 
             # Wait for MCU to fully settle after unload
