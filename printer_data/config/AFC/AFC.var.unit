@@ -20,7 +20,7 @@
             "remember_spool": false,
             "spool_id": 46,
             "color": "#89A84F",
-            "weight": 50.825126021664346,
+            "weight": 50.67301599586375,
             "extruder_temp": 210,
             "bed_temp": 65,
             "runout_lane": null,
@@ -286,7 +286,7 @@
             "map": "T9",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
+            "tool_loaded": true,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -295,13 +295,13 @@
             "remember_spool": false,
             "spool_id": 32,
             "color": "#5E43B7",
-            "weight": 745.1306415188715,
+            "weight": 744.5937826042812,
             "extruder_temp": 220,
             "bed_temp": 60,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "None",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -316,7 +316,7 @@
             "map": "T10",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -325,13 +325,13 @@
             "remember_spool": false,
             "spool_id": 9,
             "color": "#0A2989",
-            "weight": 293.91440807882486,
+            "weight": 293.73087354026904,
             "extruder_temp": 220,
             "bed_temp": 60,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -513,7 +513,7 @@
         }
     },
     "system": {
-        "current_load": "lane10",
+        "current_load": "lane9",
         "num_units": 5,
         "num_lanes": 16,
         "num_extruders": 6,
@@ -534,7 +534,7 @@
                 "lane_loaded": "lane6"
             },
             "extruder5": {
-                "lane_loaded": "lane10"
+                "lane_loaded": "lane9"
             }
         },
         "bypass": {

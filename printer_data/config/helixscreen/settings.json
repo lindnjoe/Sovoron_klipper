@@ -101,13 +101,13 @@
           "assigned": true,
           "bed_temp": 60,
           "brand": "Bambu Lab",
-          "color_rgb": 665993,
+          "color_rgb": 6177719,
           "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 294.0887756347656,
-          "spool_name": "Bambu Lab PLA - Blue",
-          "spoolman_id": 9,
+          "remaining_weight_g": 744.5938110351563,
+          "spool_name": "Bambu Lab PLA - Purple",
+          "spoolman_id": 32,
           "total_weight_g": 1000.0
         }
       },
@@ -183,7 +183,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-24T13:16:48Z"
+          "timestamp": "2026-05-24T14:25:51Z"
         },
         "optional": []
       },
