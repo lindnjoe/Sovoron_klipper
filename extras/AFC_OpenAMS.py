@@ -1453,8 +1453,7 @@ class afcAMS(afcUnit):
         cur_lane.loaded_to_hub = True
         hub_obj = getattr(cur_lane, "hub_obj", None)
         if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
-            hub_obj.switch_pin_callback(self.reactor.monotonic(), True,
-                                        lane_name=cur_lane.name)
+            hub_obj.switch_pin_callback(self.reactor.monotonic(), True)
 
         return True
 
@@ -1500,8 +1499,7 @@ class afcAMS(afcUnit):
             hub_obj = getattr(cur_lane, "hub_obj", None)
             if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
                 hub_obj.switch_pin_callback(
-                    self.reactor.monotonic(), hub_loaded,
-                    lane_name=cur_lane.name
+                    self.reactor.monotonic(), hub_loaded
                 )
         except Exception as e:
             message = "OpenAMS unload failed for {}: {}".format(cur_lane.name, str(e))
@@ -2619,8 +2617,7 @@ class afcAMS(afcUnit):
                             cur_lane.loaded_to_hub = True
                         hub_obj = getattr(cur_lane, "hub_obj", None)
                         if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
-                            hub_obj.switch_pin_callback(self.reactor.monotonic(), True,
-                                                        lane_name=cur_lane.name)
+                            hub_obj.switch_pin_callback(self.reactor.monotonic(), True)
                         if self.afc.function.get_current_lane() == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
@@ -3793,7 +3790,7 @@ class afcAMS(afcUnit):
                     self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
             return
 
-        hub.switch_pin_callback(eventtime, hub_val, lane_name=lane.name)
+        hub.switch_pin_callback(eventtime, hub_val)
         fila = getattr(hub, "fila", None)
         if fila is not None:
             fila.runout_helper.note_filament_present(eventtime, hub.state)
@@ -3840,8 +3837,7 @@ class afcAMS(afcUnit):
                     hw_hub = bool(hub_values[spool_idx])
                     hub_obj = getattr(lane, "hub_obj", None)
                     if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
-                        hub_obj.switch_pin_callback(eventtime, hw_hub,
-                                                    lane_name=lane.name)
+                        hub_obj.switch_pin_callback(eventtime, hw_hub)
                     current = getattr(lane, "loaded_to_hub", False)
                     if hw_hub and not current:
                         lane.loaded_to_hub = True
@@ -4027,8 +4023,7 @@ class afcAMS(afcUnit):
                     hub_obj = getattr(lane, "hub_obj", None)
                     if hub_obj is not None:
                         if hasattr(hub_obj, "switch_pin_callback"):
-                            hub_obj.switch_pin_callback(eventtime, hub_state,
-                                                        lane_name=lane.name)
+                            hub_obj.switch_pin_callback(eventtime, hub_state)
                 except Exception as e:
                     self.logger.debug(
                         f"_update_shared_lane: failed to reconcile per-lane hub state for {lane.name}: {e}"
@@ -4753,10 +4748,8 @@ class afcAMS(afcUnit):
                 return
 
             try:
-                lane_name = getattr(target_lane, 'name', None)
                 if hasattr(hub_obj, "switch_pin_callback"):
-                    hub_obj.switch_pin_callback(eventtime, False,
-                                                lane_name=lane_name)
+                    hub_obj.switch_pin_callback(eventtime, False)
             except Exception as e:
                 self.logger.debug(
                     f"Failed to update virtual hub switch state for {getattr(target_lane, 'name', '<unknown>')}: {e}"
