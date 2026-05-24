@@ -1088,21 +1088,32 @@ class afcAMS(afcUnit):
         if self._monitor is not None:
             self._monitor.stop()
 
-        try:
-            # Start OAMS hardware rewind first (non-blocking MCU command),
-            # then retract through extruder gears concurrently while the
-            # spool is being pulled back.
-            result = oams.unload_spool_with_retry()
-
+        # Blocking pre-retract: clear filament from extruder gears before
+        # OAMS hardware starts rewinding. Without this the hardware fights
+        # against the extruder grip and can't pull the filament back.
+        unload_length, unload_speed = self.get_unload_params(cur_lane.name)
+        if unload_length and unload_length > 0:
+            unload_length += 10.0
+            retract_speed = unload_speed if unload_speed else 25.0 * 60.0
+            self.logger.debug(
+                f"Retracting {unload_length:.1f}mm from extruder before OAMS unload")
             try:
-                retract_dist = cur_lane.extruder_obj.tool_stn_unload
-                retract_speed = cur_lane.extruder_obj.tool_unload_speed * 60
+                self._oams_extrude(-unload_length, retract_speed, "pre_oams_unload_retract")
+            except Exception as e:
+                self.logger.warning(f"Extruder retract before OAMS unload failed: {e}")
+
+        try:
+            # Queue a 20mm extruder retract WITHOUT waiting — it runs
+            # concurrently with the OAMS hardware unload so the extruder
+            # helps pull filament back as the spool motor rewinds.
+            try:
                 gcode = self.afc.gcode
                 gcode.run_script_from_command("M83")
-                gcode.run_script_from_command(
-                    f"G1 E-{retract_dist:.2f} F{retract_speed:.0f}")
+                gcode.run_script_from_command("G1 E-20.00 F1500")
             except Exception as e:
-                self.logger.warning(f"Extruder retract failed: {e}")
+                self.logger.warning(f"Concurrent retract failed: {e}")
+
+            result = oams.unload_spool_with_retry()
             success = bool(result) if not isinstance(result, tuple) else bool(result[0])
 
             # Wait for MCU to fully settle after unload
@@ -3796,7 +3807,7 @@ class afcAMS(afcUnit):
         hub.switch_pin_callback(eventtime, hub_val)
         fila = getattr(hub, "fila", None)
         if fila is not None:
-            fila.runout_helper.note_filament_present(eventtime, hub.state)
+            fila.runout_helper.note_filament_present(eventtime, hub_val)
         if hub_val:
             lane.loaded_to_hub = True
         elif not bool(getattr(lane, "_load_state", False)):
@@ -3835,26 +3846,34 @@ class afcAMS(afcUnit):
                 if spool_idx is None or spool_idx < 0:
                     continue
 
-                # Sync hub HES sensor per lane.
+                # Sync hub sensor -> loaded_to_hub + virtual hub sensor objects.
+                # Must mirror what _on_hub_changed does: update the lane attribute AND
+                # drive switch_pin_callback + runout_helper so the virtual hub sensor
+                # AFC reads for hub-runout detection stays in sync with hardware.
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
-                    hub_obj = getattr(lane, "hub_obj", None)
-                    if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
-                        hub_obj.switch_pin_callback(eventtime, hw_hub)
                     current = getattr(lane, "loaded_to_hub", False)
                     if hw_hub and not current:
                         lane.loaded_to_hub = True
+                    elif not hw_hub and not bool(getattr(lane, "_load_state", False)):
+                        lane.loaded_to_hub = False
+                        hub_obj = getattr(lane, "hub_obj", None)
+                        if hub_obj is not None:
+                            try:
+                                if hasattr(hub_obj, "switch_pin_callback"):
+                                    hub_obj.switch_pin_callback(eventtime, hw_hub)
+                                fila = getattr(hub_obj, "fila", None)
+                                if fila is not None and hasattr(fila, "runout_helper"):
+                                    fila.runout_helper.note_filament_present(eventtime, hw_hub)
+                            except Exception as hub_e:
+                                self.logger.debug(
+                                    f"sync_openams_sensors: failed to update virtual hub sensor "
+                                    f"for {lane.name}: {hub_e}"
+                                )
                         self.logger.debug(
                             f"sync_openams_sensors: corrected loaded_to_hub "
                             f"{current}->{hw_hub} for {lane.name}"
                         )
-                    elif not hw_hub and not bool(getattr(lane, "_load_state", False)):
-                        if current:
-                            self.logger.debug(
-                                f"sync_openams_sensors: corrected loaded_to_hub "
-                                f"{current}->{hw_hub} for {lane.name}"
-                            )
-                        lane.loaded_to_hub = False
 
                 # Sync F1S sensor -> load_state/prep_state (only when allowed)
                 if sync_f1s and f1s_values is not None and spool_idx < len(f1s_values):
