@@ -3852,10 +3852,11 @@ class afcAMS(afcUnit):
                 # AFC reads for hub-runout detection stays in sync with hardware.
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
+                    f1s_present = bool(getattr(lane, "_load_state", False))
                     current = getattr(lane, "loaded_to_hub", False)
-                    if hw_hub and not current:
+                    if (hw_hub or f1s_present) and not current:
                         lane.loaded_to_hub = True
-                    elif not hw_hub and not bool(getattr(lane, "_load_state", False)):
+                    elif not hw_hub and not f1s_present:
                         lane.loaded_to_hub = False
                         hub_obj = getattr(lane, "hub_obj", None)
                         if hub_obj is not None:
