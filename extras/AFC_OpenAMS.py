@@ -248,7 +248,6 @@ class AMSHardwareService:
         self._last_hub_hes = [None, None, None, None]
         self._last_fps_value = None
         self._polling_enabled = False
-        self._suppress_f1s_events = False
 
     @classmethod
     def for_printer(cls, printer, name="default", logger=None):
@@ -330,21 +329,20 @@ class AMSHardwareService:
                         encoder_changed = True
                         self._consecutive_idle_polls = 0
                 self._last_encoder_clicks = encoder_clicks
-            if not self._suppress_f1s_events:
-                f1s_values = status.get("f1s_hes_value", [])
-                for bay in range(min(len(f1s_values), 4)):
-                    new_val = bool(f1s_values[bay])
-                    old_val = self._last_f1s_hes[bay]
-                    if old_val is None or new_val != old_val:
-                        self.event_bus.publish(
-                            "f1s_changed", unit_name=self.name, bay=bay,
-                            value=new_val, eventtime=eventtime
-                        )
-                        if old_val is None:
-                            self.logger.info(f"f1s[{bay}] initial state: {new_val}")
-                        else:
-                            self.logger.debug(f"f1s[{bay}] changed: {old_val} -> {new_val}")
-                    self._last_f1s_hes[bay] = new_val
+            f1s_values = status.get("f1s_hes_value", [])
+            for bay in range(min(len(f1s_values), 4)):
+                new_val = bool(f1s_values[bay])
+                old_val = self._last_f1s_hes[bay]
+                if old_val is None or new_val != old_val:
+                    self.event_bus.publish(
+                        "f1s_changed", unit_name=self.name, bay=bay,
+                        value=new_val, eventtime=eventtime
+                    )
+                    if old_val is None:
+                        self.logger.info(f"f1s[{bay}] initial state: {new_val}")
+                    else:
+                        self.logger.debug(f"f1s[{bay}] changed: {old_val} -> {new_val}")
+                self._last_f1s_hes[bay] = new_val
             hub_values = status.get("hub_hes_value", [])
             for bay in range(min(len(hub_values), 4)):
                 new_val = bool(hub_values[bay])
@@ -787,10 +785,6 @@ class afcAMS(afcUnit):
 
     # ---- Direct hardware load/unload ----
 
-    def _clear_f1s_suppression(self):
-        if self.hardware_service is not None:
-            self.hardware_service._suppress_f1s_events = False
-
     def _wait_oams_idle(self, oams, timeout=10.0, context="operation"):
         """Wait for OAMS MCU to finish any in-flight action.
 
@@ -847,11 +841,6 @@ class afcAMS(afcUnit):
         # Suspend monitor during load to prevent false stuck spool detection
         if self._monitor is not None:
             self._monitor.stop()
-
-        # Suppress F1S sensor events during load — motor activity can cause
-        # transient sensor noise that clears all lane state in Mainsail.
-        if self.hardware_service is not None:
-            self.hardware_service._suppress_f1s_events = True
 
         # Enable FPS advance latch so the toolhead sensor stays triggered
         # even when pressure drops briefly after OAMS feed completes.
@@ -921,7 +910,6 @@ class afcAMS(afcUnit):
                     self._monitor.notify_load_complete(
                         cur_lane.name, self.oams_name, spool_index)
                     self._monitor.start(oams)
-                self._clear_f1s_suppression()
                 return True, f"Loaded {cur_lane.name}"
 
             # Engagement failed — fully reset MCU state before retry.
@@ -961,7 +949,6 @@ class afcAMS(afcUnit):
                 oams.unload_spool_with_retry()
             except Exception as e:
                 self.logger.error(f"Cleanup unload failed: {e}")
-                self._clear_f1s_suppression()
                 return False, f"Engagement cleanup failed for {cur_lane.name}: {e}"
 
             # Wait for MCU to fully settle before next load attempt
@@ -977,7 +964,6 @@ class afcAMS(afcUnit):
         # Do NOT restart monitor here. The caller (load_sequence) manages
         # monitor lifecycle. Restarting here causes false stuck spool
         # detection during the dock purge pickup that follows a load failure.
-        self._clear_f1s_suppression()
         return False, f"All {max_retries} load attempts failed for {cur_lane.name}"
 
     def _verify_engagement(self, cur_lane):
@@ -1102,10 +1088,6 @@ class afcAMS(afcUnit):
         if self._monitor is not None:
             self._monitor.stop()
 
-        # Suppress F1S events during unload (same motor noise issue as load)
-        if self.hardware_service is not None:
-            self.hardware_service._suppress_f1s_events = True
-
         try:
             # Retract tool_stn_unload distance through extruder gears WITHOUT
             # waiting — runs concurrently with OAMS hardware unload so the
@@ -1131,13 +1113,11 @@ class afcAMS(afcUnit):
             # and could cause false detections.
             if self._monitor is not None:
                 self._monitor.notify_unload_complete()
-            self._clear_f1s_suppression()
             if success:
                 return True, f"Unloaded {cur_lane.name}"
             msg = result[1] if isinstance(result, tuple) and len(result) > 1 else f"OAMS unload failed for {cur_lane.name}"
             return False, msg
         except Exception as e:
-            self._clear_f1s_suppression()
             return False, f"OAMS unload error for {cur_lane.name}: {e}"
 
     def _get_monitor_state(self):
