@@ -35,8 +35,8 @@ except: raise error(ERROR_STR.format(import_lib="AFC_assist", trace=traceback.fo
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
-# Unit types that only have load switch
-ONLY_LOAD_TYPES = ["HTLF", "Claymore"]
+# Unit types that only have load switch (shared prep/load sensor)
+ONLY_LOAD_TYPES = ["HTLF", "Claymore", "OpenAMS", "ACE"]
 EXCLUDE_TYPES = ONLY_LOAD_TYPES + [ "ViViD"]
 # Class for holding different states so its clear what all valid states are
 
@@ -122,6 +122,7 @@ class AFCLane:
         # when lanes are unloaded
         self.tool_loaded        = False
         self.loaded_to_hub      = False
+        self._load_suppressed   = False
         self.spool_id           = None
         self.color              = None
         self.weight             = 0
@@ -1043,26 +1044,30 @@ class AFCLane:
 
     def handle_load_runout(self, eventtime, load_state):
         """
-        Callback function for load switch runout/loading for HTLF, this is different than `load_callback`
-        function as this function can be delayed and is called from filament_switch_sensor class when it detects a runout event.
+        Callback for load sensor state changes on units with shared prep/load sensors
+        (ONLY_LOAD_TYPES). Called by filament_switch_sensor runout handler for physical
+        sensors, or directly by unit polling loops for serial-polled units (ACE, OpenAMS).
 
-        Before exiting `min_event_systime` is updated as this mimics how its done in `_exec_gcode` function in RunoutHelper class
-        as AFC overrides `_runout_event_handler` function with this function callback. If `min_event_systime` does not get
-        updated then future switch changes will not be detected.
-
-        :param eventtime: Event time from the button press
+        :param eventtime: Event time from the sensor change
+        :param load_state: True if filament detected, False if removed
         """
-        # Call filament sensor callback so that state is registered
-        try:
-            self.load_debounce_button._old_note_filament_present(is_filament_present=load_state)
-        except:
-            self.load_debounce_button._old_note_filament_present(eventtime, load_state)
+        # Update filament sensor state if physical sensor exists
+        if hasattr(self, 'load_debounce_button'):
+            try:
+                self.load_debounce_button._old_note_filament_present(is_filament_present=load_state)
+            except:
+                self.load_debounce_button._old_note_filament_present(eventtime, load_state)
 
         if (self.printer.state_message == 'Printer is ready'
             and self.unit_obj.type in ONLY_LOAD_TYPES
             and True == self._afc_prep_done):
             if load_state:
-                self.set_loaded()
+                if not self._load_suppressed:
+                    self.set_loaded()
+                    self.unit_obj.on_filament_insert(self)
+                else:
+                    self.set_loaded()
+                self._load_suppressed = False
 
                 # Check if user wants to get TD-1 data when loading
                 if (self.td1_device_id
@@ -1078,8 +1083,10 @@ class AFCLane:
 
                 self._post_prep_user_macro()
             else:
+                self.unit_obj.on_filament_remove(self)
                 # Don't run if user disabled sensor in gui
-                if not self.fila_load.runout_helper.sensor_enabled and self.afc.function.is_printing():
+                fila_load = getattr(self, 'fila_load', None)
+                if fila_load and not fila_load.runout_helper.sensor_enabled and self.afc.function.is_printing():
                     self.logger.warning("Load runout has been detected, but pause and runout detection has been disabled")
                 elif self.unit_obj.check_runout(self):
                     # Checking to make sure runout_lane is set

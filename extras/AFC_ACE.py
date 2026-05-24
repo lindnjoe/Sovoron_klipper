@@ -3588,6 +3588,34 @@ class afcACE(afcUnit):
         except Exception:
             return False
 
+    def on_filament_insert(self, lane):
+        """ACE-specific insertion: refresh RFID inventory, apply spool defaults, sync to spoolman."""
+        local_slot = self._get_local_slot_for_lane(lane)
+        if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
+            return
+        self.afc.spool.clear_values(lane)
+        self._refresh_slot_inventory(local_slot)
+        slot_info = self._slot_inventory[local_slot]
+        self._apply_slot_filament_defaults(lane, slot_info)
+        self._sync_rfid_to_spoolman(lane, slot_info)
+        self._notify_rfid_read(lane, slot_info)
+        self.lane_illuminate_spool(lane)
+        self._hub_load_suppressed.discard(lane.name)
+        self.afc.save_vars()
+        try:
+            self.prep_post_load(lane)
+        except Exception as e:
+            self.logger.error(f"ACE on_filament_insert: prep_post_load error for {lane.name}: {e}")
+
+    def on_filament_remove(self, lane):
+        """ACE-specific removal: clear slot inventory and hub state."""
+        local_slot = self._get_local_slot_for_lane(lane)
+        if local_slot >= 0 and local_slot < self.SLOTS_PER_UNIT:
+            self._clear_slot_inventory(local_slot)
+        self._hub_load_suppressed.discard(lane.name)
+        lane.loaded_to_hub = False
+        self._set_hub_state(lane, False)
+
     def _ace_pause_runout(self, lane):
         """ACE-specific pause runout when no runout lane is configured.
 
@@ -3746,44 +3774,10 @@ class afcACE(afcUnit):
                         f"restoring TOOLED state from saved vars"
                     )
                     self._restore_tool_loaded_state(lane)
-                elif lane.name in self._hub_load_suppressed:
-                    # Lane was explicitly ejected -- slot is still ready but
-                    # we must NOT treat this as new filament.  Restore LOADED
-                    # state so the lane isn't stuck in NONE, but keep the
-                    # suppression flag so prep_post_load won't re-feed to hub.
-                    self.logger.debug(
-                        f"ACE poll: {lane.name} slot {local_slot} ready "
-                        f"but hub-load suppressed, setting loaded "
-                        f"without re-feed"
-                    )
-                    lane.set_loaded()
-                    self.afc.save_vars()
                 else:
-                    self.logger.info(
-                        f"ACE poll: {lane.name} slot {local_slot} ready, "
-                        f"setting loaded"
-                    )
-                    # New filament insertion: clear old data, apply fresh.
-                    self.afc.spool.clear_values(lane)
-                    lane.set_loaded()
-                    self._refresh_slot_inventory(local_slot)
-                    slot_info = self._slot_inventory[local_slot]
-                    self._apply_slot_filament_defaults(lane, slot_info)
-                    # Auto-create/assign Spoolman spool from RFID data
-                    self._sync_rfid_to_spoolman(lane, slot_info)
-                    self._notify_rfid_read(lane, slot_info)
-                    self.lane_illuminate_spool(lane)
-                    # New filament clears any previous suppression
-                    self._hub_load_suppressed.discard(lane.name)
-                    self.afc.save_vars()
-                    # Feed filament to hub if load_to_hub is enabled
-                    try:
-                        self.prep_post_load(lane)
-                    except Exception as e:
-                        self.logger.error(
-                            f"ACE poll: prep_post_load error for "
-                            f"{lane.name}: {e}"
-                        )
+                    if lane.name in self._hub_load_suppressed:
+                        lane._load_suppressed = True
+                    lane.handle_load_runout(eventtime, True)
 
             # Detect ready -> not-ready transition (filament runout)
             # Skip runout detection while dryer is running - drying can
@@ -3792,40 +3786,7 @@ class afcACE(afcUnit):
             elif (not self._drying_active and not resync_prev
                     and prev_ready and not slot_ready and not slot_transient):
                 self._hub_load_suppressed.discard(lane.name)
-                if is_printing and lane.status == AFCLaneState.TOOLED:
-                    self.logger.info(
-                        f"ACE runout detected on {lane.name} (slot {local_slot})"
-                    )
-                    lane.loaded_to_hub = False
-                    self._set_hub_state(lane, False)
-
-                    if lane.runout_lane:
-                        try:
-                            lane._perform_infinite_runout()
-                        except Exception as e:
-                            self.logger.error(
-                                f"ACE infinite spool failed for {lane.name}: "
-                                f"{e}\n{traceback.format_exc()}"
-                            )
-                            lane._perform_pause_runout()
-                        finally:
-                            lane.loaded_to_hub = False
-                    else:
-                        self._ace_pause_runout(lane)
-                elif lane.status == AFCLaneState.LOADED:
-                    # Slot went empty - transition to unloaded so new
-                    # filament insertion is properly detected.
-                    self._clear_slot_inventory(local_slot)
-                    lane.set_unloaded()
-                    self.lane_not_ready(lane)
-                    self.afc.save_vars()
-                else:
-                    # Filament physically removed after eject or while in
-                    # NONE/EJECTING state — clear stale inventory so a
-                    # fresh spool is properly detected on next insertion.
-                    self._clear_slot_inventory(local_slot)
-                    self.lane_not_ready(lane)
-                    self.afc.save_vars()
+                lane.handle_load_runout(eventtime, False)
 
         # State-based runout: if a TOOLED lane shows no filament during
         # printing, trigger runout regardless of whether we caught the

@@ -3720,11 +3720,11 @@ class afcAMS(afcUnit):
     def _on_f1s_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
         """Handle F1S sensor change events from AMSHardwareService.
 
-        Event-driven architecture: sensor updates published by AMSHardwareService
-        when hardware detects state changes, eliminating need for polling.
+        Routes sensor state changes through AFC's handle_load_runout callback
+        for centralized insert/remove/runout handling.
         """
         if unit_name != self.oams_name:
-            return  # Not our unit
+            return
 
         lane = self._lane_for_spool_index(bay)
         if lane is None:
@@ -3733,69 +3733,15 @@ class afcAMS(afcUnit):
         lane_val = bool(value)
         prev_val = getattr(lane, "load_state", False)
         self._sync_lane_virtual_f1s_sensors(lane, eventtime, lane_val)
-        self.logger.debug(f"_on_f1s_changed: lane={lane.name} value={lane_val} prev={prev_val} fps_share_prep_load={getattr(lane, 'fps_share_prep_load', False)}")
 
-        # Update lane state based on sensor FIRST
         if getattr(lane, "fps_share_prep_load", False):
             self._update_shared_lane(lane, lane_val, eventtime)
         elif lane_val != prev_val:
             lane.load_callback(eventtime, lane_val)
-            lane.prep_callback(eventtime, lane_val)
-
-            # Publish spool_loaded/spool_unloaded event for non-shared lanes
-            # Pass previous_loaded state since lane.load_state is already updated by callbacks above
-            if self.event_bus is not None:
-                try:
-                    spool_index = self._get_openams_spool_index(lane)
-                    event_type_name = "spool_loaded" if lane_val else "spool_unloaded"
-                    self.event_bus.publish(event_type_name,
-                        unit_name=self.name,
-                        spool_index=spool_index,
-                        eventtime=eventtime,
-                        previous_loaded=prev_val,
-                    )
-                except Exception as e:
-                    self.logger.error(f"Failed to publish {event_type_name} event for {lane.name}: {e}")
-
-        # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
-        # Only trigger if printer is actively printing (not during filament insertion/removal)
-        if prev_val and not lane_val:
-            try:
-                is_printing = self.afc.function.is_printing()
-            except Exception:
-                is_printing = False
-
-            if is_printing:
-                # Only trigger runout detection if THIS lane is the one loaded to its extruder
-                # Skip runout detection on inactive lanes (e.g., when changing spools on different lane)
-                # In multi-extruder setups, check the specific extruder this lane is associated with
-                skip_runout = False
-                try:
-                    extruder_obj = getattr(lane, 'extruder_obj', None)
-                    if extruder_obj is not None:
-                        lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
-                        if lane_loaded is not None and lane_loaded != lane.name:
-                            # This lane is NOT the one loaded to its extruder - skip runout detection
-                            self.logger.debug(
-                                f"F1S sensor False for {lane.name} but lane {lane_loaded} is loaded to "
-                                f"{getattr(extruder_obj, 'name', 'extruder')} - skipping runout detection on inactive lane"
-                            )
-                            skip_runout = True
-                except Exception:
-                    pass
-
-                if not skip_runout:
-                    self.logger.info("F1S sensor False for {} (spool empty, printing), triggering runout detection".format(lane.name))
-                    try:
-                        self.handle_runout_detected(bay, None, lane_name=lane.name)
-                    except Exception as e:
-                        self.logger.error(
-                            f"Failed to handle runout detection for {lane.name} "
-                            f"(spool_index={bay}, runout_lane={getattr(lane, 'runout_lane', None)}): {e}",
-                            traceback=traceback.format_exc(),
-                        )
-            else:
-                self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
+            if lane_val and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
+                lane.handle_load_runout(eventtime, True)
+            elif not lane_val:
+                lane.handle_load_runout(eventtime, False)
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -3809,7 +3755,6 @@ class afcAMS(afcUnit):
                 )
             except Exception as e:
                 self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
-        # Sync virtual tool sensor
 
     def _on_hub_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
         """Handle hub sensor change events from AMSHardwareService.
@@ -4094,125 +4039,15 @@ class afcAMS(afcUnit):
             return
 
         if lane_val_bool:
-            # Defer metadata application (material, spoolman IDs, colors, etc.) to
-            # AFC's callbacks. The callbacks will update prep/load state and apply lane data consistently for both
-            # single- and shared-sensor lanes.
-            try:
-                lane.prep_callback(eventtime, True)
-            finally:
-                lane.load_callback(eventtime, True)
-
-
-            # Publish spool_loaded event immediately (TD-1 capture delay happens in event handler)
-            # Pass previous_loaded state since lane.load_state is already updated by callbacks above
-            if self.event_bus is not None:
-                try:
-                    spool_index = self._get_openams_spool_index(lane)
-                    self.event_bus.publish("spool_loaded",
-                        unit_name=self.name,
-                        spool_index=spool_index,
-                        eventtime=eventtime,
-                        previous_loaded=previous,
-                    )
-                except Exception as e:
-                    self.logger.error(f"Failed to publish spool_loaded event for {lane.name}: {e}")
+            lane.load_callback(eventtime, True)
+            if lane._afc_prep_done and lane.status == AFCLaneState.NONE:
+                lane.handle_load_runout(eventtime, True)
         else:
-            # Sensor False - filament left spool bay
-            # Update sensor state but don't aggressively clear everything (align with Box Turtle behavior)
             lane.load_callback(eventtime, False)
-            lane.prep_callback(eventtime, False)
-
-
-            # Cancel any pending TD-1 capture timer since filament was removed
-            lane_name = lane.name
-            if lane_name in self._pending_spool_loaded_timers:
-                try:
-                    timer = self._pending_spool_loaded_timers[lane_name]
-                    self.reactor.unregister_timer(timer)
-                    del self._pending_spool_loaded_timers[lane_name]
-                    self.logger.debug(f"Cancelled pending TD-1 capture timer for {lane_name} (filament removed)")
-                except Exception as e:
-                    self.logger.error(f"Error cancelling TD-1 capture timer for {lane_name}: {e}")
-
-            # Shared prep/load sensors stay in sync for AMS lanes; treat False as fully unloaded
-            try:
-                # PHASE 1 REFACTOR: Remove redundant manual state assignments
-                # lane.set_unloaded() already handles tool_loaded and loaded_to_hub
-                # Only call set_unloaded if lane isn't already in NONE state
-                # This prevents errors when sensor reports empty for an already-empty lane
-                force_full_unload = self._should_force_full_unload_for_shared_lane(
-                    lane,
-                    lane_val_bool,
-                    eventtime,
-                    allow_clear=allow_clear and EVENT_POLICY[OpenAMSStateMutation.SENSOR.value]["allow_full_unload"],
-                )
-                if force_full_unload and lane.status != AFCLaneState.NONE:
-                    lane.set_unloaded()
-                    if hasattr(lane, "_afc_prep_done"):
-                        lane._afc_prep_done = False
-                lane.prep_state = lane_val_bool
-                lane._load_state = lane_val_bool
-                lane.loaded_to_hub = lane_val_bool
-            except Exception as e:
-                # This is often benign (lane already cleared), log at debug level
-                self.logger.debug(f"Could not fully clear shared lane {lane.name} after sensor cleared (lane may already be empty): {e}")
-            # For same-FPS runouts: blocking mechanism in _should_block_sensor_update_for_runout()
-            # prevents us from reaching here during active runout
-            # For cross-extruder runouts: AFC's LANE_UNLOAD wrapper handles cleanup
-            # For manual unloads: AFC's LANE_UNLOAD command handles cleanup
-
-            # Only unsync from extruder if not in active cross-extruder runout or tool operation
-            try:
-                is_printing = self.afc.function.is_printing()
-            except Exception:
-                is_printing = False
-            is_cross_extruder_runout = lane._oams_cross_extruder_runout and is_printing
-
-            # Check if this is a shared extruder (multiple lanes on same extruder)
-            # For shared extruders, NEVER clear lane_loaded from sensor callback
-            # EXCEPT during runouts when filament actually left the toolhead
-            # Sensor can go False during tool parking/swapping without filament leaving,
-            # but during runouts the sensor goes False because filament ran out and must be cleared
-            is_shared_extruder = False
-            is_same_fps_runout = False
-            try:
-                if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
-                    # no_lanes=True means standalone toolhead, no_lanes=False means shared extruder
-                    is_shared_extruder = not getattr(lane.extruder_obj, 'no_lanes', True)
-
-                    # Check if we're in a same-FPS runout (sensor went False during print, filament actually ran out)
-                    # This is different from tool changes where sensor might briefly go False
-                    if is_shared_extruder and is_printing:
-                        # During runout, the runout monitor sets a flag to indicate filament actually ran out
-                        # We should clear lane_loaded in this case even for shared extruders
-                        is_same_fps_runout = getattr(lane, '_oams_same_fps_runout', False)
-            except Exception:
-                pass
-
-            if not is_cross_extruder_runout and not (is_shared_extruder and not is_same_fps_runout):
-                try:
-                    if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
-                        if lane.extruder_obj.lane_loaded == lane.name:
-                            lane.unsync_to_extruder()
-                            lane.extruder_obj.lane_loaded = None
-                            self.logger.debug(f"Unsynced lane {lane.name} and cleared extruder.lane_loaded when sensor went False")
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to unsync lane {lane.name} from extruder when sensor cleared: {e}",
-                        traceback=traceback.format_exc(),
-                    )
-            elif is_shared_extruder and not is_same_fps_runout:
-                self.logger.debug(f"Skipping lane_loaded clear for {lane.name} - shared extruder (only UNLOAD/RUNOUT commands should clear)")
-            else:
-                self.logger.debug(f"Skipping extruder unsync for {lane.name} - cross-extruder runout (AFC will handle via LANE_UNLOAD)")
-        lane.prep_state = lane_val_bool
-        lane._load_state = lane_val_bool
-        lane.loaded_to_hub = lane_val_bool
-        lane.afc.save_vars()
+            lane.handle_load_runout(eventtime, False)
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
-        """Apply a boolean lane sensor value using existing AFC callbacks."""
-        # Check if runout handling requires blocking this sensor update
+        """Apply a boolean lane sensor value using AFC's centralized callbacks."""
         if self._should_block_sensor_update_for_runout(lane, lane_val):
             self.logger.debug(f"Ignoring sensor update for lane {getattr(lane, 'name', 'unknown')} - runout in progress")
             return
@@ -4227,27 +4062,14 @@ class afcAMS(afcUnit):
             return
 
         previous = getattr(lane, "load_state", False)
-
         if previous is not None and bool(previous) == bool(lane_val):
             return
 
-        try:
-            lane.load_callback(eventtime, lane_val)
-        except TypeError:
-            lane.load_callback(eventtime, load_state=lane_val)
-        except Exception as e:
-            self.logger.error(f"Failed to update load sensor for lane {lane}: {e}")
-        try:
-            lane.prep_callback(eventtime, lane_val)
-        except TypeError:
-            lane.prep_callback(eventtime, prep_state=lane_val)
-        except Exception as e:
-            self.logger.error(f"Failed to update prep sensor for lane {lane}: {e}")
-        # When sensor goes False (empty), only clear tool/hub loaded flags
-        # Let AFC's normal flow handle status and cleanup (align with Box Turtle)
-        if not lane_val:
-            lane.tool_loaded = False
-            lane.loaded_to_hub = False
+        lane.load_callback(eventtime, lane_val)
+        if lane_val and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
+            lane.handle_load_runout(eventtime, True)
+        elif not lane_val:
+            lane.handle_load_runout(eventtime, False)
 
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
@@ -5757,7 +5579,57 @@ class afcAMS(afcUnit):
             is_printing = self.afc.function.is_printing()
         except Exception:
             is_printing = False
-        return bool(is_printing)
+        if not is_printing:
+            return False
+        # Only trigger runout if this lane is the one loaded to its extruder
+        try:
+            extruder_obj = getattr(lane, 'extruder_obj', None)
+            if extruder_obj is not None:
+                lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
+                if lane_loaded is not None and lane_loaded != lane.name:
+                    self.logger.debug(
+                        f"Skipping runout for {lane.name} - lane {lane_loaded} is loaded to extruder"
+                    )
+                    return False
+        except Exception:
+            pass
+        return True
+
+    def on_filament_insert(self, lane):
+        """OpenAMS-specific insertion: publish spool_loaded event."""
+        if self.event_bus is not None:
+            try:
+                spool_index = self._get_openams_spool_index(lane)
+                self.event_bus.publish("spool_loaded",
+                    unit_name=self.name,
+                    spool_index=spool_index,
+                    eventtime=self.reactor.monotonic(),
+                    previous_loaded=False,
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to publish spool_loaded event for {lane.name}: {e}")
+
+    def on_filament_remove(self, lane):
+        """OpenAMS-specific removal: publish spool_unloaded event and cancel pending timers."""
+        if self.event_bus is not None:
+            try:
+                spool_index = self._get_openams_spool_index(lane)
+                self.event_bus.publish("spool_unloaded",
+                    unit_name=self.name,
+                    spool_index=spool_index,
+                    eventtime=self.reactor.monotonic(),
+                    previous_loaded=True,
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to publish spool_unloaded event for {lane.name}: {e}")
+        lane_name = lane.name
+        if lane_name in self._pending_spool_loaded_timers:
+            try:
+                timer = self._pending_spool_loaded_timers[lane_name]
+                self.reactor.unregister_timer(timer)
+                del self._pending_spool_loaded_timers[lane_name]
+            except Exception as e:
+                self.logger.error(f"Error cancelling TD-1 capture timer for {lane_name}: {e}")
 
     def _register_sync_dispatcher(self) -> None:
         """Ensure the shared sync command is available for all OpenAMS units."""
