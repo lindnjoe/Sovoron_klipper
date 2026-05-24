@@ -320,8 +320,6 @@ class afcACE(afcUnit):
             prep_done = getattr(lane, '_afc_prep_done', False)
 
             # Slot ready but lane stuck in NONE — restore loaded state.
-            # Uses _hub_load_suppressed to avoid treating a recently-
-            # unloaded (but still present) spool as new filament.
             if slot_ready and not slot_transient and prep_done and lane.status == AFCLaneState.NONE:
                 if (lane.tool_loaded
                         and hasattr(lane, 'extruder_obj')
@@ -343,58 +341,20 @@ class afcACE(afcUnit):
                     else:
                         self.lane_tool_loaded_idle(lane)
                     lane.enable_buffer()
-                elif lane.name in self._hub_load_suppressed:
-                    lane.set_loaded()
-                    self.afc.save_vars()
                 else:
-                    self.logger.info(f"ACE: {lane.name} filament inserted")
-                    self.afc.spool.clear_values(lane)
-                    lane.set_loaded()
-                    self._hub_load_suppressed.discard(lane.name)
-                    self._refresh_slot_inventory(slot)
-                    slot_info = self._slot_inventory[slot]
-                    if apply_filament_defaults is not None:
-                        apply_filament_defaults(
-                            lane, slot_info,
-                            color_converter=rgb_array_to_hex,
-                            afc_defaults={
-                                "default_material_type": getattr(self.afc, "default_material_type", None),
-                                "default_color": getattr(self.afc, "default_color", None),
-                            })
-                    if sync_rfid_to_spoolman is not None:
-                        self._sync_rfid_to_spoolman(lane, slot_info)
-                    self.lane_illuminate_spool(lane)
-                    self.afc.save_vars()
-                    try:
-                        self.prep_post_load(lane)
-                    except Exception as e:
-                        self.logger.error(f"ACE prep_post_load error for {lane.name}: {e}")
+                    if lane.name in self._hub_load_suppressed:
+                        lane._load_suppressed = True
+                    eventtime = self.afc.reactor.monotonic()
+                    lane.handle_load_runout(eventtime, True)
 
             # Filament removed — skip on first callback after operation
             # to avoid false triggers from stale _prev_slot_states.
             if not slot_ready and not slot_transient and not resync_prev:
-                # Spool physically removed — clear suppression so the next
-                # new spool insertion gets a fresh prep_post_load cycle.
                 self._hub_load_suppressed.discard(lane.name)
                 prev_ready = self._prev_slot_states.get(lane.name)
                 if prev_ready:
-                    if getattr(lane, 'tool_loaded', False):
-                        try:
-                            is_printing = self.afc.function.is_printing()
-                        except Exception:
-                            is_printing = False
-                        if is_printing:
-                            self.afc.error.AFC_error(
-                                f"ACE runout on {lane.name}", pause=True)
-                    elif lane.status != AFCLaneState.NONE:
-                        self.logger.info(f"ACE: {lane.name} filament removed")
-                        if slot < self.SLOTS_PER_UNIT:
-                            self._clear_slot_inventory(slot)
-                        lane.loaded_to_hub = False
-                        self._set_hub_state(lane, False)
-                        lane.set_unloaded()
-                        self.lane_not_ready(lane)
-                        self.afc.save_vars()
+                    eventtime = self.afc.reactor.monotonic()
+                    lane.handle_load_runout(eventtime, False)
 
             if not slot_transient:
                 self._prev_slot_states[lane.name] = slot_ready
@@ -430,6 +390,48 @@ class afcACE(afcUnit):
 
     def prep_load(self, lane: AFCLane):
         pass
+
+    def check_runout(self, cur_lane):
+        """ACE supports runout detection during printing."""
+        try:
+            return self.afc.function.is_printing()
+        except Exception:
+            return False
+
+    def on_filament_insert(self, lane):
+        """ACE-specific insertion: refresh RFID inventory, apply spool defaults, sync to spoolman."""
+        slot = self._get_slot(lane.name)
+        if slot >= self.SLOTS_PER_UNIT:
+            return
+        self.afc.spool.clear_values(lane)
+        self._refresh_slot_inventory(slot)
+        slot_info = self._slot_inventory[slot]
+        if apply_filament_defaults is not None:
+            apply_filament_defaults(
+                lane, slot_info,
+                color_converter=rgb_array_to_hex,
+                afc_defaults={
+                    "default_material_type": getattr(self.afc, "default_material_type", None),
+                    "default_color": getattr(self.afc, "default_color", None),
+                })
+        if sync_rfid_to_spoolman is not None:
+            self._sync_rfid_to_spoolman(lane, slot_info)
+        self.lane_illuminate_spool(lane)
+        self._hub_load_suppressed.discard(lane.name)
+        self.afc.save_vars()
+        try:
+            self.prep_post_load(lane)
+        except Exception as e:
+            self.logger.error(f"ACE on_filament_insert: prep_post_load error for {lane.name}: {e}")
+
+    def on_filament_remove(self, lane):
+        """ACE-specific removal: clear slot inventory and hub state."""
+        slot = self._get_slot(lane.name)
+        if slot < self.SLOTS_PER_UNIT:
+            self._clear_slot_inventory(slot)
+        self._hub_load_suppressed.discard(lane.name)
+        lane.loaded_to_hub = False
+        self._set_hub_state(lane, False)
 
     def prep_post_load(self, lane: AFCLane):
         """Stage filament to hub via ACE serial feed."""
