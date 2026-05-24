@@ -89,6 +89,9 @@ class AfcToolchanger(afcUnit):
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
 
+        # Load U1 bridge (no-ops gracefully on non-U1 printers)
+        self.printer.load_object(config, 'AFC_bridge_U1')
+
         # Toolchanger config options
         self.uses_axis: str = config.get('uses_axis', 'xyz').lower()
         self.require_tool_present: bool = config.getboolean('require_tool_present', True)
