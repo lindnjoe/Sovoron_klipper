@@ -121,17 +121,17 @@ class afc_hub:
     @property
     def state(self):
         """
-        Returns current state of switch. If using virtual sensor returns True if any lanes load
-        sensor is triggered.  For lanes without a physical load sensor (e.g. OpenAMS, ACE),
-        the unit drives the hub state via switch_pin_callback when filament is
-        actually in the hub path (not merely staged nearby).
+        Returns current state of switch. If using virtual sensor returns True
+        if any lane reports loaded.  For lanes with a physical load pin this
+        checks the hardware switch; for lanes without one (OpenAMS, ACE) it
+        checks loaded_to_hub, which is driven by the unit's own hardware
+        sensors (e.g. hub HES).
         """
         state = self._state
         if self.is_virtual_pin():
             state = self._state or any(
-                lane.raw_load_state
+                lane.load_state
                 for lane in self.lanes.values()
-                if lane.load is not None
             )
         return state
 
