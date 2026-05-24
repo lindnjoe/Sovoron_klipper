@@ -664,6 +664,16 @@ class afcUnit:
         """
         return False
 
+    def on_filament_insert(self, lane):
+        """Called by handle_load_runout after set_loaded() when filament is newly detected.
+        Override in unit subclasses for RFID sync, prep_post_load, etc."""
+        pass
+
+    def on_filament_remove(self, lane):
+        """Called by handle_load_runout when filament removal is detected.
+        Override in unit subclasses for inventory cleanup, etc."""
+        pass
+
     # Functions are below are placeholders so the function exists for all units, override these function in your unit files
     def _print_function_not_defined(self, name):
         self.afc.logger.error("{} function not defined for {}".format(name, self.name))
