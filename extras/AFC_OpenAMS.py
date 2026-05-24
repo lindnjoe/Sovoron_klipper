@@ -965,6 +965,9 @@ class afcAMS(afcUnit):
             return True, "calibration_lane", 0
         return False, f"HUB HES calibration failed for {cur_lane.name}", 0
 
+    def calibration_lane_message(self) -> str:
+        return "\nHUB HES calibration complete for lanes: {lanes}\n"
+
     def calibrate_bowden(self, cur_lane, dis, tol):
         """Run PTFE length calibration for an OpenAMS lane."""
         if self.oams is None:
