@@ -31,7 +31,7 @@ class afc_hub:
 
         self.unit = None
         self.lanes: Dict[str, AFCLane] = {}
-        self._state: bool = False
+        self._state = None
 
         self.switch_pin = config.get('switch_pin', None)
         # HUB Cut variables
@@ -62,6 +62,7 @@ class afc_hub:
         self.use_dist_hub           = config.getboolean("use_dist_hub", False)
 
         if self.switch_pin.lower() != "virtual":
+            self._state = False
             buttons = self.printer.load_object(config, "buttons")
             self.fila, self.debounce_button = add_filament_switch(f"{self.name}_Hub", self.switch_pin,
                                                                   self.printer, self.enable_sensors_in_gui,
@@ -121,19 +122,19 @@ class afc_hub:
     @property
     def state(self):
         """
-        Returns current state of switch. If using virtual sensor returns True
-        if the unit drove switch_pin_callback (e.g. hub HES) or any lane's
-        raw load state is triggered.
+        Returns current state of switch. For virtual hubs backed by real
+        hardware (e.g. OAMS hub HES via switch_pin_callback), returns the
+        hardware-driven value. For virtual hubs with no hardware backing,
+        falls back to lane raw_load_state.
         """
-        state = self._state
         if self.is_virtual_pin():
-            state = self._state or any(
-                lane.raw_load_state for lane in self.lanes.values()
-            )
-        return state
+            if self._state is not None:
+                return self._state
+            return any(lane.raw_load_state for lane in self.lanes.values())
+        return bool(self._state)
 
     def switch_pin_callback(self, eventtime, state):
-        self._state = state
+        self._state = bool(state)
 
     def hub_cut(self, cur_lane):
         servo_string = 'SET_SERVO SERVO={servo} ANGLE={{angle}}'.format(servo=self.cut_servo_name)
