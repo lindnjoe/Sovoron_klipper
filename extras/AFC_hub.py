@@ -177,7 +177,12 @@ class afc_hub:
 
     def get_status(self, eventtime=None):
         self.response = {}
-        self.response['state'] = bool(self.state)
+        if self.is_virtual_pin():
+            self.response['state'] = any(
+                getattr(lane, 'tool_loaded', False) for lane in self.lanes.values()
+            )
+        else:
+            self.response['state'] = bool(self.state)
         self.response['cut'] = self.cut
         self.response['cut_cmd'] = self.cut_cmd
         self.response['cut_dist'] = self.cut_dist
