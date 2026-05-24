@@ -722,8 +722,7 @@ class afcAMS(afcUnit):
                     hub = getattr(lane, 'hub_obj', None)
                     if hub is not None and hasattr(hub, 'switch_pin_callback'):
                         try:
-                            hub.switch_pin_callback(eventtime, new_hub,
-                                                    lane_name=lane_name)
+                            hub.switch_pin_callback(eventtime, new_hub)
                         except Exception:
                             pass
                 else:
@@ -734,8 +733,7 @@ class afcAMS(afcUnit):
                         hub = getattr(lane, 'hub_obj', None)
                         if hub is not None and hasattr(hub, 'switch_pin_callback'):
                             try:
-                                hub.switch_pin_callback(eventtime, new_hub,
-                                                        lane_name=lane_name)
+                                hub.switch_pin_callback(eventtime, new_hub)
                             except Exception:
                                 pass
 
@@ -1043,8 +1041,7 @@ class afcAMS(afcUnit):
         cur_lane.loaded_to_hub = True
         hub_obj = getattr(cur_lane, "hub_obj", None)
         if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
-            hub_obj.switch_pin_callback(self.afc.reactor.monotonic(), True,
-                                        lane_name=cur_lane.name)
+            hub_obj.switch_pin_callback(self.afc.reactor.monotonic(), True)
 
         return True
 
@@ -1221,8 +1218,7 @@ class afcAMS(afcUnit):
                             eventtime = self.afc.reactor.monotonic()
                             hub.switch_pin_callback(
                                 eventtime,
-                                bool(hub_values[spool_index]),
-                                lane_name=cur_lane.name)
+                                bool(hub_values[spool_index]))
                         except Exception:
                             pass
 
