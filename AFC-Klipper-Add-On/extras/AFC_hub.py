@@ -32,6 +32,7 @@ class afc_hub:
         self.unit = None
         self.lanes: Dict[str, AFCLane] = {}
         self._state: bool = False
+        self._lane_hub_state: Dict[str, bool] = {}
 
         self.switch_pin = config.get('switch_pin', None)
         # HUB Cut variables
@@ -121,22 +122,25 @@ class afc_hub:
     @property
     def state(self):
         """
-        Returns current state of switch. If using virtual sensor returns True
-        if any lane reports loaded.  For lanes with a physical load pin this
-        checks the hardware switch; for lanes without one (OpenAMS, ACE) it
-        checks loaded_to_hub, which is driven by the unit's own hardware
-        sensors (e.g. hub HES).
+        Returns current state of switch. For physical hubs this is the
+        hardware switch.  For virtual hubs, returns True if any lane's
+        physical load sensor is triggered OR any per-lane hub sensor
+        (driven by the unit via switch_pin_callback with lane_name) is
+        active.
         """
-        state = self._state
         if self.is_virtual_pin():
-            state = self._state or any(
-                lane.load_state
-                for lane in self.lanes.values()
-            )
-        return state
+            return (self._state
+                    or any(lane.raw_load_state
+                           for lane in self.lanes.values()
+                           if lane.load is not None)
+                    or any(self._lane_hub_state.values()))
+        return self._state
 
-    def switch_pin_callback(self, eventtime, state):
-        self._state = state
+    def switch_pin_callback(self, eventtime, state, lane_name=None):
+        if lane_name is not None:
+            self._lane_hub_state[lane_name] = state
+        else:
+            self._state = state
 
     def hub_cut(self, cur_lane):
         servo_string = 'SET_SERVO SERVO={servo} ANGLE={{angle}}'.format(servo=self.cut_servo_name)

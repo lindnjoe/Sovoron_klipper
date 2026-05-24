@@ -719,6 +719,13 @@ class afcAMS(afcUnit):
                 if resync_prev:
                     self._last_hub[slot] = new_hub
                     lane.loaded_to_hub = new_hub
+                    hub = getattr(lane, 'hub_obj', None)
+                    if hub is not None and hasattr(hub, 'switch_pin_callback'):
+                        try:
+                            hub.switch_pin_callback(eventtime, new_hub,
+                                                    lane_name=lane_name)
+                        except Exception:
+                            pass
                 else:
                     old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
 
@@ -726,32 +733,13 @@ class afcAMS(afcUnit):
                         lane.loaded_to_hub = new_hub
                         hub = getattr(lane, 'hub_obj', None)
                         if hub is not None and hasattr(hub, 'switch_pin_callback'):
-                            any_hub_loaded = any(
-                                getattr(l, "loaded_to_hub", False)
-                                for l in hub.lanes.values()
-                            )
                             try:
-                                hub.switch_pin_callback(eventtime, any_hub_loaded)
+                                hub.switch_pin_callback(eventtime, new_hub,
+                                                        lane_name=lane_name)
                             except Exception:
                                 pass
 
                     self._last_hub[slot] = new_hub
-
-        # Reconcile virtual hub _state from per-lane loaded_to_hub
-        hubs_updated = set()
-        for lane in self.lanes.values():
-            hub = getattr(lane, 'hub_obj', None)
-            if hub is None or not hub.is_virtual_pin() or id(hub) in hubs_updated:
-                continue
-            hubs_updated.add(id(hub))
-            any_loaded = any(
-                getattr(l, "loaded_to_hub", False)
-                for l in hub.lanes.values()
-            )
-            try:
-                hub.switch_pin_callback(eventtime, any_loaded)
-            except Exception:
-                pass
 
         return eventtime + 2.0
 
@@ -1055,7 +1043,8 @@ class afcAMS(afcUnit):
         cur_lane.loaded_to_hub = True
         hub_obj = getattr(cur_lane, "hub_obj", None)
         if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
-            hub_obj.switch_pin_callback(self.afc.reactor.monotonic(), True)
+            hub_obj.switch_pin_callback(self.afc.reactor.monotonic(), True,
+                                        lane_name=cur_lane.name)
 
         return True
 
@@ -1227,14 +1216,13 @@ class afcAMS(afcUnit):
 
                     # Update virtual hub sensor
                     hub = cur_lane.hub_obj
-                    if hub and hub.is_virtual_pin():
-                        any_hub_loaded = any(
-                            getattr(l, "loaded_to_hub", False)
-                            for l in hub.lanes.values()
-                        )
+                    if hub and hasattr(hub, 'switch_pin_callback'):
                         try:
                             eventtime = self.afc.reactor.monotonic()
-                            hub.switch_pin_callback(eventtime, any_hub_loaded)
+                            hub.switch_pin_callback(
+                                eventtime,
+                                bool(hub_values[spool_index]),
+                                lane_name=cur_lane.name)
                         except Exception:
                             pass
 
