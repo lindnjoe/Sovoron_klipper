@@ -217,7 +217,6 @@ class AMSHardwareService:
         self._last_hub_hes = [None, None, None, None]
         self._last_fps_value = None
         self._polling_enabled = False
-        self._suppress_f1s_events = False
 
     @classmethod
     def for_printer(cls, printer, name="default", logger=None):
@@ -286,16 +285,15 @@ class AMSHardwareService:
             status = self.poll_status()
             if not status:
                 return eventtime + self._polling_interval_idle
-            if not self._suppress_f1s_events:
-                f1s_values = status.get("f1s_hes_value", [])
-                for bay in range(min(len(f1s_values), 4)):
-                    new_val = bool(f1s_values[bay])
-                    old_val = self._last_f1s_hes[bay]
-                    if old_val is None or new_val != old_val:
-                        self.event_bus.publish(
-                            "f1s_changed", unit_name=self.name, bay=bay,
-                            value=new_val, eventtime=eventtime)
-                    self._last_f1s_hes[bay] = new_val
+            f1s_values = status.get("f1s_hes_value", [])
+            for bay in range(min(len(f1s_values), 4)):
+                new_val = bool(f1s_values[bay])
+                old_val = self._last_f1s_hes[bay]
+                if old_val is None or new_val != old_val:
+                    self.event_bus.publish(
+                        "f1s_changed", unit_name=self.name, bay=bay,
+                        value=new_val, eventtime=eventtime)
+                self._last_f1s_hes[bay] = new_val
             hub_values = status.get("hub_hes_value", [])
             for bay in range(min(len(hub_values), 4)):
                 new_val = bool(hub_values[bay])
