@@ -1882,6 +1882,15 @@ class afcAMS(afcUnit):
         except Exception:
             pass
 
+        try:
+            self.gcode.register_command(
+                '_OAMS_CUT_TIP',
+                self._cmd_oams_cut_tip,
+                desc="Reverse OAMS follower then run AFC_CUT (used via redirect_cmd)",
+            )
+        except Exception:
+            pass
+
         self.gcode.register_mux_command(
             "_OAMS_CUSTOM_LOAD", "UNIT", self.name,
             self._cmd_oams_custom_load,
@@ -2773,6 +2782,29 @@ class afcAMS(afcUnit):
         result = self.unload_sequence(cur_lane, cur_hub, cur_extruder)
         if not result:
             raise gcmd.error(f"OpenAMS unload failed for {lane_name}")
+
+    def _cmd_oams_cut_tip(self, gcmd):
+        """Reverse the OAMS follower then delegate to AFC_CUT.
+
+        Intended as a redirect_cmd target for per-extruder cut overrides
+        so OAMS lanes automatically reverse the follower before cutting.
+        """
+        extruder = gcmd.get("EXTRUDER", "")
+        current_lane_name = self.afc.current
+        if current_lane_name is None:
+            raise gcmd.error("_OAMS_CUT_TIP: no lane currently loaded")
+        cur_lane = self.afc.lanes.get(current_lane_name)
+        if cur_lane is None:
+            raise gcmd.error(f"_OAMS_CUT_TIP: unknown lane {current_lane_name}")
+
+        unit = cur_lane.unit_obj
+        if hasattr(unit, '_follower') and unit._follower is not None and unit.oams is not None:
+            fps_state = unit._get_monitor_state()
+            if fps_state:
+                unit._follower.set_follower_state(
+                    fps_state, unit.oams, 1, 0, "before cut redirect", force=True)
+
+        self.afc.gcode.run_script_from_command(f"AFC_CUT EXTRUDER={extruder}")
 
     def _cmd_test_cancel(self, gcmd):
         """Test: load a lane, cancel after 500mm, unload, then reload."""
