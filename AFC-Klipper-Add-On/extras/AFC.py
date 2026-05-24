@@ -1477,11 +1477,6 @@ class afc:
                 return False
             self.afcDeltaTime.log_with_time("Custom load transport complete")
         else:
-            use_direct_dist = False
-            if (cur_lane.hub_obj
-                and getattr(cur_lane.hub_obj, "use_dist_hub", False)):
-                use_direct_dist = True
-
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
 
@@ -1540,9 +1535,8 @@ class afc:
 
             # Move filament towards the toolhead.
             if not cur_lane.is_direct_hub():
-                distance = cur_lane.dist_hub if use_direct_dist else cur_hub.afc_bowden_length
                 _, _, warn = cur_lane.unit_obj.load_then_home(cur_lane,
-                                                              distance,
+                                                              cur_hub.afc_bowden_length,
                                                               AssistActive.DYNAMIC,
                                                               cur_lane.get_toolhead_endstop())
                 # Check for error and return, if error state is set then AFC tried pausing
@@ -1561,7 +1555,7 @@ class afc:
                     max_attempts = int(self.tool_homing_distance/cur_lane.short_move_dis)
                     if (self.homing_enabled
                         and self.home_to_tool):
-                        move_distance = cur_hub.afc_bowden_length if not cur_lane.is_direct_hub() and not use_direct_dist else cur_lane.dist_hub
+                        move_distance = cur_hub.afc_bowden_length if not cur_lane.is_direct_hub() else cur_lane.dist_hub
                         max_attempts = 2
                         self.logger.info("Distance stopped short of commanded distance to toolhead, "\
                                         "backing up and retrying load.")
@@ -1880,11 +1874,6 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
-        use_direct_dist = False
-        if (cur_lane.hub_obj
-            and getattr(cur_lane.hub_obj, "use_dist_hub", False)):
-            use_direct_dist = True
-
         # ── Phase 1: Toolhead operations (shared by ALL unit types) ──
 
         # Let the unit set up hardware (e.g. OAMS follower reverse) before
@@ -2051,8 +2040,7 @@ class afc:
             # Synchronize and move filament out of the hub.
             cur_lane.unsync_to_extruder()
             if not cur_lane.is_direct_hub():
-                distance = cur_lane.dist_hub if use_direct_dist else cur_hub.afc_unload_bowden_length
-                _, _, warn = cur_lane.unit_obj.move_to_hub(cur_lane, distance,
+                _, _, warn = cur_lane.unit_obj.move_to_hub(cur_lane, cur_hub.afc_unload_bowden_length,
                                                            MoveDirection.NEG, self.homing_enabled,
                                                            speed_mode=SpeedMode.LONG)
                 # Check for error and return, if error state is set then AFC tried pausing
@@ -2114,7 +2102,6 @@ class afc:
             self.afcDeltaTime.log_with_time("Hub cleared")
 
             #Move to make sure hub path is clear based on the move_clear_dis var
-            # TODO: should just add this function to AFC_unit move_to_hub
             if not cur_lane.is_direct_hub():
                 cur_lane.move_advanced(cur_hub.hub_clear_move_dis * -1, SpeedMode.SHORT,
                                        assist_active=AssistActive.YES)

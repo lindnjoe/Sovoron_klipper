@@ -950,26 +950,38 @@ class afcAMS(afcUnit):
         cur_lane.set_afc_prep_done()
         return succeeded
 
-    def calibrate_bowden(self, cur_lane, dis, tol):
-        msg = (
-            "OpenAMS units do not support standard AFC bowden calibration. "
-            "Use OpenAMS-specific calibration commands instead:\n"
-            f"  - AFC_OAMS_CALIBRATE_PTFE SPOOL=<spool_index>\n"
-            f"  - AFC_OAMS_CALIBRATE_HUB_HES SPOOL=<spool_index>\n"
-            f"  - AFC_OAMS_CALIBRATE_HUB_HES_ALL"
-        )
-        self.logger.info(msg)
-        return False, msg, 0
-
     def calibrate_lane(self, cur_lane, tol):
-        msg = (
-            "OpenAMS units do not support standard AFC hub calibration. "
-            "Use OpenAMS-specific calibration commands instead:\n"
-            f"  - AFC_OAMS_CALIBRATE_HUB_HES SPOOL=<spool_index>\n"
-            f"  - AFC_OAMS_CALIBRATE_HUB_HES_ALL"
-        )
-        self.logger.info(msg)
-        return False, msg, 0
+        """Run HUB HES calibration for an OpenAMS lane."""
+        if self.oams is None:
+            return False, "OpenAMS hardware not available", 0
+
+        spool_index = self._get_openams_spool_index(cur_lane)
+        if not cur_lane.load_state:
+            return False, f"{cur_lane.name} not loaded, load before calibration", 0
+
+        self.logger.info(f"Running HUB HES calibration for {cur_lane.name}")
+        success = self._calibrate_hub_hes_spool(spool_index)
+        if success:
+            return True, "calibration_lane", 0
+        return False, f"HUB HES calibration failed for {cur_lane.name}", 0
+
+    def calibrate_bowden(self, cur_lane, dis, tol):
+        """Run PTFE length calibration for an OpenAMS lane."""
+        if self.oams is None:
+            return False, "OpenAMS hardware not available", 0
+
+        spool_index = self._get_openams_spool_index(cur_lane)
+        if not cur_lane.load_state:
+            return False, f"{cur_lane.name} not loaded, load before calibration", 0
+
+        self.logger.info(f"Running PTFE calibration for {cur_lane.name}")
+        try:
+            oams_idx = self._get_oams_index()
+            self.afc.gcode.run_script_from_command(
+                f"OAMS_CALIBRATE_PTFE_LENGTH OAMS={oams_idx} SPOOL={spool_index}")
+            return True, f"PTFE calibration complete for {cur_lane.name}", 0
+        except Exception as e:
+            return False, f"PTFE calibration failed for {cur_lane.name}: {e}", 0
 
     def _toolhead_sensor_triggered(self, cur_lane):
         """Check if the toolhead sensor is triggered, using the raw hardware
