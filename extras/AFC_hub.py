@@ -122,11 +122,14 @@ class afc_hub:
     def state(self):
         """
         Returns current state of switch. If using virtual sensor returns True
-        if any lane's raw load state is triggered.
+        if the unit drove switch_pin_callback (e.g. hub HES) or any lane's
+        raw load state is triggered.
         """
         state = self._state
         if self.is_virtual_pin():
-            state = any(lane.raw_load_state for lane in self.lanes.values())
+            state = self._state or any(
+                lane.raw_load_state for lane in self.lanes.values()
+            )
         return state
 
     def switch_pin_callback(self, eventtime, state):
