@@ -720,7 +720,8 @@ class AFCLane:
         if (self.unit_obj.type in EXCLUDE_TYPES
             and "AFC_lane" in self.fullname):
             self.drive_stepper      = self.unit_obj.drive_stepper_obj
-            self.extruder_stepper   = self.drive_stepper.extruder_stepper
+            if self.drive_stepper is not None:
+                self.extruder_stepper   = self.drive_stepper.extruder_stepper
             if (self.selector
                 and getattr(self.unit_obj, "selector_stepper_obj", None)):
                 selector_stepper = self.unit_obj.selector_stepper_obj
