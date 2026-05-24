@@ -2715,17 +2715,53 @@ class afcAMS(afcUnit):
         cur_lane.set_tool_loaded()
         return True
 
+    def calibrate_lane(self, cur_lane, tol):
+        """Run HUB HES calibration for an OpenAMS lane.
+
+        Standard AFC calibrate_lane measures extruder-to-hub with steppers.
+        OpenAMS has no steppers — instead we send the HUB HES calibration
+        command to the AMS firmware, which tunes the hall-effect sensor
+        threshold for this spool bay.
+        """
+        if self.oams is None:
+            return False, "OpenAMS hardware not available", 0
+
+        spool_index = self._get_openams_spool_index(cur_lane)
+        if spool_index is None:
+            return False, f"Unable to resolve spool index for {cur_lane.name}", 0
+
+        if not cur_lane.load_state:
+            return False, f"{cur_lane.name} not loaded, load before calibration", 0
+
+        self.logger.info(f"Running HUB HES calibration for {cur_lane.name}")
+        success = self._calibrate_hub_hes_spool(spool_index, None, lane_name=cur_lane.name)
+        if success:
+            return True, "calibration_lane", 0
+        return False, f"HUB HES calibration failed for {cur_lane.name}", 0
+
     def calibrate_bowden(self, cur_lane, dis, tol):
-        """OpenAMS units use different calibration commands."""
-        msg = (
-            "OpenAMS units do not support standard AFC bowden calibration. "
-            "Use OpenAMS-specific calibration commands instead:\n"
-            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
-            "  - AFC_OAMS_CALIBRATE_PTFE UNIT={} SPOOL=<spool_index>\n"
-            "  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={}"
-        ).format(self.name, self.name, self.name)
-        self.logger.info(msg)
-        return False, msg, 0
+        """Run PTFE length calibration for an OpenAMS lane.
+
+        Standard AFC calibrate_bowden measures hub-to-toolhead bowden length.
+        OpenAMS uses PTFE calibration instead — measures the PTFE tube length
+        from each bay to the hub so the firmware knows when to switch from
+        the bay motor to the follower.
+        """
+        if self.oams is None:
+            return False, "OpenAMS hardware not available", 0
+
+        spool_index = self._get_openams_spool_index(cur_lane)
+        if spool_index is None:
+            return False, f"Unable to resolve spool index for {cur_lane.name}", 0
+
+        if not cur_lane.load_state:
+            return False, f"{cur_lane.name} not loaded, load before calibration", 0
+
+        self.logger.info(f"Running PTFE calibration for {cur_lane.name}")
+        success = self._calibrate_ptfe_spool(spool_index, None, lane=cur_lane, lane_name=cur_lane.name)
+        if success:
+            return True, f"PTFE calibration complete for {cur_lane.name}", 0
+        return False, f"PTFE calibration failed for {cur_lane.name}", 0
 
     def _cancel_and_mark_loaded(self, spool_index, lane_name=None):
         """Cancel an in-progress load and mark the spool as loaded.
