@@ -825,16 +825,16 @@ class AFCU1Bridge:
     def _get_lane_k(self, lane) -> "Optional[float]":
         """Get K for a lane, only if the spool_id still matches.
 
-        Returns None if the lane has no spool_id (unidentified/default spool)
-        to avoid applying a previous spool's calibration.
+        For identified spools: validates stored spool_id matches current.
+        For session-only K (both stored and current are None): returns K
+        as long as auto_insert placed it there for this load session.
+        Returns None if the lane had a spool and now doesn't (or vice versa).
         """
-        current_spool = getattr(lane, 'spool_id', None)
-        if not current_spool:
-            return None
         entry = self._lane_flow_k.get(lane.name)
         if entry is None:
             return None
         stored_spool, k = entry
+        current_spool = getattr(lane, 'spool_id', None)
         if stored_spool != current_spool:
             del self._lane_flow_k[lane.name]
             return None
@@ -919,6 +919,65 @@ class AFCU1Bridge:
                 "Failed to save flow K to Spoolman spool %s: %s",
                 spool_id, e)
 
+    def _auto_insert_flow_enabled(self, lane) -> bool:
+        """Check if auto_insert_flow_cal is enabled for this lane."""
+        val = getattr(lane, 'auto_insert_flow_cal', None)
+        if val is not None:
+            return bool(val)
+        unit = getattr(lane, 'unit_obj', None)
+        if unit is not None:
+            return bool(getattr(unit, 'auto_insert_flow_cal', False))
+        return False
+
+    def _auto_calibrate_lane(self, cur_lane):
+        """Run flow calibration automatically after tool load.
+
+        For spools with spool_id: calibrates and stores K to Spoolman.
+        For unidentified spools (no spool_id): calibrates and stores K
+        in memory only for this session while loaded.
+        """
+        lane_name = cur_lane.name
+        ext_name = cur_lane.extruder_obj.name
+        spool_id = getattr(cur_lane, 'spool_id', None)
+
+        self.logger.info(
+            "Auto-insert flow calibration: running for %s (spool_id=%s)",
+            lane_name, spool_id)
+
+        ptc = self.printer.lookup_object("print_task_config", None)
+        if ptc is not None:
+            phys = self._get_physical_index(ext_name)
+            if phys is not None:
+                self._sync_filament_to_ptc(ptc, {phys: cur_lane})
+
+        self._ensure_feed_assist(cur_lane)
+
+        flow_cal = self.printer.lookup_object("flow_calibrator", None)
+        if flow_cal is None:
+            self.logger.error("Auto-insert flow: flow_calibrator not found")
+            return
+
+        k_before = flow_cal._current_k.get(ext_name)
+        flow_cal._calibrated_in_printing[ext_name] = False
+
+        self.gcode.run_script_from_command("FLOW_CALIBRATE")
+
+        k_after = flow_cal._current_k.get(ext_name)
+        if k_after is not None and k_after != k_before:
+            self._set_lane_k(cur_lane, k_after)
+            self._apply_lane_flow_k(lane_name)
+            self.logger.info(
+                "Auto-insert flow: stored K=%.6f for %s (spool_id=%s)",
+                k_after, lane_name, spool_id)
+            if spool_id and self._spoolman_flow_sync_enabled(cur_lane):
+                self._write_flow_k_to_spoolman(cur_lane, k_after)
+        else:
+            self.logger.info(
+                "Auto-insert flow: calibration did not produce K for %s",
+                lane_name)
+
+        self._exit_discard_bin()
+
     def _handle_tool_loaded(self, cur_lane):
         """Event handler for afc:tool_loaded — sync filament, save temps, apply flow K."""
         ptc = self.printer.lookup_object("print_task_config", None)
@@ -935,11 +994,18 @@ class AFCU1Bridge:
         k = self._get_lane_k(cur_lane)
         if k is not None:
             self._apply_lane_flow_k(lane_name)
-        elif self._spoolman_flow_sync_enabled(cur_lane):
+            return
+        if self._spoolman_flow_sync_enabled(cur_lane):
             k = self._read_flow_k_from_spoolman(cur_lane)
             if k is not None:
                 self._set_lane_k(cur_lane, k)
                 self._apply_lane_flow_k(lane_name)
+                return
+
+        # Auto-calibrate on insert if enabled and not printing
+        if self._auto_insert_flow_enabled(cur_lane):
+            if not self.afc.function.is_printing():
+                self._auto_calibrate_lane(cur_lane)
 
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
         """Apply the calibrated flow K for the currently loading/loaded lane.

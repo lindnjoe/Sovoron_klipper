@@ -75,6 +75,7 @@ class afcUnit:
         self.remember_spool              = config.get('remember_spool', False)                               # Turns on/off ability to remember last ejected spool values for all lanes in this unit, can be overridden in AFC_stepper section
         self.auto_spoolman_create        = config.getboolean('auto_spoolman_create', False)
         self.spoolman_flow_sync          = config.getboolean('spoolman_flow_sync', False)
+        self.auto_insert_flow_cal        = config.getboolean('auto_insert_flow_cal', False)
         # LED SETTINGS
         # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
         self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane
