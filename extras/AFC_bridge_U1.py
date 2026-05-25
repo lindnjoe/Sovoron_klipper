@@ -1143,6 +1143,13 @@ class AFCU1Bridge:
                     "Lane inserted: %s — TOOL_LOAD failed, skipping auto cal"
                     % cur_lane.name)
                 return
+        k = self._get_lane_k(cur_lane)
+        if k is not None:
+            self.logger.info(
+                "Lane inserted: %s already calibrated K=%.6f during load"
+                % (cur_lane.name, k))
+            self._exit_discard_bin()
+            return
         self.logger.info(
             "Lane inserted: %s — running auto flow calibration" % cur_lane.name)
         self._auto_calibrate_lane(cur_lane)
