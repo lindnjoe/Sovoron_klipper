@@ -27,7 +27,12 @@ _K_PATTERN = re.compile(r'\bafc_flow_k=([\d.]+)')
 
 
 class AFCFlowK:
-    """Read per-spool flow K from Spoolman and apply as pressure advance."""
+    """Read per-spool flow K from Spoolman and apply as pressure advance.
+
+    Also intercepts SET_PRESSURE_ADVANCE during printing to prevent the
+    slicer from overriding AFC-managed K values (same behavior as the U1's
+    flow_calibrator firmware).
+    """
 
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -35,6 +40,9 @@ class AFCFlowK:
         self.afc = None
         self.logger = None
         self._lane_flow_k: Dict[str, Tuple[Optional[str], float]] = {}
+        self._managed_extruders: set = set()
+        self._orig_set_pa = None
+        self._afc_applying = False
 
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -45,6 +53,10 @@ class AFCFlowK:
     def _handle_connect(self):
         self.afc = self.printer.lookup_object("AFC")
         self.logger = self.afc.logger
+        self._orig_set_pa = self.gcode.register_command(
+            "SET_PRESSURE_ADVANCE", None)
+        self.gcode.register_command(
+            "SET_PRESSURE_ADVANCE", self._cmd_set_pressure_advance)
 
     def _handle_ready(self):
         self._load_all_spoolman_k()
@@ -125,6 +137,31 @@ class AFCFlowK:
             return None
         return str(val)
 
+    # ── SET_PRESSURE_ADVANCE interception ────────────────────────
+
+    def _cmd_set_pressure_advance(self, gcmd):
+        """Intercept SET_PRESSURE_ADVANCE — block slicer overrides during
+        printing when AFC manages K for the target extruder."""
+        if (not self._afc_applying
+                and self._orig_set_pa is not None
+                and self.afc is not None
+                and self.afc.function.is_printing()
+                and self._managed_extruders):
+            extruder = gcmd.get("EXTRUDER", None)
+            if extruder is None:
+                toolhead = self.printer.lookup_object("toolhead")
+                extruder = toolhead.get_extruder().get_name()
+            if extruder in self._managed_extruders:
+                if self.logger:
+                    self.logger.info(
+                        "AFC flow K enabled for %s, slicer PA change will "
+                        "not take effect" % extruder)
+                gcmd.respond_info(
+                    "AFC flow K enabled, so not take effect.")
+                return
+        if self._orig_set_pa is not None:
+            self._orig_set_pa(gcmd)
+
     # ── Apply K via SET_PRESSURE_ADVANCE ──────────────────────────
 
     def _apply_k(self, lane, k: float):
@@ -133,8 +170,13 @@ class AFCFlowK:
             ext_name = ext_name.name
         else:
             ext_name = "extruder"
-        self.gcode.run_script_from_command(
-            "SET_PRESSURE_ADVANCE EXTRUDER=%s ADVANCE=%.6f" % (ext_name, k))
+        self._managed_extruders.add(ext_name)
+        self._afc_applying = True
+        try:
+            self.gcode.run_script_from_command(
+                "SET_PRESSURE_ADVANCE EXTRUDER=%s ADVANCE=%.6f" % (ext_name, k))
+        finally:
+            self._afc_applying = False
         if self.logger:
             self.logger.info(
                 "AFC flow K: applied K=%.6f for %s on %s"
