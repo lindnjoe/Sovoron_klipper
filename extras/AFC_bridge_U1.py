@@ -826,9 +826,19 @@ class AFCU1Bridge:
         else:
             self.logger.info("No per-lane flow K values stored after calibration")
 
+    @staticmethod
+    def _norm_spool_id(sid):
+        """Normalize spool_id to int or None for consistent comparison."""
+        if sid is None or sid == "" or sid == 0:
+            return None
+        try:
+            return int(sid)
+        except (TypeError, ValueError):
+            return None
+
     def _set_lane_k(self, lane, k: float):
         """Store K for a lane, tagged with the current spool_id."""
-        spool_id = getattr(lane, 'spool_id', None)
+        spool_id = self._norm_spool_id(getattr(lane, 'spool_id', None))
         self._lane_flow_k[lane.name] = (spool_id, k)
 
     def _get_lane_k(self, lane) -> "Optional[float]":
@@ -843,7 +853,7 @@ class AFCU1Bridge:
         if entry is None:
             return None
         stored_spool, k = entry
-        current_spool = getattr(lane, 'spool_id', None)
+        current_spool = self._norm_spool_id(getattr(lane, 'spool_id', None))
         if stored_spool != current_spool:
             del self._lane_flow_k[lane.name]
             return None
@@ -1008,8 +1018,15 @@ class AFCU1Bridge:
 
         self._save_extruder_temps()
 
-        # Try in-memory K (validated by spool_id), fall back to Spoolman
         lane_name = cur_lane.name
+        spool_id = getattr(cur_lane, 'spool_id', None)
+        self.logger.info(
+            "tool_loaded: %s spool_id=%s sync=%s memory_k=%s",
+            lane_name, spool_id,
+            self._spoolman_flow_sync_enabled(cur_lane),
+            self._lane_flow_k.get(lane_name))
+
+        # Try in-memory K (validated by spool_id), fall back to Spoolman
         k = self._get_lane_k(cur_lane)
         if k is not None:
             self._apply_lane_flow_k(lane_name)
