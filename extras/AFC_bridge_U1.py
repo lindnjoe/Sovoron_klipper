@@ -73,7 +73,7 @@ class AFCU1Bridge:
         self.gcode = self.printer.lookup_object("gcode")
         self.logger = logging.getLogger("AFC_bridge_U1")
         self._afc = None
-        self._lane_flow_k = {}
+        self._lane_flow_k = {}  # {lane_name: (spool_id, k_value)}
         self._saved_temps = {}
         self._afc_managed_extruders = set()
         self.physical_extruder_num = PHYSICAL_EXTRUDER_NUM
@@ -644,7 +644,7 @@ class AFCU1Bridge:
         # Check result — _current_k updates regardless of print state
         k_after = flow_cal._current_k.get(ext_name)
         if k_after is not None and k_after != k_before:
-            self._lane_flow_k[lane_name] = k_after
+            self._set_lane_k(lane, k_after)
             gcmd.respond_info(
                 "AFC_CALIBRATE_LANE_FLOW_K_U1: stored K=%.6f for %s on %s"
                 % (k_after, lane_name, ext_name))
@@ -757,12 +757,12 @@ class AFCU1Bridge:
                 ext_lanes = [(None, lane)]
 
             for logical_idx, lane in ext_lanes:
-                # Skip if we already have K from memory or Spoolman
-                existing_k = self._lane_flow_k.get(lane.name)
+                # Skip if we already have K for this spool (memory or Spoolman)
+                existing_k = self._get_lane_k(lane)
                 if existing_k is None and self._spoolman_flow_sync_enabled(lane):
                     existing_k = self._read_flow_k_from_spoolman(lane)
                     if existing_k is not None:
-                        self._lane_flow_k[lane.name] = existing_k
+                        self._set_lane_k(lane, existing_k)
                 if existing_k is not None:
                     self.logger.info(
                         "Skipping flow calibration for %s — already has "
@@ -796,7 +796,7 @@ class AFCU1Bridge:
                 k_after = (flow_cal._current_k.get(name)
                            if flow_cal else None)
                 if k_after is not None and k_after != k_before:
-                    self._lane_flow_k[lane.name] = k_after
+                    self._set_lane_k(lane, k_after)
                     self.logger.info(
                         "Stored flow K=%.6f for %s (T%s) on %s",
                         k_after, lane.name,
@@ -813,9 +813,32 @@ class AFCU1Bridge:
         if self._lane_flow_k:
             self.logger.info(
                 "Per-lane flow K after calibration: %s",
-                {k: "%.6f" % v for k, v in self._lane_flow_k.items()})
+                {name: "%.6f" % k for name, (_, k) in self._lane_flow_k.items()})
         else:
             self.logger.info("No per-lane flow K values stored after calibration")
+
+    def _set_lane_k(self, lane, k: float):
+        """Store K for a lane, tagged with the current spool_id."""
+        spool_id = getattr(lane, 'spool_id', None)
+        self._lane_flow_k[lane.name] = (spool_id, k)
+
+    def _get_lane_k(self, lane) -> "Optional[float]":
+        """Get K for a lane, only if the spool_id still matches.
+
+        Returns None if the lane has no spool_id (unidentified/default spool)
+        to avoid applying a previous spool's calibration.
+        """
+        current_spool = getattr(lane, 'spool_id', None)
+        if not current_spool:
+            return None
+        entry = self._lane_flow_k.get(lane.name)
+        if entry is None:
+            return None
+        stored_spool, k = entry
+        if stored_spool != current_spool:
+            del self._lane_flow_k[lane.name]
+            return None
+        return k
 
     def _apply_lane_flow_k(self, lane_name):
         """Apply per-lane flow K for the given lane.
@@ -825,9 +848,10 @@ class AFCU1Bridge:
         if not self._lane_flow_k:
             return None
 
-        k = self._lane_flow_k.get(lane_name)
-        if k is None:
+        entry = self._lane_flow_k.get(lane_name)
+        if entry is None:
             return None
+        _, k = entry
 
         toolhead = self.printer.lookup_object("toolhead")
         printer_ext = toolhead.get_extruder()
@@ -906,14 +930,15 @@ class AFCU1Bridge:
 
         self._save_extruder_temps()
 
-        # Try in-memory K first, fall back to Spoolman if enabled
+        # Try in-memory K (validated by spool_id), fall back to Spoolman
         lane_name = cur_lane.name
-        if self._lane_flow_k.get(lane_name) is not None:
+        k = self._get_lane_k(cur_lane)
+        if k is not None:
             self._apply_lane_flow_k(lane_name)
         elif self._spoolman_flow_sync_enabled(cur_lane):
             k = self._read_flow_k_from_spoolman(cur_lane)
             if k is not None:
-                self._lane_flow_k[lane_name] = k
+                self._set_lane_k(cur_lane, k)
                 self._apply_lane_flow_k(lane_name)
 
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
