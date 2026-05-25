@@ -71,7 +71,8 @@ class AFCU1Bridge:
     def __init__(self, config) -> None:
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
-        self.logger = logging.getLogger("AFC_bridge_U1")
+        self._init_logger = logging.getLogger("AFC_bridge_U1")
+        self.logger = self._init_logger
         self._afc = None
         self._lane_flow_k = {}  # {lane_name: (spool_id, k_value)}
         self._saved_temps = {}
@@ -83,6 +84,7 @@ class AFCU1Bridge:
     def _handle_connect(self):
         self.functions = self.printer.lookup_object('AFC_functions')
         afc = self.printer.lookup_object("AFC")
+        self.logger = afc.logger
         self.functions.register_commands(
             afc.show_macros,
             "AFC_PRINT_SETUP_U1",
@@ -128,7 +130,8 @@ class AFCU1Bridge:
         if msm is not None and afc.pre_resume_cmd is None:
             afc.pre_resume_cmd = "AFC_RESUME_RESTORE_TEMPS_U1"
             self.logger.info(
-                "Auto-configured pre_resume_cmd = AFC_RESUME_RESTORE_TEMPS_U1")
+                "Auto-configured pre_resume_cmd = AFC_RESUME_RESTORE_TEMPS_U1",
+                console_only=True)
 
         self._patch_filament_exist_update()
         self.logger.info("AFC_bridge_U1 initialized")
@@ -328,7 +331,7 @@ class AFCU1Bridge:
                 self.gcode.run_script_from_command(
                     "SET_HEATER_TEMPERATURE HEATER={name} TARGET={temp}".format(
                         name=name, temp=temp))
-                self.logger.info("Restored %s to %.1f°C", name, temp)
+                self.logger.info("Restored %s to %.1f°C" % (name, temp))
 
     def _patch_filament_exist_update(self):
         """Wrap print_task_config.update_filament_exist_flag to force
@@ -430,9 +433,8 @@ class AFCU1Bridge:
         used_tools = self._get_used_tool_indices()
         if used_tools is not None:
             self.logger.info(
-                "AFC_PRINT_SETUP_U1: gcode metadata says tools used: %s",
-                sorted(used_tools)
-            )
+                "AFC_PRINT_SETUP_U1: gcode metadata says tools used: %s"
+                % sorted(used_tools))
         map_entries, used_physical, phys_to_lane, logical_indices = (
             self._build_extruder_map(used_tools)
         )
@@ -444,9 +446,8 @@ class AFCU1Bridge:
             return
 
         self.logger.info(
-            "AFC_PRINT_SETUP_U1: map=%s used_extruders=%s",
-            map_entries, used_physical
-        )
+            "AFC_PRINT_SETUP_U1: map=%s used_extruders=%s"
+            % (map_entries, used_physical))
 
         # Track which physical extruders AFC manages
         self._afc_managed_extruders = set(used_physical)
@@ -548,8 +549,8 @@ class AFCU1Bridge:
             if phys_to_lane:
                 self._sync_filament_to_ptc(ptc, phys_to_lane)
                 self.logger.info(
-                    "Pre-resume: synced filament for extruders %s",
-                    sorted(phys_to_lane.keys()))
+                    "Pre-resume: synced filament for extruders %s"
+                    % sorted(phys_to_lane.keys()))
 
         self._restore_extruder_temps()
 
@@ -616,16 +617,16 @@ class AFCU1Bridge:
                 "AFC_SELECT_TOOL TOOL={}".format(ext_name))
         elif lane.extruder_obj.lane_loaded == lane_name:
             self.logger.info(
-                "Flow cal: %s already loaded on %s, selecting tool",
-                lane_name, ext_name)
+                "Flow cal: %s already loaded on %s, selecting tool"
+                % (lane_name, ext_name))
             self.gcode.run_script_from_command(
                 "AFC_SELECT_TOOL TOOL={}".format(ext_name))
         else:
             tool_cmd = lane.map
             if tool_cmd:
                 self.logger.info(
-                    "Flow cal: loading %s via %s on %s",
-                    lane_name, tool_cmd, ext_name)
+                    "Flow cal: loading %s via %s on %s"
+                    % (lane_name, tool_cmd, ext_name))
                 self.gcode.run_script_from_command(tool_cmd)
             else:
                 raise gcmd.error(
@@ -658,8 +659,8 @@ class AFCU1Bridge:
                 "AFC_CALIBRATE_LANE_FLOW_K_U1: stored K=%.6f for %s on %s"
                 % (k_after, lane_name, ext_name))
             self.logger.info(
-                "Flow cal complete: K=%.6f for %s on %s",
-                k_after, lane_name, ext_name)
+                "Flow cal complete: K=%.6f for %s on %s"
+                % (k_after, lane_name, ext_name))
             if self._spoolman_flow_sync_enabled(lane):
                 self._write_flow_k_to_spoolman(lane, k_after)
         else:
@@ -775,14 +776,14 @@ class AFCU1Bridge:
                 if existing_k is not None:
                     self.logger.info(
                         "Skipping flow calibration for %s — already has "
-                        "K=%.6f", lane.name, existing_k)
+                        "K=%.6f" % (lane.name, existing_k))
                     continue
 
                 if (not lane.extruder_obj.is_standalone()
                         and logical_idx is not None):
                     self.logger.info(
-                        "Loading %s (T%d) for flow calibration on %s",
-                        lane.name, logical_idx, name)
+                        "Loading %s (T%d) for flow calibration on %s"
+                        % (lane.name, logical_idx, name))
                     self.gcode.run_script_from_command(
                         "T{}".format(logical_idx))
                 else:
@@ -807,22 +808,22 @@ class AFCU1Bridge:
                 if k_after is not None and k_after != k_before:
                     self._set_lane_k(lane, k_after)
                     self.logger.info(
-                        "Stored flow K=%.6f for %s (T%s) on %s",
-                        k_after, lane.name,
-                        logical_idx if logical_idx is not None
-                        else "?", name)
+                        "Stored flow K=%.6f for %s (T%s) on %s"
+                        % (k_after, lane.name,
+                           logical_idx if logical_idx is not None
+                           else "?", name))
                     if self._spoolman_flow_sync_enabled(lane):
                         self._write_flow_k_to_spoolman(lane, k_after)
                 else:
                     self.logger.info(
                         "Flow calibration did not produce a new K for "
-                        "%s on %s (k_before=%s, k_after=%s)",
-                        lane.name, name, k_before, k_after)
+                        "%s on %s (k_before=%s, k_after=%s)"
+                        % (lane.name, name, k_before, k_after))
 
         if self._lane_flow_k:
             self.logger.info(
-                "Per-lane flow K after calibration: %s",
-                {name: "%.6f" % k for name, (_, k) in self._lane_flow_k.items()})
+                "Per-lane flow K after calibration: %s"
+                % {name: "%.6f" % k for name, (_, k) in self._lane_flow_k.items()})
         else:
             self.logger.info("No per-lane flow K values stored after calibration")
 
@@ -913,13 +914,13 @@ class AFCU1Bridge:
             k = self._parse_k_from_comment(comment)
             if k is not None:
                 self.logger.info(
-                    "Read flow K=%.6f from Spoolman spool %s for %s",
-                    k, spool_id, lane.name)
+                    "Read flow K=%.6f from Spoolman spool %s for %s"
+                    % (k, spool_id, lane.name))
             return k
         except Exception as e:
             self.logger.error(
-                "Failed to read flow K from Spoolman spool %s: %s",
-                spool_id, e)
+                "Failed to read flow K from Spoolman spool %s: %s"
+                % (spool_id, e))
         return None
 
     def _write_flow_k_to_spoolman(self, lane, k: float):
@@ -927,18 +928,19 @@ class AFCU1Bridge:
         spool_id = getattr(lane, 'spool_id', None)
         if not spool_id:
             self.logger.info(
-                "Cannot save flow K to Spoolman: no spool_id on %s", lane.name)
+                "Cannot save flow K to Spoolman: no spool_id on %s"
+                % lane.name)
             return
         try:
             self.afc.moonraker.update_spool_comment_tag(
                 int(spool_id), self.SPOOLMAN_FLOW_K_TAG, str(round(k, 6)))
             self.logger.info(
-                "Saved flow K=%.6f to Spoolman spool %s for %s",
-                k, spool_id, lane.name)
+                "Saved flow K=%.6f to Spoolman spool %s for %s"
+                % (k, spool_id, lane.name))
         except Exception as e:
             self.logger.error(
-                "Failed to save flow K to Spoolman spool %s: %s",
-                spool_id, e)
+                "Failed to save flow K to Spoolman spool %s: %s"
+                % (spool_id, e))
 
     def _parse_k_from_comment(self, comment: str) -> "Optional[float]":
         """Parse afc_flow_k=<value> from a spool comment string."""
@@ -970,8 +972,8 @@ class AFCU1Bridge:
         spool_id = getattr(cur_lane, 'spool_id', None)
 
         self.logger.info(
-            "Auto-insert flow calibration: running for %s (spool_id=%s)",
-            lane_name, spool_id)
+            "Auto-insert flow calibration: running for %s (spool_id=%s)"
+            % (lane_name, spool_id))
 
         ptc = self.printer.lookup_object("print_task_config", None)
         if ptc is not None:
@@ -996,19 +998,28 @@ class AFCU1Bridge:
             self._set_lane_k(cur_lane, k_after)
             self._apply_lane_flow_k(lane_name)
             self.logger.info(
-                "Auto-insert flow: stored K=%.6f for %s (spool_id=%s)",
-                k_after, lane_name, spool_id)
+                "Auto-insert flow: stored K=%.6f for %s (spool_id=%s)"
+                % (k_after, lane_name, spool_id))
             if spool_id and self._spoolman_flow_sync_enabled(cur_lane):
                 self._write_flow_k_to_spoolman(cur_lane, k_after)
         else:
             self.logger.info(
-                "Auto-insert flow: calibration did not produce K for %s",
-                lane_name)
+                "Auto-insert flow: calibration did not produce K for %s"
+                % lane_name)
 
         self._exit_discard_bin()
 
     def _handle_tool_loaded(self, cur_lane):
         """Event handler for afc:tool_loaded — sync filament, save temps, apply flow K."""
+        try:
+            self._do_handle_tool_loaded(cur_lane)
+        except Exception as e:
+            import traceback
+            self.logger.error(
+                "tool_loaded handler error: %s" % e,
+                traceback=traceback.format_exc())
+
+    def _do_handle_tool_loaded(self, cur_lane):
         ptc = self.printer.lookup_object("print_task_config", None)
         if ptc is not None:
             phys = self._get_physical_index(cur_lane.extruder_obj.name)
@@ -1021,12 +1032,11 @@ class AFCU1Bridge:
         lane_name = cur_lane.name
         spool_id = getattr(cur_lane, 'spool_id', None)
         self.logger.info(
-            "tool_loaded: %s spool_id=%s sync=%s memory_k=%s",
-            lane_name, spool_id,
-            self._spoolman_flow_sync_enabled(cur_lane),
-            self._lane_flow_k.get(lane_name))
+            "tool_loaded: %s spool_id=%s sync=%s memory_k=%s"
+            % (lane_name, spool_id,
+               self._spoolman_flow_sync_enabled(cur_lane),
+               self._lane_flow_k.get(lane_name)))
 
-        # Try in-memory K (validated by spool_id), fall back to Spoolman
         k = self._get_lane_k(cur_lane)
         if k is not None:
             self._apply_lane_flow_k(lane_name)
@@ -1038,7 +1048,6 @@ class AFCU1Bridge:
                 self._apply_lane_flow_k(lane_name)
                 return
 
-        # Auto-calibrate on insert if enabled and not printing
         if self._auto_insert_flow_enabled(cur_lane):
             if not self.afc.function.is_printing():
                 self._auto_calibrate_lane(cur_lane)
