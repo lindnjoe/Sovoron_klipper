@@ -87,6 +87,9 @@ class AfcToolchanger(afcUnit):
         self._logo_conflict += '! ' + self.name + ' CONFLICT</span>\n'
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
+
+        # Load flow K module (reads per-spool K from Spoolman, applies on tool load)
+        self.printer.load_object(config, 'AFC_flow_k')
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
 
         # Toolchanger config options

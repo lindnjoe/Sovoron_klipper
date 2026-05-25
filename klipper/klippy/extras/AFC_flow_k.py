@@ -9,12 +9,14 @@
 # printer that shares Spoolman with a machine that calibrates K values
 # (stored as afc_flow_k=<value> in the spool comment field).
 #
-# Enable by adding [AFC_flow_k] to your config. Requires spoolman_flow_sync: True
-# on the unit or lane for K to be read and applied.
+# Loaded automatically by AFC_Toolchanger; no config section needed.
+# Requires spoolman_flow_sync: True on the unit or lane for K to be read.
 
 from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Optional, Dict, Tuple
+
+from extras.AFC import State
 
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
@@ -69,8 +71,6 @@ class AFCFlowK:
                 self.logger.error("AFC_flow_k tool_loaded error: %s" % e)
 
     def _do_handle_tool_loaded(self, cur_lane):
-        lane_name = cur_lane.name
-
         k = self._get_lane_k(cur_lane)
         if k is not None:
             self._apply_k(cur_lane, k)
@@ -88,7 +88,7 @@ class AFCFlowK:
         """Re-apply K when extruder is activated (e.g. after G28)."""
         if not self.afc.prep_done:
             return
-        if self.afc.current_state != "Idle":
+        if self.afc.current_state != State.IDLE:
             return
         cur_lane = self.afc.function.get_current_lane_obj()
         if cur_lane is None:
