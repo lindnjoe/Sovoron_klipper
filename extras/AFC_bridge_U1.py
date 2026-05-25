@@ -1138,7 +1138,7 @@ class AFCU1Bridge:
             self.logger.info(
                 "Lane inserted: %s — loading to toolhead for auto flow calibration"
                 % cur_lane.name)
-            if not self.afc.TOOL_LOAD(cur_lane):
+            if not self.afc.TOOL_LOAD(cur_lane, set_start_time=True):
                 self.logger.error(
                     "Lane inserted: %s — TOOL_LOAD failed, skipping auto cal"
                     % cur_lane.name)
