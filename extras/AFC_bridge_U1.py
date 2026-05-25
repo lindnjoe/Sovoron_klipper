@@ -1089,7 +1089,7 @@ class AFCU1Bridge:
                 return
 
         if self._auto_insert_flow_enabled(cur_lane):
-            if not self.afc.function.is_printing():
+            if not self.afc.function.is_printing() and self.afc.prep_done:
                 self._auto_calibrate_lane(cur_lane)
 
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
