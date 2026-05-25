@@ -578,8 +578,15 @@ class AFC_moonraker:
         if not isinstance(current_extra, dict):
             current_extra = {}
         current_extra.update({k: str(v) for k, v in extra.items()})
-        body = json.dumps({"extra": current_extra})
-        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)
+        payload = json.dumps({
+            "request_method": "PATCH",
+            "path": f"/v1/spool/{spool_id}",
+            "body": json.dumps({"extra": current_extra}),
+        })
+        url = urljoin(self.host, 'server/spoolman/proxy')
+        req = Request(url, payload.encode(),
+                      headers={"Content-Type": "application/json"})
+        return self._get_results(req)
 
     def get_spool_extra(self, spool_id: int) -> dict:
         """Get a spool's extra field as a dict."""
