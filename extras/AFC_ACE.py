@@ -423,7 +423,7 @@ class afcACE(afcUnit):
             self.prep_post_load(lane)
         except Exception as e:
             self.logger.error(f"ACE on_filament_insert: prep_post_load error for {lane.name}: {e}")
-        self.printer.send_event("afc:lane_inserted", lane)
+        super().on_filament_insert(lane)
 
     def on_filament_remove(self, lane):
         """ACE-specific removal: clear slot inventory and hub state."""

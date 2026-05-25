@@ -669,7 +669,7 @@ class afcUnit:
     def on_filament_insert(self, lane):
         """Called by handle_load_runout after set_loaded() when filament is newly detected.
         Override in unit subclasses for RFID sync, prep_post_load, etc."""
-        pass
+        self.printer.send_event("afc:lane_inserted", lane)
 
     def on_filament_remove(self, lane):
         """Called by handle_load_runout when filament removal is detected.

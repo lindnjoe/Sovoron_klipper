@@ -1431,6 +1431,7 @@ class afcAMS(afcUnit):
             hw.update_lane_snapshot(
                 self.oams_name, lane.name, True, lane.loaded_to_hub,
                 self.afc.reactor.monotonic(), spool_index=spool_index)
+        super().on_filament_insert(lane)
 
     def on_filament_remove(self, lane):
         """OAMS removal: update lane state, cancel pending TD-1 timers, publish event."""
