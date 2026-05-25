@@ -564,7 +564,7 @@ class AFCU1Bridge:
             {k: "%.1f" % v for k, v in self._saved_temps.items()})
 
     cmd_AFC_CALIBRATE_LANE_FLOW_K_U1_options = {
-        "LANE": {"type": "string", "default": ""},
+        "LANE": {"type": "string", "default": "lane1"},
     }
 
     def cmd_AFC_CALIBRATE_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
