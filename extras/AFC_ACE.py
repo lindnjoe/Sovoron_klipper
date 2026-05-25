@@ -1056,15 +1056,18 @@ class afcACE(afcUnit):
             return False
 
         # Post-feed sensor check: feed completed but filament may not have
-        # reached the toolhead sensor yet.  Pulse 100mm up to 4 times to
-        # nudge it the last bit — ACE internal buffer handles back-pressure
-        # at the extruder gears so larger pulses are safe.
+        # reached the toolhead sensor yet.  Pulse 100mm until the sensor
+        # triggers or 10 seconds elapse — ACE internal buffer handles
+        # back-pressure at the extruder gears so larger pulses are safe.
         if not self._toolhead_sensor_triggered(cur_lane):
+            deadline = self.afc.reactor.monotonic() + 10.0
+            pulse_num = 0
             reached = False
-            for pulse in range(4):
+            while self.afc.reactor.monotonic() < deadline:
+                pulse_num += 1
                 self.logger.info(
                     f"Sensor not triggered after feed for {cur_lane.name}, "
-                    f"retry pulse {pulse + 1}/4 (100mm)")
+                    f"retry pulse {pulse_num} (100mm)")
                 try:
                     self._wait_for_ace_ready()
                     self._ace.feed_filament(slot, 100.0, self.feed_speed)
@@ -1074,15 +1077,15 @@ class afcACE(afcUnit):
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
                 if self._toolhead_sensor_triggered(cur_lane):
                     self.logger.info(
-                        f"Sensor triggered on retry pulse {pulse + 1} for {cur_lane.name}")
+                        f"Sensor triggered on retry pulse {pulse_num} for {cur_lane.name}")
                     reached = True
                     break
             if not reached:
                 afc.error.handle_lane_failure(
                     cur_lane,
-                    f"Filament did not reach toolhead sensor after feed + 4 retry "
-                    f"pulses for {cur_lane.name}.\nCheck filament path and bowden "
-                    f"length calibration.")
+                    f"Filament did not reach toolhead sensor after feed + "
+                    f"{pulse_num} retry pulses (10s timeout) for {cur_lane.name}.\n"
+                    f"Check filament path and bowden length calibration.")
                 return False
 
         # Set loaded_to_hub AFTER successful feed
