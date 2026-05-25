@@ -1129,6 +1129,20 @@ class AFCU1Bridge:
                     "Lane inserted: %s loaded K=%.6f from Spoolman, skipping auto cal"
                     % (cur_lane.name, k))
                 return
+        if not cur_lane.tool_loaded:
+            if not self.afc.function.check_homed():
+                self.logger.info(
+                    "Lane inserted: %s — printer not homed, skipping auto cal"
+                    % cur_lane.name)
+                return
+            self.logger.info(
+                "Lane inserted: %s — loading to toolhead for auto flow calibration"
+                % cur_lane.name)
+            if not self.afc.TOOL_LOAD(cur_lane):
+                self.logger.error(
+                    "Lane inserted: %s — TOOL_LOAD failed, skipping auto cal"
+                    % cur_lane.name)
+                return
         self.logger.info(
             "Lane inserted: %s — running auto flow calibration" % cur_lane.name)
         self._auto_calibrate_lane(cur_lane)
