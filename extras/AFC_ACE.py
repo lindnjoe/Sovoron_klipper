@@ -400,6 +400,7 @@ class afcACE(afcUnit):
         slot = self._get_slot(lane.name)
         if slot >= self.SLOTS_PER_UNIT:
             return
+        saved_spool_id = lane.spool_id
         self.afc.spool.clear_values(lane)
         self._refresh_slot_inventory(slot)
         slot_info = self._slot_inventory[slot]
@@ -413,6 +414,8 @@ class afcACE(afcUnit):
                 })
         if sync_rfid_to_spoolman is not None:
             self._sync_rfid_to_spoolman(lane, slot_info)
+        if saved_spool_id and not lane.spool_id:
+            self.afc.spool.set_spoolID(lane, saved_spool_id)
         self.lane_illuminate_spool(lane)
         self._hub_load_suppressed.discard(lane.name)
         self.afc.save_vars()
@@ -420,6 +423,7 @@ class afcACE(afcUnit):
             self.prep_post_load(lane)
         except Exception as e:
             self.logger.error(f"ACE on_filament_insert: prep_post_load error for {lane.name}: {e}")
+        self.printer.send_event("afc:lane_inserted", lane)
 
     def on_filament_remove(self, lane):
         """ACE-specific removal: clear slot inventory and hub state."""

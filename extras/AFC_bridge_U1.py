@@ -81,6 +81,7 @@ class AFCU1Bridge:
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler("afc:tool_loaded", self._handle_tool_loaded)
+        self.printer.register_event_handler("afc:lane_inserted", self._handle_lane_inserted)
         self.printer.register_event_handler("extruder:activate_extruder",
                                             self._handle_activate_extruder)
 
@@ -1105,6 +1106,32 @@ class AFCU1Bridge:
                 self._set_lane_k(cur_lane, k)
         if k is not None:
             self._apply_lane_flow_k(lane_name)
+
+    def _handle_lane_inserted(self, cur_lane):
+        """Handle filament insertion into a lane — run auto flow cal if enabled."""
+        if not self.afc.prep_done:
+            return
+        if self.afc.function.is_printing():
+            return
+        if not self._auto_insert_flow_enabled(cur_lane):
+            return
+        k = self._get_lane_k(cur_lane)
+        if k is not None:
+            self.logger.info(
+                "Lane inserted: %s already has K=%.6f, skipping auto cal"
+                % (cur_lane.name, k))
+            return
+        if self._spoolman_flow_sync_enabled(cur_lane):
+            k = self._read_flow_k_from_spoolman(cur_lane)
+            if k is not None:
+                self._set_lane_k(cur_lane, k)
+                self.logger.info(
+                    "Lane inserted: %s loaded K=%.6f from Spoolman, skipping auto cal"
+                    % (cur_lane.name, k))
+                return
+        self.logger.info(
+            "Lane inserted: %s — running auto flow calibration" % cur_lane.name)
+        self._auto_calibrate_lane(cur_lane)
 
     def _handle_tool_loaded(self, cur_lane):
         """Event handler for afc:tool_loaded — sync filament, save temps, apply flow K."""
