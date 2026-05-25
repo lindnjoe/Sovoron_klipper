@@ -574,9 +574,10 @@ class AFC_moonraker:
         existing = self.get_spool(spool_id)
         if existing is None:
             return None
-        current_extra = existing.get("extra", {}) or {}
-        current_extra.update(extra)
-        body = json.dumps({"extra": current_extra})
+        current = self._extra_to_dict(existing.get("extra") or [])
+        current.update(extra)
+        fields = [{"key": k, "value": str(v)} for k, v in current.items()]
+        body = json.dumps({"extra": fields})
         return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)
 
     def get_spool_extra(self, spool_id: int) -> dict:
@@ -584,4 +585,13 @@ class AFC_moonraker:
         result = self.get_spool(spool_id)
         if result is None:
             return {}
-        return result.get("extra", {}) or {}
+        return self._extra_to_dict(result.get("extra") or [])
+
+    @staticmethod
+    def _extra_to_dict(extra) -> dict:
+        """Convert Spoolman extra field (list of {key,value}) to a dict."""
+        if isinstance(extra, dict):
+            return extra
+        if isinstance(extra, list):
+            return {item["key"]: item["value"] for item in extra if "key" in item}
+        return {}
