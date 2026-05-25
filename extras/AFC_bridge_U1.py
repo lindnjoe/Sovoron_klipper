@@ -507,8 +507,8 @@ class AFCU1Bridge:
             self._run_flow_calibrate(ptc, flow_calib_phys, phys_to_lane,
                                      lanes_per_ext)
 
-        # ── 9b. Apply stored Spoolman flow K for lanes not calibrated above ──
-        self._apply_spoolman_flow_k(phys_to_lane, lanes_per_ext)
+        # ── 9b. Apply stored Spoolman flow K for all lanes/units ──
+        self._apply_spoolman_flow_k()
 
         # ── 10. Pre-extrude filament for single-lane extruders ────
         # Skip pre-extrude on extruders with multiple lanes in this print —
@@ -890,26 +890,21 @@ class AFCU1Bridge:
             return msg
         return None
 
-    def _apply_spoolman_flow_k(self, phys_to_lane, lanes_per_ext):
-        """Load and store flow K from Spoolman for all lanes used in this print.
+    def _apply_spoolman_flow_k(self):
+        """Load and store flow K from Spoolman for all lanes across all units.
 
         Called during PREP so that previously calibrated K values are ready
         before printing starts.  Lanes that already have K in memory (e.g.
         from flow calibration in step 9) are skipped.
         """
-        seen = set()
-        for phys, ext_lanes in lanes_per_ext.items():
-            for lane in ext_lanes:
-                if lane.name in seen:
-                    continue
-                seen.add(lane.name)
-                if self._get_lane_k(lane) is not None:
-                    continue
-                if not self._spoolman_flow_sync_enabled(lane):
-                    continue
-                k = self._read_flow_k_from_spoolman(lane)
-                if k is not None:
-                    self._set_lane_k(lane, k)
+        for lane in self.afc.lanes.values():
+            if self._get_lane_k(lane) is not None:
+                continue
+            if not self._spoolman_flow_sync_enabled(lane):
+                continue
+            k = self._read_flow_k_from_spoolman(lane)
+            if k is not None:
+                self._set_lane_k(lane, k)
 
     # ── Spoolman flow K sync ───────────────────────────────────────
 
