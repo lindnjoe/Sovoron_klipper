@@ -736,18 +736,15 @@ class AFCU1Bridge:
                             lanes_per_ext):
         """Run per-lane flow calibration and store K values.
 
-        Calibrates each used lane individually on its physical extruder.
-        For multi-lane extruders the calibrated-in-printing flag is reset
-        between lanes so the flow calibrator allows re-calibration.
-        Each lane's resulting pressure advance K is stored in
-        _lane_flow_k and applied on tool changes via
-        AFC_APPLY_LANE_FLOW_K_U1.
+        Skips calibration for lanes that already have a stored K value
+        (in-memory from this session, or from Spoolman when
+        spoolman_flow_sync is enabled). Calibrates remaining lanes
+        individually on their physical extruder.
 
         Bypasses SM_PRINT_FLOW_CALIBRATE to avoid its T{ext} A0 command
         which triggers U1 RFID clear events that wipe filament_type.
         """
         flow_cal = self.printer.lookup_object("flow_calibrator", None)
-        self._lane_flow_k = {}
 
         for ext in sorted(flow_calib_phys):
             name = "extruder" if ext == 0 else "extruder{}".format(ext)
@@ -760,6 +757,18 @@ class AFCU1Bridge:
                 ext_lanes = [(None, lane)]
 
             for logical_idx, lane in ext_lanes:
+                # Skip if we already have K from memory or Spoolman
+                existing_k = self._lane_flow_k.get(lane.name)
+                if existing_k is None and self._spoolman_flow_sync_enabled(lane):
+                    existing_k = self._read_flow_k_from_spoolman(lane)
+                    if existing_k is not None:
+                        self._lane_flow_k[lane.name] = existing_k
+                if existing_k is not None:
+                    self.logger.info(
+                        "Skipping flow calibration for %s — already has "
+                        "K=%.6f", lane.name, existing_k)
+                    continue
+
                 if (not lane.extruder_obj.is_standalone()
                         and logical_idx is not None):
                     self.logger.info(
