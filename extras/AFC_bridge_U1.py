@@ -4,12 +4,44 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
-# U1 State Machine Bridge: integrates AFC with the Snapmaker U1's
-# machine_state_manager and print_task_config so that calibrations
-# (bed mesh, flow calibration, input shaper) and extruder mapping
-# are handled automatically during PRINT_START.
+# AFC U1 Bridge — integrates AFC with the Snapmaker U1 state machine.
+# Loaded automatically by AFC_Toolchanger; no-ops on non-U1 printers.
 #
-# Loaded automatically by AFC_Toolchanger on Snapmaker U1 printers.
+# Provides:
+#   AFC_PRINT_SETUP_U1 — Full pre-print orchestration:
+#       builds extruder_map_table, syncs filament info, configures
+#       calibrations, runs bed defect detection, preheats, homes Z,
+#       cleans nozzles, runs bed mesh/shaper, enters PRINTING state,
+#       verifies dock/undock switching, runs per-lane flow calibration,
+#       and pre-extrudes filament for used tools.
+#
+#   AFC_SYNC_FILAMENT_U1 — Push AFC lane filament data (type, color,
+#       vendor) to print_task_config without running calibrations.
+#
+#   AFC_APPLY_LANE_FLOW_K_U1 — Apply the stored per-lane flow
+#       calibration K value for the currently loaded lane.
+#
+#   AFC_CALIBRATE_LANE_FLOW_K_U1 LANE=<name> — Run U1 flow
+#       calibration on a specific lane: loads the lane, syncs filament
+#       info, runs FLOW_CALIBRATE, stores K for auto-application on
+#       future tool loads.
+#
+#   AFC_RESUME_RESTORE_TEMPS_U1 — Pre-resume hook (pre_resume_cmd):
+#       re-syncs filament_exist and filament_type to print_task_config
+#       so INNER_RESUME won't error (523), and restores extruder temps
+#       from the last saved snapshot.
+#
+#   AFC_RESTORE_TEMPS_U1 — Manual recovery: restore extruder temps
+#       from the last saved snapshot.
+#
+# Automatic behaviors:
+#   - Patches update_filament_exist_flag so the U1's periodic hardware
+#     sensor polling cannot reset filament_exist to False for AFC-managed
+#     extruders (AFC filament doesn't trigger native feed-port sensors).
+#   - On every tool load (afc:tool_loaded): re-syncs filament info to
+#     print_task_config (counteracts RFID clear events), saves extruder
+#     temps, and applies per-lane flow K if calibrated.
+#   - Auto-configures pre_resume_cmd on U1 printers if not already set.
 
 from __future__ import annotations
 import copy
@@ -28,19 +60,12 @@ SOFT_MATERIALS = {"TPU", "TPE", "FLEX"}
 
 
 class AFCU1Bridge:
-    """Bridge between AFC tool mapping and the U1 state machine.
+    """Bridge between AFC and the Snapmaker U1 state machine.
 
-    Provides AFC_PRINT_SETUP_U1 which:
-      1. Builds the U1 extruder_map_table from AFC's tool_cmds
-      2. Syncs AFC lane filament info to U1 print_task_config
-      3. Configures calibration flags and used extruders
-      4. Runs bed defect detection
-      5. Preheats all used extruders
-      6. Runs pre-print calibrations (bed mesh, shaper) while IDLE
-      7. Enters PRINTING state
-      8. Verifies extruder switching (dock/undock)
-      9. Runs flow calibration for each used physical extruder
-     10. Pre-extrudes filament for each used logical index
+    Keeps print_task_config in sync with AFC's filament data so the U1's
+    INNER_PAUSE/INNER_RESUME, filament_exist polling, and flow calibrator
+    all work correctly with AFC-managed filament that bypasses the native
+    feed-port sensors and RFID system.
     """
 
     def __init__(self, config) -> None:
