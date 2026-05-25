@@ -629,31 +629,29 @@ class AFCU1Bridge:
         if ptc is not None:
             self._sync_filament_to_ptc(ptc, {phys: lane})
 
+        # Snapshot current K so we can detect a new result
+        k_before = flow_cal._current_k.get(ext_name)
+
         # Reset calibrated flag so flow_calibrator allows a fresh run
         flow_cal._calibrated_in_printing[ext_name] = False
 
         # Run the calibration
         self.gcode.run_script_from_command("FLOW_CALIBRATE")
 
-        # Check result and store K
-        if flow_cal._calibrated_in_printing.get(ext_name):
-            k = flow_cal._current_k.get(ext_name)
-            if k is not None:
-                self._lane_flow_k[lane_name] = k
-                gcmd.respond_info(
-                    "AFC_CALIBRATE_LANE_FLOW_K_U1: stored K=%.6f for %s on %s"
-                    % (k, lane_name, ext_name))
-                self.logger.info(
-                    "Flow cal complete: K=%.6f for %s on %s",
-                    k, lane_name, ext_name)
-            else:
-                gcmd.respond_info(
-                    "AFC_CALIBRATE_LANE_FLOW_K_U1: calibration ran but no K "
-                    "value returned for %s" % lane_name)
+        # Check result — _current_k updates regardless of print state
+        k_after = flow_cal._current_k.get(ext_name)
+        if k_after is not None and k_after != k_before:
+            self._lane_flow_k[lane_name] = k_after
+            gcmd.respond_info(
+                "AFC_CALIBRATE_LANE_FLOW_K_U1: stored K=%.6f for %s on %s"
+                % (k_after, lane_name, ext_name))
+            self.logger.info(
+                "Flow cal complete: K=%.6f for %s on %s",
+                k_after, lane_name, ext_name)
         else:
             gcmd.respond_info(
                 "AFC_CALIBRATE_LANE_FLOW_K_U1: flow calibration did not "
-                "confirm for %s on %s" % (lane_name, ext_name))
+                "produce a new K for %s on %s" % (lane_name, ext_name))
 
         self._exit_discard_bin()
 
@@ -748,30 +746,28 @@ class AFCU1Bridge:
                 self._exit_discard_bin()
                 self._sync_filament_to_ptc(ptc, {ext: lane})
 
+                k_before = (flow_cal._current_k.get(name)
+                            if flow_cal else None)
+
                 if flow_cal:
                     flow_cal._calibrated_in_printing[name] = False
 
                 self.gcode.run_script_from_command("FLOW_CALIBRATE")
 
-                if (flow_cal
-                        and flow_cal._calibrated_in_printing.get(name)):
-                    k = flow_cal._current_k.get(name)
-                    if k is not None:
-                        self._lane_flow_k[lane.name] = k
-                        self.logger.info(
-                            "Stored flow K=%.6f for %s (T%s) on %s",
-                            k, lane.name,
-                            logical_idx if logical_idx is not None
-                            else "?", name)
+                k_after = (flow_cal._current_k.get(name)
+                           if flow_cal else None)
+                if k_after is not None and k_after != k_before:
+                    self._lane_flow_k[lane.name] = k_after
+                    self.logger.info(
+                        "Stored flow K=%.6f for %s (T%s) on %s",
+                        k_after, lane.name,
+                        logical_idx if logical_idx is not None
+                        else "?", name)
                 else:
                     self.logger.info(
-                        "Flow calibration did not confirm for %s on %s "
-                        "(calibrated_in_printing=%s, current_k=%s)",
-                        lane.name, name,
-                        flow_cal._calibrated_in_printing.get(name)
-                        if flow_cal else "N/A",
-                        flow_cal._current_k.get(name)
-                        if flow_cal else "N/A")
+                        "Flow calibration did not produce a new K for "
+                        "%s on %s (k_before=%s, k_after=%s)",
+                        lane.name, name, k_before, k_after)
 
         if self._lane_flow_k:
             self.logger.info(
