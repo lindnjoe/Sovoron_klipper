@@ -91,6 +91,13 @@ class AFCU1Bridge:
             self.cmd_AFC_RESTORE_TEMPS_U1,
             "Restore extruder temps from last saved state",
         )
+        self.functions.register_commands(
+            afc.show_macros,
+            "AFC_CALIBRATE_LANE_FLOW_K_U1",
+            self.cmd_AFC_CALIBRATE_LANE_FLOW_K_U1,
+            "Run U1 flow calibration on a specific lane and store K",
+            self.cmd_AFC_CALIBRATE_LANE_FLOW_K_U1_options,
+        )
 
         msm = self.printer.lookup_object("machine_state_manager", None)
         if msm is not None and afc.pre_resume_cmd is None:
@@ -530,6 +537,83 @@ class AFCU1Bridge:
         gcmd.respond_info(
             "AFC_RESTORE_TEMPS_U1: restored %s" %
             {k: "%.1f" % v for k, v in self._saved_temps.items()})
+
+    cmd_AFC_CALIBRATE_LANE_FLOW_K_U1_options = {
+        "LANE": {"type": "string", "default": ""},
+    }
+
+    def cmd_AFC_CALIBRATE_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
+        """Run U1 flow calibration on a specific lane and store the K value.
+
+        Selects the lane's tool, syncs filament info, runs FLOW_CALIBRATE,
+        and stores the resulting K so it gets applied on future tool loads.
+
+        Usage: ``AFC_CALIBRATE_LANE_FLOW_K_U1 LANE=<lane_name>``
+        """
+        lane_name = gcmd.get("LANE", "")
+        if not lane_name:
+            raise gcmd.error("AFC_CALIBRATE_LANE_FLOW_K_U1: LANE parameter required")
+
+        lane = self.afc.lanes.get(lane_name)
+        if lane is None:
+            raise gcmd.error(
+                f"AFC_CALIBRATE_LANE_FLOW_K_U1: lane '{lane_name}' not found")
+
+        ptc = self.printer.lookup_object("print_task_config", None)
+        flow_cal = self.printer.lookup_object("flow_calibrator", None)
+        if flow_cal is None:
+            raise gcmd.error(
+                "AFC_CALIBRATE_LANE_FLOW_K_U1: flow_calibrator not found")
+
+        phys = self._get_physical_index(lane.extruder_obj.name)
+        if phys is None:
+            raise gcmd.error(
+                f"AFC_CALIBRATE_LANE_FLOW_K_U1: cannot determine physical "
+                f"extruder for {lane_name}")
+
+        ext_name = lane.extruder_obj.name
+
+        # Select the tool for this lane
+        tool_cmd = lane.map
+        if tool_cmd:
+            self.logger.info(
+                "Flow cal: loading %s via %s", lane_name, tool_cmd)
+            self.gcode.run_script_from_command(tool_cmd)
+        else:
+            self.gcode.run_script_from_command(
+                "AFC_SELECT_TOOL TOOL={}".format(ext_name))
+
+        self._exit_discard_bin()
+
+        # Sync filament info so flow_calibrator knows the material
+        if ptc is not None:
+            self._sync_filament_to_ptc(ptc, {phys: lane})
+
+        # Reset calibrated flag so flow_calibrator allows a fresh run
+        flow_cal._calibrated_in_printing[ext_name] = False
+
+        # Run the calibration
+        self.gcode.run_script_from_command("FLOW_CALIBRATE")
+
+        # Check result and store K
+        if flow_cal._calibrated_in_printing.get(ext_name):
+            k = flow_cal._current_k.get(ext_name)
+            if k is not None:
+                self._lane_flow_k[lane_name] = k
+                gcmd.respond_info(
+                    "AFC_CALIBRATE_LANE_FLOW_K_U1: stored K=%.6f for %s on %s"
+                    % (k, lane_name, ext_name))
+                self.logger.info(
+                    "Flow cal complete: K=%.6f for %s on %s",
+                    k, lane_name, ext_name)
+            else:
+                gcmd.respond_info(
+                    "AFC_CALIBRATE_LANE_FLOW_K_U1: calibration ran but no K "
+                    "value returned for %s" % lane_name)
+        else:
+            gcmd.respond_info(
+                "AFC_CALIBRATE_LANE_FLOW_K_U1: flow calibration did not "
+                "confirm for %s on %s" % (lane_name, ext_name))
 
     # ── calibration helpers ──────────────────────────────────────
 
