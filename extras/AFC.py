@@ -1422,6 +1422,10 @@ class afc:
                     cur_lane.extruder_obj.estats.tc_tool_load.increase_count()
                     cur_lane.lane_load_count.increase_count()
                     cur_lane.espooler.stats.update_database()
+
+                    # Re-fire after post-load ops so integrations (e.g. U1 bridge)
+                    # can re-apply settings that hardware callbacks may have reset
+                    self.printer.send_event("afc:tool_loaded", cur_lane)
                 finally:
                     self.restore_toolhead_temp(temp_state)
 
