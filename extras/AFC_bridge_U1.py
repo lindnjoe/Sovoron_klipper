@@ -1193,9 +1193,6 @@ class AFCU1Bridge:
                 self._apply_lane_flow_k(lane_name)
                 return
 
-        if self._auto_insert_flow_enabled(cur_lane):
-            if not self.afc.function.is_printing() and self.afc.prep_done:
-                self._auto_calibrate_lane(cur_lane)
 
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
         """Apply the calibrated flow K for the currently loading/loaded lane.
