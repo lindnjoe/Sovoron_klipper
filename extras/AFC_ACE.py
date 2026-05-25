@@ -333,12 +333,8 @@ class afcACE(afcUnit):
                         self.afc.spool.set_active_spool(lane.spool_id)
                         self.lane_tool_loaded(lane)
                         lane.status = AFCLaneState.TOOLED
-                        if self._use_feed_assist(lane) and self._ace is not None:
-                            try:
-                                self._ace.start_feed_assist(slot)
-                                self._feed_assist_active.add(slot)
-                            except Exception:
-                                pass
+                        if self._use_feed_assist(lane):
+                            self._start_feed_assist(slot)
                     else:
                         self.lane_tool_loaded_idle(lane)
                     lane.enable_buffer()
@@ -795,12 +791,8 @@ class afcACE(afcUnit):
                             self.printer.send_event("afc:tool_loaded", cur_lane)
 
                             # Start feed assist immediately for loaded tool
-                            if self._use_feed_assist(cur_lane) and self._ace is not None:
-                                try:
-                                    self._ace.start_feed_assist(slot)
-                                    self._feed_assist_active.add(slot)
-                                except Exception:
-                                    pass
+                            if self._use_feed_assist(cur_lane):
+                                self._start_feed_assist(slot)
                         else:
                             self.lane_tool_loaded_idle(cur_lane)
                         cur_lane.enable_buffer()
@@ -1235,16 +1227,22 @@ class afcACE(afcUnit):
     # ── Hardware interaction helpers ────────────────────────────────
 
     def _start_feed_assist(self, slot: int):
+        if slot in self._feed_assist_active:
+            return
         if self._ace and self._ace.connected:
             try:
+                self._wait_for_ace_ready()
                 self._ace.start_feed_assist(slot)
                 self._feed_assist_active.add(slot)
             except Exception as e:
                 self.logger.error(f"Failed to start feed assist slot {slot}: {e}")
 
     def _stop_feed_assist(self, slot: int):
+        if slot not in self._feed_assist_active:
+            return
         if self._ace and self._ace.connected:
             try:
+                self._wait_for_ace_ready()
                 self._ace.stop_feed_assist(slot)
                 self._feed_assist_active.discard(slot)
             except Exception as e:
