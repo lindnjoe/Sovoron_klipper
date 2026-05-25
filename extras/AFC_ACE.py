@@ -360,6 +360,21 @@ class afcACE(afcUnit):
             if not slot_transient:
                 self._prev_slot_states[lane.name] = slot_ready
 
+            # Keep feed assist running whenever this lane is active on the
+            # active extruder, regardless of printer state.
+            if (slot_ready and not slot_transient
+                    and self._use_feed_assist(lane)
+                    and self._ace is not None
+                    and self.afc.current == lane.name
+                    and hasattr(lane, 'extruder_obj')
+                    and lane.extruder_obj.lane_loaded == lane.name
+                    and slot not in self._feed_assist_active):
+                try:
+                    self._ace.start_feed_assist(slot)
+                    self._feed_assist_active.add(slot)
+                except Exception:
+                    pass
+
     # ── Lane parameter helpers ──────────────────────────────────────
 
     def _get_bowden_length(self, cur_lane) -> float:
