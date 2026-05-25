@@ -63,16 +63,12 @@ class AfcToolchanger(afcUnit):
         if assignTcmd: self.afc.function.TcmdAssign(cur_lane)
         cur_lane.send_lane_data()
         msg = ""
-        on_shuttle = cur_lane.extruder_obj.on_shuttle()
         if cur_lane.prep_state and cur_lane.load_state:
-            if on_shuttle:
-                msg = "<span class=success--text>LOADED</span> <span class=primary--text>in ToolHead</span>"
-            else:
-                msg = "<span class=success--text>LOCKED AND LOADED</span>"
+            msg = "<span class=success--text>LOADED</span> <span class=primary--text>in ToolHead</span>"
         self.logger.raw('{lane_name} tool cmd: {tcmd:3} {msg}'.format(
             lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
-        if on_shuttle and cur_lane.prep_state and cur_lane.load_state:
+        if cur_lane.extruder_obj.on_shuttle() and cur_lane.prep_state and cur_lane.load_state:
             self.printer.send_event("afc:tool_loaded", cur_lane)
         return True
 
