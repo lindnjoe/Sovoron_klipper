@@ -570,7 +570,7 @@ class AFC_moonraker:
         return self._spoolman_proxy("POST", "/v1/spool", body=json.dumps(data))
 
     def update_spool_comment_tag(self, spool_id: int, tag: str, value: str):
-        """Update or insert a tag=value pair in a spool's comment field via PATCH."""
+        """Update or insert a tag=value pair in a spool's comment field."""
         import re
         existing = self.get_spool(spool_id)
         if existing is None:
@@ -584,5 +584,17 @@ class AFC_moonraker:
             comment = comment.rstrip() + " " + new_tag
         else:
             comment = new_tag
-        body = json.dumps({"comment": comment})
-        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)
+        return self._spoolman_proxy_json(
+            "PATCH", f"/v1/spool/{spool_id}", {"comment": comment})
+
+    def _spoolman_proxy_json(self, method, path, body_dict):
+        """Spoolman proxy call with body as dict so moonraker sets Content-Type."""
+        payload = json.dumps({
+            "request_method": method,
+            "path": path,
+            "body": body_dict,
+        })
+        url = urljoin(self.host, 'server/spoolman/proxy')
+        req = Request(url, payload.encode(),
+                      headers={"Content-Type": "application/json"})
+        return self._get_results(req)
