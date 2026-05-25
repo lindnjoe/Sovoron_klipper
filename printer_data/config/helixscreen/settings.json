@@ -105,7 +105,7 @@
           "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 879.77294921875,
+          "remaining_weight_g": 877.6136474609375,
           "spool_name": "Sunlu PLA - Grass Green",
           "spoolman_id": 35,
           "total_weight_g": 1000.0
@@ -183,7 +183,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-25T22:58:35Z"
+          "timestamp": "2026-05-25T23:33:09Z"
         },
         "optional": []
       },

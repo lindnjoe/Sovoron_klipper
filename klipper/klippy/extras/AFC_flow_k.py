@@ -11,6 +11,10 @@
 #
 # Loaded automatically by AFC_Toolchanger; no config section needed.
 # Requires spoolman_flow_sync: True on the unit or lane for K to be read.
+#
+# Applies K directly on the extruder stepper (same approach as U1
+# flow_calibrator) and wraps per-extruder SET_PRESSURE_ADVANCE handlers
+# to block slicer overrides during printing.
 
 from __future__ import annotations
 import re
@@ -27,12 +31,7 @@ _K_PATTERN = re.compile(r'\bafc_flow_k=([\d.]+)')
 
 
 class AFCFlowK:
-    """Read per-spool flow K from Spoolman and apply as pressure advance.
-
-    Also intercepts SET_PRESSURE_ADVANCE during printing to prevent the
-    slicer from overriding AFC-managed K values (same behavior as the U1's
-    flow_calibrator firmware).
-    """
+    """Read per-spool flow K from Spoolman and apply as pressure advance."""
 
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -41,8 +40,7 @@ class AFCFlowK:
         self.logger = None
         self._lane_flow_k: Dict[str, Tuple[Optional[str], float]] = {}
         self._managed_extruders: set = set()
-        self._orig_set_pa = None
-        self._afc_applying = False
+        self._wrapped_extruders: set = set()
 
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -53,12 +51,9 @@ class AFCFlowK:
     def _handle_connect(self):
         self.afc = self.printer.lookup_object("AFC")
         self.logger = self.afc.logger
-        self._orig_set_pa = self.gcode.register_command(
-            "SET_PRESSURE_ADVANCE", None)
-        self.gcode.register_command(
-            "SET_PRESSURE_ADVANCE", self._cmd_set_pressure_advance)
 
     def _handle_ready(self):
+        self._wrap_pa_handlers()
         self._load_all_spoolman_k()
 
     def _load_all_spoolman_k(self):
@@ -137,50 +132,61 @@ class AFCFlowK:
             return None
         return str(val)
 
-    # ── SET_PRESSURE_ADVANCE interception ────────────────────────
-
-    def _cmd_set_pressure_advance(self, gcmd):
-        """Intercept SET_PRESSURE_ADVANCE — block slicer overrides during
-        printing when AFC manages K for the target extruder."""
-        if (not self._afc_applying
-                and self._orig_set_pa is not None
-                and self.afc is not None
-                and self.afc.function.is_printing()
-                and self._managed_extruders):
-            extruder = gcmd.get("EXTRUDER", None)
-            if extruder is None:
-                toolhead = self.printer.lookup_object("toolhead")
-                extruder = toolhead.get_extruder().get_name()
-            if extruder in self._managed_extruders:
-                if self.logger:
-                    self.logger.info(
-                        "AFC flow K enabled for %s, slicer PA change will "
-                        "not take effect" % extruder)
-                gcmd.respond_info(
-                    "AFC flow K enabled, so not take effect.")
-                return
-        if self._orig_set_pa is not None:
-            self._orig_set_pa(gcmd)
-
-    # ── Apply K via SET_PRESSURE_ADVANCE ──────────────────────────
+    # ── Apply K directly on extruder stepper (same as U1) ─────────
 
     def _apply_k(self, lane, k: float):
-        ext_name = getattr(lane, 'extruder_obj', None)
-        if ext_name is not None:
-            ext_name = ext_name.name
-        else:
-            ext_name = "extruder"
+        ext_obj = getattr(lane, 'extruder_obj', None)
+        ext_name = ext_obj.name if ext_obj is not None else "extruder"
+        printer_ext = self.printer.lookup_object(ext_name, None)
+        if printer_ext is None:
+            if self.logger:
+                self.logger.error(
+                    "AFC flow K: extruder %s not found" % ext_name)
+            return
+        estepper = getattr(printer_ext, 'extruder_stepper', None)
+        if estepper is None:
+            if self.logger:
+                self.logger.error(
+                    "AFC flow K: extruder %s has no extruder_stepper" % ext_name)
+            return
+        smooth_time = getattr(estepper, 'config_smooth_time',
+                              estepper.pressure_advance_smooth_time)
+        estepper._set_pressure_advance(k, smooth_time)
         self._managed_extruders.add(ext_name)
-        self._afc_applying = True
-        try:
-            self.gcode.run_script_from_command(
-                "SET_PRESSURE_ADVANCE EXTRUDER=%s ADVANCE=%.6f" % (ext_name, k))
-        finally:
-            self._afc_applying = False
         if self.logger:
             self.logger.info(
                 "AFC flow K: applied K=%.6f for %s on %s"
                 % (k, lane.name, ext_name))
+
+    # ── Block slicer PA overrides during printing ─────────────────
+
+    def _wrap_pa_handlers(self):
+        """Wrap per-extruder SET_PRESSURE_ADVANCE mux handlers to block
+        slicer changes during printing when AFC manages K."""
+        mux_entry = self.gcode.mux_commands.get("SET_PRESSURE_ADVANCE")
+        if mux_entry is None:
+            return
+        _key, values = mux_entry
+        for ext_name, orig_func in list(values.items()):
+            if ext_name in self._wrapped_extruders:
+                continue
+            flow_k = self
+            def make_wrapper(original, name):
+                def wrapper(gcmd):
+                    if (name in flow_k._managed_extruders
+                            and flow_k.afc is not None
+                            and flow_k.afc.function.is_printing()):
+                        if flow_k.logger:
+                            flow_k.logger.info(
+                                "AFC flow K enabled for %s, slicer PA "
+                                "change will not take effect" % name)
+                        gcmd.respond_info(
+                            "AFC flow K enabled, so not take effect.")
+                        return
+                    original(gcmd)
+                return wrapper
+            values[ext_name] = make_wrapper(orig_func, ext_name)
+            self._wrapped_extruders.add(ext_name)
 
     # ── Spoolman read ─────────────────────────────────────────────
 
