@@ -1138,11 +1138,9 @@ class AFCU1Bridge:
             self.logger.info(
                 "Lane inserted: %s — loading to toolhead for auto flow calibration"
                 % cur_lane.name)
-            self.gcode.run_script_from_command(
-                "CHANGE_TOOL LANE=%s" % cur_lane.name)
-            if not cur_lane.tool_loaded:
+            if not self.afc.TOOL_LOAD(cur_lane):
                 self.logger.error(
-                    "Lane inserted: %s — CHANGE_TOOL failed, skipping auto cal"
+                    "Lane inserted: %s — TOOL_LOAD failed, skipping auto cal"
                     % cur_lane.name)
                 return
         self.logger.info(
