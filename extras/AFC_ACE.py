@@ -1247,7 +1247,7 @@ class afcACE(afcUnit):
         if self._ace and self._ace.connected:
             try:
                 self._wait_for_ace_ready()
-                self._ace.stop_feed_assist(slot)
+                self._ace.stop_feed_assist_sync(slot)
                 self._feed_assist_active.discard(slot)
             except Exception as e:
                 self.logger.error(f"Failed to stop feed assist slot {slot}: {e}")
