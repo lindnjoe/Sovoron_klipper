@@ -1045,7 +1045,7 @@ class afcACE(afcUnit):
                 if self._toolhead_sensor_triggered(cur_lane):
                     self.logger.info("Feed error but sensor triggered — continuing")
                 else:
-                    success = self._smart_load_retry(cur_lane, slot)
+                    success = self._smart_load_retry(cur_lane, slot, feed_dist)
                     if not success:
                         afc.error.handle_lane_failure(
                             cur_lane, f"ACE feed failed for {cur_lane.name}")
@@ -1341,14 +1341,16 @@ class afcACE(afcUnit):
             f"movement ({max_wait:.1f}s)")
         return False
 
-    def _smart_load_retry(self, cur_lane, slot, max_retries: int = 3) -> bool:
-        """Retry loading with incremental feeds when initial feed fails."""
+    def _smart_load_retry(self, cur_lane, slot, feed_dist, max_retries: int = 3) -> bool:
+        """Resend the full feed command when the initial feed stalls or times out."""
         for attempt in range(max_retries):
-            self.logger.info(f"Smart load retry {attempt+1}/{max_retries} for {cur_lane.name}")
+            self.logger.info(
+                f"Feed retry {attempt + 1}/{max_retries} for {cur_lane.name} "
+                f"({feed_dist:.0f}mm)")
             try:
                 self._wait_for_ace_ready()
-                self._ace.feed_filament(slot, self.sensor_step, self.feed_speed)
-                self._wait_for_feed_complete(slot, self.sensor_step, self.feed_speed)
+                self._ace.feed_filament(slot, feed_dist, self.feed_speed)
+                self._wait_for_feed_complete(slot, feed_dist, self.feed_speed, cur_lane)
                 if self._toolhead_sensor_triggered(cur_lane):
                     return True
             except Exception:
