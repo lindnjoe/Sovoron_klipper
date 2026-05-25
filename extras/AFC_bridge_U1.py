@@ -629,6 +629,9 @@ class AFCU1Bridge:
         if ptc is not None:
             self._sync_filament_to_ptc(ptc, {phys: lane})
 
+        # Ensure feed assist is running for ACE lanes during calibration
+        self._ensure_feed_assist(lane)
+
         # Snapshot current K so we can detect a new result
         k_before = flow_cal._current_k.get(ext_name)
 
@@ -675,6 +678,29 @@ class AFCU1Bridge:
 
     def _run_defect_detection(self):
         self.gcode.run_script_from_command("DEFECT_DETECTION_DETECT_BED")
+
+    def _ensure_feed_assist(self, lane):
+        """Start feed assist for an ACE lane if not already active."""
+        unit = getattr(lane, 'unit_obj', None)
+        if unit is None:
+            return
+        get_slot = getattr(unit, '_get_slot', None)
+        use_fa = getattr(unit, '_use_feed_assist', None)
+        active = getattr(unit, '_feed_assist_active', None)
+        start = getattr(unit, '_start_feed_assist', None)
+        if get_slot is None or start is None:
+            return
+        if use_fa is not None and not use_fa(lane):
+            return
+        slot = get_slot(lane.name)
+        if slot < 0:
+            return
+        if active is not None and slot in active:
+            return
+        try:
+            start(slot)
+        except Exception:
+            pass
 
     def _exit_discard_bin(self):
         self.gcode.run_script_from_command("SNAPMAKER_EXIT_DISCARD_BIN")
@@ -745,6 +771,8 @@ class AFCU1Bridge:
 
                 self._exit_discard_bin()
                 self._sync_filament_to_ptc(ptc, {ext: lane})
+
+                self._ensure_feed_assist(lane)
 
                 k_before = (flow_cal._current_k.get(name)
                             if flow_cal else None)
