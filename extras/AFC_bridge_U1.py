@@ -963,24 +963,61 @@ class AFCU1Bridge:
                 % (spool_id, e))
         return None
 
+    _SPOOLMAN_WRITE_RETRIES = 3
+    _SPOOLMAN_RETRY_DELAY = 2.0
+
     def _write_flow_k_to_spoolman(self, lane, k: float):
-        """Write flow K to the spool's comment in Spoolman."""
+        """Write flow K to the spool's comment in Spoolman with retry + verify."""
         spool_id = getattr(lane, 'spool_id', None)
         if not spool_id:
             self.logger.info(
                 "Cannot save flow K to Spoolman: no spool_id on %s"
                 % lane.name)
             return
-        try:
-            self.afc.moonraker.update_spool_comment_tag(
-                int(spool_id), self.SPOOLMAN_FLOW_K_TAG, str(round(k, 6)))
-            self.logger.info(
-                "Saved flow K=%.6f to Spoolman spool %s for %s"
-                % (k, spool_id, lane.name))
-        except Exception as e:
-            self.logger.error(
-                "Failed to save flow K to Spoolman spool %s: %s"
-                % (spool_id, e))
+        k_str = str(round(k, 6))
+        reactor = self.printer.get_reactor()
+
+        for attempt in range(self._SPOOLMAN_WRITE_RETRIES):
+            try:
+                result = self.afc.moonraker.update_spool_comment_tag(
+                    int(spool_id), self.SPOOLMAN_FLOW_K_TAG, k_str)
+                if result is None:
+                    self.logger.warning(
+                        "Spoolman write returned no result for spool %s "
+                        "(attempt %d/%d)"
+                        % (spool_id, attempt + 1, self._SPOOLMAN_WRITE_RETRIES))
+                    reactor.pause(reactor.monotonic() + self._SPOOLMAN_RETRY_DELAY)
+                    continue
+
+                verify = self.afc.moonraker.get_spool(int(spool_id))
+                if verify is not None:
+                    saved_k = self._parse_k_from_comment(
+                        verify.get("comment") or "")
+                    if saved_k is not None:
+                        self.logger.info(
+                            "Saved flow K=%.6f to Spoolman spool %s for %s"
+                            % (k, spool_id, lane.name))
+                        return
+                    self.logger.warning(
+                        "Write succeeded but verify shows no K in spool %s "
+                        "comment (attempt %d/%d)"
+                        % (spool_id, attempt + 1, self._SPOOLMAN_WRITE_RETRIES))
+                else:
+                    self.logger.warning(
+                        "Write succeeded but verify read failed for spool %s "
+                        "(attempt %d/%d)"
+                        % (spool_id, attempt + 1, self._SPOOLMAN_WRITE_RETRIES))
+            except Exception as e:
+                self.logger.warning(
+                    "Spoolman write error for spool %s (attempt %d/%d): %s"
+                    % (spool_id, attempt + 1, self._SPOOLMAN_WRITE_RETRIES, e))
+
+            reactor.pause(reactor.monotonic() + self._SPOOLMAN_RETRY_DELAY)
+
+        self.logger.error(
+            "Failed to save flow K=%.6f to Spoolman spool %s for %s "
+            "after %d attempts"
+            % (k, spool_id, lane.name, self._SPOOLMAN_WRITE_RETRIES))
 
     def _parse_k_from_comment(self, comment: str) -> "Optional[float]":
         """Parse afc_flow_k=<value> from a spool comment string."""
