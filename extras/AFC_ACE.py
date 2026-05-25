@@ -792,6 +792,7 @@ class afcACE(afcUnit):
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             self.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
+                            self.printer.send_event("afc:tool_loaded", cur_lane)
 
                             # Start feed assist immediately for loaded tool
                             if self._use_feed_assist(cur_lane) and self._ace is not None:
