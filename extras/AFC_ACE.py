@@ -333,12 +333,8 @@ class afcACE(afcUnit):
                         self.afc.spool.set_active_spool(lane.spool_id)
                         self.lane_tool_loaded(lane)
                         lane.status = AFCLaneState.TOOLED
-                        if self._use_feed_assist(lane) and self._ace is not None:
-                            try:
-                                self._ace.start_feed_assist(slot)
-                                self._feed_assist_active.add(slot)
-                            except Exception:
-                                pass
+                        if self._use_feed_assist(lane):
+                            self._start_feed_assist(slot)
                     else:
                         self.lane_tool_loaded_idle(lane)
                     lane.enable_buffer()
@@ -404,6 +400,7 @@ class afcACE(afcUnit):
         slot = self._get_slot(lane.name)
         if slot >= self.SLOTS_PER_UNIT:
             return
+        saved_spool_id = lane.spool_id
         self.afc.spool.clear_values(lane)
         self._refresh_slot_inventory(slot)
         slot_info = self._slot_inventory[slot]
@@ -417,6 +414,8 @@ class afcACE(afcUnit):
                 })
         if sync_rfid_to_spoolman is not None:
             self._sync_rfid_to_spoolman(lane, slot_info)
+        if saved_spool_id and not lane.spool_id:
+            self.afc.spool.set_spoolID(lane, saved_spool_id)
         self.lane_illuminate_spool(lane)
         self._hub_load_suppressed.discard(lane.name)
         self.afc.save_vars()
@@ -424,6 +423,7 @@ class afcACE(afcUnit):
             self.prep_post_load(lane)
         except Exception as e:
             self.logger.error(f"ACE on_filament_insert: prep_post_load error for {lane.name}: {e}")
+        super().on_filament_insert(lane)
 
     def on_filament_remove(self, lane):
         """ACE-specific removal: clear slot inventory and hub state."""
@@ -792,14 +792,11 @@ class afcACE(afcUnit):
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             self.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
+                            self.printer.send_event("afc:tool_loaded", cur_lane)
 
                             # Start feed assist immediately for loaded tool
-                            if self._use_feed_assist(cur_lane) and self._ace is not None:
-                                try:
-                                    self._ace.start_feed_assist(slot)
-                                    self._feed_assist_active.add(slot)
-                                except Exception:
-                                    pass
+                            if self._use_feed_assist(cur_lane):
+                                self._start_feed_assist(slot)
                         else:
                             self.lane_tool_loaded_idle(cur_lane)
                         cur_lane.enable_buffer()
@@ -1019,6 +1016,22 @@ class afcACE(afcUnit):
         if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
             buffer_obj.enable_advance_latch()
 
+        # Pre-feed check: if the toolhead sensor detects filament before
+        # we start feeding, there's stuck filament from a previous load.
+        # Don't push more filament into an occupied toolhead.
+        if self._toolhead_sensor_triggered(cur_lane):
+            message = (
+                f"Toolhead sensor detects filament before ACE feed for "
+                f"{cur_lane.name}.\nFilament may be stuck from a previous "
+                f"load — clear the toolhead before loading.\n"
+                f"To resolve, manually retract filament from the toolhead "
+                f"or run AFC_RESET for {cur_lane.name}."
+            )
+            if afc.function.in_print():
+                message += "\nOnce cleared, click resume to continue printing"
+            afc.error.handle_lane_failure(cur_lane, message)
+            return False
+
         # ACE serial feed to toolhead area
         try:
             self._wait_for_ace_ready()
@@ -1026,10 +1039,10 @@ class afcACE(afcUnit):
             success = self._wait_for_feed_complete(slot, feed_dist, self.feed_speed, cur_lane)
 
             if not success:
-                if cur_lane.get_toolhead_pre_sensor_state():
+                if self._toolhead_sensor_triggered(cur_lane):
                     self.logger.info("Feed error but sensor triggered — continuing")
                 else:
-                    success = self._smart_load_retry(cur_lane, slot)
+                    success = self._smart_load_retry(cur_lane, slot, feed_dist)
                     if not success:
                         afc.error.handle_lane_failure(
                             cur_lane, f"ACE feed failed for {cur_lane.name}")
@@ -1038,6 +1051,39 @@ class afcACE(afcUnit):
             afc.error.handle_lane_failure(
                 cur_lane, f"ACE load feed error: {e}")
             return False
+
+        # Post-feed sensor check: feed completed but filament may not have
+        # reached the toolhead sensor yet.  Pulse 100mm until the sensor
+        # triggers or 10 seconds elapse — ACE internal buffer handles
+        # back-pressure at the extruder gears so larger pulses are safe.
+        if not self._toolhead_sensor_triggered(cur_lane):
+            deadline = self.afc.reactor.monotonic() + 10.0
+            pulse_num = 0
+            reached = False
+            while self.afc.reactor.monotonic() < deadline:
+                pulse_num += 1
+                self.logger.info(
+                    f"Sensor not triggered after feed for {cur_lane.name}, "
+                    f"retry pulse {pulse_num} (100mm)")
+                try:
+                    self._wait_for_ace_ready()
+                    self._ace.feed_filament(slot, 100.0, self.feed_speed)
+                    self._wait_for_feed_complete(slot, 100.0, self.feed_speed, cur_lane)
+                except Exception:
+                    pass
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
+                if self._toolhead_sensor_triggered(cur_lane):
+                    self.logger.info(
+                        f"Sensor triggered on retry pulse {pulse_num} for {cur_lane.name}")
+                    reached = True
+                    break
+            if not reached:
+                afc.error.handle_lane_failure(
+                    cur_lane,
+                    f"Filament did not reach toolhead sensor after feed + "
+                    f"{pulse_num} retry pulses (10s timeout) for {cur_lane.name}.\n"
+                    f"Check filament path and bowden length calibration.")
+                return False
 
         # Set loaded_to_hub AFTER successful feed
         cur_lane.loaded_to_hub = True
@@ -1185,16 +1231,22 @@ class afcACE(afcUnit):
     # ── Hardware interaction helpers ────────────────────────────────
 
     def _start_feed_assist(self, slot: int):
+        if slot in self._feed_assist_active:
+            return
         if self._ace and self._ace.connected:
             try:
+                self._wait_for_ace_ready()
                 self._ace.start_feed_assist(slot)
                 self._feed_assist_active.add(slot)
             except Exception as e:
                 self.logger.error(f"Failed to start feed assist slot {slot}: {e}")
 
     def _stop_feed_assist(self, slot: int):
+        if slot not in self._feed_assist_active:
+            return
         if self._ace and self._ace.connected:
             try:
+                self._wait_for_ace_ready()
                 self._ace.stop_feed_assist(slot)
                 self._feed_assist_active.discard(slot)
             except Exception as e:
@@ -1269,7 +1321,7 @@ class afcACE(afcUnit):
             self.afc.reactor.pause(
                 self.afc.reactor.monotonic() + poll_interval)
 
-            if lane is not None and lane.get_toolhead_pre_sensor_state():
+            if lane is not None and self._toolhead_sensor_triggered(lane):
                 self.logger.debug(
                     f"ACE wait: toolhead sensor triggered for slot {slot_index}")
                 try:
@@ -1296,15 +1348,17 @@ class afcACE(afcUnit):
             f"movement ({max_wait:.1f}s)")
         return False
 
-    def _smart_load_retry(self, cur_lane, slot, max_retries: int = 3) -> bool:
-        """Retry loading with incremental feeds when initial feed fails."""
+    def _smart_load_retry(self, cur_lane, slot, feed_dist, max_retries: int = 3) -> bool:
+        """Resend the full feed command when the initial feed stalls or times out."""
         for attempt in range(max_retries):
-            self.logger.info(f"Smart load retry {attempt+1}/{max_retries} for {cur_lane.name}")
+            self.logger.info(
+                f"Feed retry {attempt + 1}/{max_retries} for {cur_lane.name} "
+                f"({feed_dist:.0f}mm)")
             try:
                 self._wait_for_ace_ready()
-                self._ace.feed_filament(slot, self.sensor_step, self.feed_speed)
-                self._wait_for_feed_complete(slot, self.sensor_step, self.feed_speed)
-                if cur_lane.get_toolhead_pre_sensor_state():
+                self._ace.feed_filament(slot, feed_dist, self.feed_speed)
+                self._wait_for_feed_complete(slot, feed_dist, self.feed_speed, cur_lane)
+                if self._toolhead_sensor_triggered(cur_lane):
                     return True
             except Exception:
                 pass
