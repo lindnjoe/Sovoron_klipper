@@ -568,3 +568,20 @@ class AFC_moonraker:
         if remaining_weight is not None: data["remaining_weight"] = remaining_weight
         if spool_weight is not None: data["spool_weight"] = spool_weight
         return self._spoolman_proxy("POST", "/v1/spool", body=json.dumps(data))
+
+    def update_spool_extra(self, spool_id: int, extra: dict):
+        """PATCH a spool's extra field (dict merged with existing extra data)."""
+        existing = self.get_spool(spool_id)
+        if existing is None:
+            return None
+        current_extra = existing.get("extra", {}) or {}
+        current_extra.update(extra)
+        body = json.dumps({"extra": current_extra})
+        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)
+
+    def get_spool_extra(self, spool_id: int) -> dict:
+        """Get a spool's extra field as a dict."""
+        result = self.get_spool(spool_id)
+        if result is None:
+            return {}
+        return result.get("extra", {}) or {}

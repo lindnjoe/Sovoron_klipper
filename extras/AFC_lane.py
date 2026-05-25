@@ -153,6 +153,7 @@ class AFCLane:
 
         self.extruder_name      = config.get('extruder', None)                          # Extruder name(AFC_extruder) that belongs to this stepper, overrides extruder that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
         self.remember_spool :bool = config.getboolean('remember_spool', None)             # remember_spool that is set in AFC_Stepper section, overrides remember_spool that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
+        self.spoolman_flow_sync  = config.getboolean('spoolman_flow_sync', None)
         self.map                = config.get('cmd', None)                               # Keeping this in so it does not break others config that may have used this, use map instead
         # Saving to self._map so that if a user has it defined it will be reset back to this when
         # the calling RESET_AFC_MAPPING macro.
@@ -534,6 +535,8 @@ class AFCLane:
         # Inherit remember_spool from unit unless explicitly set in lane config
         if self.remember_spool is None:
             self.remember_spool = bool(self.unit_obj.remember_spool)
+        if self.spoolman_flow_sync is None:
+            self.spoolman_flow_sync = bool(getattr(self.unit_obj, 'spoolman_flow_sync', False))
 
         # Register all lanes if their type is not HTLF or only register lanes that are HTLF and have AFC_lane
         # in the name so that HTLF stepper names do not get added since they are not a lane for this unit type

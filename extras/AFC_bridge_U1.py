@@ -651,6 +651,8 @@ class AFCU1Bridge:
             self.logger.info(
                 "Flow cal complete: K=%.6f for %s on %s",
                 k_after, lane_name, ext_name)
+            if self._spoolman_flow_sync_enabled(lane):
+                self._write_flow_k_to_spoolman(lane, k_after)
         else:
             gcmd.respond_info(
                 "AFC_CALIBRATE_LANE_FLOW_K_U1: flow calibration did not "
@@ -791,6 +793,8 @@ class AFCU1Bridge:
                         k_after, lane.name,
                         logical_idx if logical_idx is not None
                         else "?", name)
+                    if self._spoolman_flow_sync_enabled(lane):
+                        self._write_flow_k_to_spoolman(lane, k_after)
                 else:
                     self.logger.info(
                         "Flow calibration did not produce a new K for "
@@ -830,6 +834,58 @@ class AFCU1Bridge:
             return msg
         return None
 
+    # ── Spoolman flow K sync ───────────────────────────────────────
+
+    SPOOLMAN_FLOW_K_KEY = "afc_flow_k"
+
+    def _spoolman_flow_sync_enabled(self, lane) -> bool:
+        """Check if spoolman_flow_sync is enabled for this lane."""
+        val = getattr(lane, 'spoolman_flow_sync', None)
+        if val is not None:
+            return bool(val)
+        unit = getattr(lane, 'unit_obj', None)
+        if unit is not None:
+            return bool(getattr(unit, 'spoolman_flow_sync', False))
+        return False
+
+    def _read_flow_k_from_spoolman(self, lane) -> "Optional[float]":
+        """Read flow K from the spool's extra field in Spoolman."""
+        spool_id = getattr(lane, 'spool_id', None)
+        if not spool_id:
+            return None
+        try:
+            extra = self.afc.moonraker.get_spool_extra(int(spool_id))
+            val = extra.get(self.SPOOLMAN_FLOW_K_KEY)
+            if val is not None:
+                k = float(val)
+                self.logger.info(
+                    "Read flow K=%.6f from Spoolman spool %s for %s",
+                    k, spool_id, lane.name)
+                return k
+        except (TypeError, ValueError, Exception) as e:
+            self.logger.error(
+                "Failed to read flow K from Spoolman spool %s: %s",
+                spool_id, e)
+        return None
+
+    def _write_flow_k_to_spoolman(self, lane, k: float):
+        """Write flow K to the spool's extra field in Spoolman."""
+        spool_id = getattr(lane, 'spool_id', None)
+        if not spool_id:
+            self.logger.info(
+                "Cannot save flow K to Spoolman: no spool_id on %s", lane.name)
+            return
+        try:
+            self.afc.moonraker.update_spool_extra(
+                int(spool_id), {self.SPOOLMAN_FLOW_K_KEY: round(k, 6)})
+            self.logger.info(
+                "Saved flow K=%.6f to Spoolman spool %s for %s",
+                k, spool_id, lane.name)
+        except Exception as e:
+            self.logger.error(
+                "Failed to save flow K to Spoolman spool %s: %s",
+                spool_id, e)
+
     def _handle_tool_loaded(self, cur_lane):
         """Event handler for afc:tool_loaded — sync filament, save temps, apply flow K."""
         ptc = self.printer.lookup_object("print_task_config", None)
@@ -841,8 +897,15 @@ class AFCU1Bridge:
 
         self._save_extruder_temps()
 
-        if self._lane_flow_k:
-            self._apply_lane_flow_k(cur_lane.name)
+        # Try in-memory K first, fall back to Spoolman if enabled
+        lane_name = cur_lane.name
+        if self._lane_flow_k.get(lane_name) is not None:
+            self._apply_lane_flow_k(lane_name)
+        elif self._spoolman_flow_sync_enabled(cur_lane):
+            k = self._read_flow_k_from_spoolman(cur_lane)
+            if k is not None:
+                self._lane_flow_k[lane_name] = k
+                self._apply_lane_flow_k(lane_name)
 
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
         """Apply the calibrated flow K for the currently loading/loaded lane.
