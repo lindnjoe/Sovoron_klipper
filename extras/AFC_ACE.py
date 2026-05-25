@@ -1055,6 +1055,35 @@ class afcACE(afcUnit):
                 cur_lane, f"ACE load feed error: {e}")
             return False
 
+        # Post-feed sensor check: feed completed but filament may not have
+        # reached the toolhead sensor yet.  Pulse 50mm up to 4 times to
+        # nudge it the last bit.
+        if not self._toolhead_sensor_triggered(cur_lane):
+            reached = False
+            for pulse in range(4):
+                self.logger.info(
+                    f"Sensor not triggered after feed for {cur_lane.name}, "
+                    f"retry pulse {pulse + 1}/4 (50mm)")
+                try:
+                    self._wait_for_ace_ready()
+                    self._ace.feed_filament(slot, 50.0, self.feed_speed)
+                    self._wait_for_feed_complete(slot, 50.0, self.feed_speed, cur_lane)
+                except Exception:
+                    pass
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
+                if self._toolhead_sensor_triggered(cur_lane):
+                    self.logger.info(
+                        f"Sensor triggered on retry pulse {pulse + 1} for {cur_lane.name}")
+                    reached = True
+                    break
+            if not reached:
+                afc.error.handle_lane_failure(
+                    cur_lane,
+                    f"Filament did not reach toolhead sensor after feed + 4 retry "
+                    f"pulses for {cur_lane.name}.\nCheck filament path and bowden "
+                    f"length calibration.")
+                return False
+
         # Set loaded_to_hub AFTER successful feed
         cur_lane.loaded_to_hub = True
 
