@@ -138,33 +138,23 @@ class AFCU1Bridge:
         self.logger.info("AFC_bridge_U1 initialized")
 
     def _handle_ready(self):
-        """Defer Spoolman flow K loading until after ACE/RFID have connected."""
+        """Defer Spoolman flow K loading until after prep and RFID are done."""
         self.printer.get_reactor().register_callback(self._deferred_load_flow_k)
 
     def _deferred_load_flow_k(self, eventtime):
-        """Load Spoolman flow K for all lanes after startup is fully settled.
+        """Load Spoolman flow K for all lanes after startup settles.
 
-        Waits for AFC prep to complete and for RFID/ACE to assign spool_ids,
-        then loads K values from Spoolman into memory.
+        Two passes: first picks up lanes whose spool_id was restored from
+        saved lane_data, second picks up RFID-detected lanes after they
+        have time to scan.
         """
         reactor = self.printer.get_reactor()
         for _ in range(60):
             if self.afc.prep_done:
                 break
             reactor.pause(reactor.monotonic() + 1.0)
-        has_sync_lanes = any(
-            self._spoolman_flow_sync_enabled(lane)
-            for lane in self.afc.lanes.values()
-        )
-        if not has_sync_lanes:
-            return
-        for _ in range(30):
-            if any(getattr(lane, 'spool_id', None)
-                   for lane in self.afc.lanes.values()
-                   if self._spoolman_flow_sync_enabled(lane)):
-                break
-            reactor.pause(reactor.monotonic() + 1.0)
-        reactor.pause(reactor.monotonic() + 2.0)
+        self._apply_spoolman_flow_k()
+        reactor.pause(reactor.monotonic() + 10.0)
         self._apply_spoolman_flow_k()
 
     @property
