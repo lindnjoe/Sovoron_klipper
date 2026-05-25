@@ -1440,6 +1440,8 @@ class afc:
                         message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
                     self.error.handle_lane_failure(cur_lane, message, pause=self.function.in_print())
                     return False
+        else:
+            self.printer.send_event("afc:tool_loaded", cur_lane)
         return True
 
     def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
