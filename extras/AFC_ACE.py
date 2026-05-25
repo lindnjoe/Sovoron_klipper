@@ -1056,18 +1056,19 @@ class afcACE(afcUnit):
             return False
 
         # Post-feed sensor check: feed completed but filament may not have
-        # reached the toolhead sensor yet.  Pulse 50mm up to 4 times to
-        # nudge it the last bit.
+        # reached the toolhead sensor yet.  Pulse 100mm up to 4 times to
+        # nudge it the last bit — ACE internal buffer handles back-pressure
+        # at the extruder gears so larger pulses are safe.
         if not self._toolhead_sensor_triggered(cur_lane):
             reached = False
             for pulse in range(4):
                 self.logger.info(
                     f"Sensor not triggered after feed for {cur_lane.name}, "
-                    f"retry pulse {pulse + 1}/4 (50mm)")
+                    f"retry pulse {pulse + 1}/4 (100mm)")
                 try:
                     self._wait_for_ace_ready()
-                    self._ace.feed_filament(slot, 50.0, self.feed_speed)
-                    self._wait_for_feed_complete(slot, 50.0, self.feed_speed, cur_lane)
+                    self._ace.feed_filament(slot, 100.0, self.feed_speed)
+                    self._wait_for_feed_complete(slot, 100.0, self.feed_speed, cur_lane)
                 except Exception:
                     pass
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
