@@ -581,12 +581,30 @@ class AFC_moonraker:
         payload = json.dumps({
             "request_method": "PATCH",
             "path": f"/v1/spool/{spool_id}",
-            "body": json.dumps({"extra": current_extra}),
+            "body": {"extra": current_extra},
         })
         url = urljoin(self.host, 'server/spoolman/proxy')
         req = Request(url, payload.encode(),
                       headers={"Content-Type": "application/json"})
-        return self._get_results(req)
+        try:
+            resp = urlopen(req)
+            if 200 <= resp.status <= 300:
+                return json.load(resp).get("result")
+            return None
+        except HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode()
+            except Exception:
+                pass
+            self.logger.error(
+                "update_spool_extra HTTP %s for spool %s: %s | payload: %s",
+                e.code, spool_id, body, payload)
+            return None
+        except Exception as e:
+            self.logger.error(
+                "update_spool_extra failed for spool %s: %s", spool_id, e)
+            return None
 
     def get_spool_extra(self, spool_id: int) -> dict:
         """Get a spool's extra field as a dict."""
