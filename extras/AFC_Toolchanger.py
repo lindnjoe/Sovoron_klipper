@@ -37,6 +37,7 @@ except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_ex
 try: from extras.AFC_lane import AFCLaneState
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
+
 # Toolchanger status constants
 STATUS_UNINITIALIZED = 'uninitialized'
 STATUS_INITIALIZING = 'initializing'
