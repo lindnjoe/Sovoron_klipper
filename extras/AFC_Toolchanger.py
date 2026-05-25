@@ -64,7 +64,7 @@ class AfcToolchanger(afcUnit):
         cur_lane.send_lane_data()
         msg = ""
         if cur_lane.prep_state and cur_lane.load_state:
-            msg = "<span class=success--text>LOADED</span> <span class=primary--text>in ToolHead</span>"
+            msg = "<span class=success--text>LOCKED AND LOADED</span> <span class=primary--text>in ToolHead</span>"
         self.logger.raw('{lane_name} tool cmd: {tcmd:3} {msg}'.format(
             lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
