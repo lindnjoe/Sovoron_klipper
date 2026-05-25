@@ -79,6 +79,7 @@ class AFCU1Bridge:
         self._afc_managed_extruders = set()
         self.physical_extruder_num = PHYSICAL_EXTRUDER_NUM
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
+        self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler("afc:tool_loaded", self._handle_tool_loaded)
 
     def _handle_connect(self):
@@ -135,6 +136,10 @@ class AFCU1Bridge:
 
         self._patch_filament_exist_update()
         self.logger.info("AFC_bridge_U1 initialized")
+
+    def _handle_ready(self):
+        """Load Spoolman flow K for all lanes at startup."""
+        self._apply_spoolman_flow_k()
 
     @property
     def afc(self):
