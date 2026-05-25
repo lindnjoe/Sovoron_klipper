@@ -573,15 +573,30 @@ class AFCU1Bridge:
 
         ext_name = lane.extruder_obj.name
 
-        # Select the tool for this lane
-        tool_cmd = lane.map
-        if tool_cmd:
-            self.logger.info(
-                "Flow cal: loading %s via %s", lane_name, tool_cmd)
-            self.gcode.run_script_from_command(tool_cmd)
-        else:
+        # Load the lane's filament into the extruder.
+        # For standalone toolheads (1 lane = 1 extruder), just select the tool.
+        # For shared extruders (multiple lanes), use the T-command to trigger
+        # a full filament swap — unless this lane is already loaded.
+        if lane.extruder_obj.is_standalone():
             self.gcode.run_script_from_command(
                 "AFC_SELECT_TOOL TOOL={}".format(ext_name))
+        elif lane.extruder_obj.lane_loaded == lane_name:
+            self.logger.info(
+                "Flow cal: %s already loaded on %s, selecting tool",
+                lane_name, ext_name)
+            self.gcode.run_script_from_command(
+                "AFC_SELECT_TOOL TOOL={}".format(ext_name))
+        else:
+            tool_cmd = lane.map
+            if tool_cmd:
+                self.logger.info(
+                    "Flow cal: loading %s via %s on %s",
+                    lane_name, tool_cmd, ext_name)
+                self.gcode.run_script_from_command(tool_cmd)
+            else:
+                raise gcmd.error(
+                    f"AFC_CALIBRATE_LANE_FLOW_K_U1: lane '{lane_name}' has no "
+                    f"tool mapping — cannot load for calibration")
 
         self._exit_discard_bin()
 
