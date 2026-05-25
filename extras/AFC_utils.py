@@ -569,49 +569,20 @@ class AFC_moonraker:
         if spool_weight is not None: data["spool_weight"] = spool_weight
         return self._spoolman_proxy("POST", "/v1/spool", body=json.dumps(data))
 
-    def update_spool_extra(self, spool_id: int, extra: dict):
-        """PATCH a spool's extra field (dict merged with existing extra data)."""
+    def update_spool_comment_tag(self, spool_id: int, tag: str, value: str):
+        """Update or insert a tag=value pair in a spool's comment field via PATCH."""
+        import re
         existing = self.get_spool(spool_id)
         if existing is None:
             return None
-        current_extra = existing.get("extra") or {}
-        if not isinstance(current_extra, dict):
-            current_extra = {}
-        current_extra.update({k: str(v) for k, v in extra.items()})
-        payload = json.dumps({
-            "request_method": "PATCH",
-            "path": f"/v1/spool/{spool_id}",
-            "body": {"extra": current_extra},
-        })
-        url = urljoin(self.host, 'server/spoolman/proxy')
-        req = Request(url, payload.encode(),
-                      headers={"Content-Type": "application/json"})
-        try:
-            resp = urlopen(req)
-            if 200 <= resp.status <= 300:
-                return json.load(resp).get("result")
-            return None
-        except HTTPError as e:
-            body = ""
-            try:
-                body = e.read().decode()
-            except Exception:
-                pass
-            self.logger.error(
-                "update_spool_extra HTTP %s for spool %s: %s | payload: %s",
-                e.code, spool_id, body, payload)
-            return None
-        except Exception as e:
-            self.logger.error(
-                "update_spool_extra failed for spool %s: %s", spool_id, e)
-            return None
-
-    def get_spool_extra(self, spool_id: int) -> dict:
-        """Get a spool's extra field as a dict."""
-        result = self.get_spool(spool_id)
-        if result is None:
-            return {}
-        extra = result.get("extra")
-        if isinstance(extra, dict):
-            return extra
-        return {}
+        comment = existing.get("comment") or ""
+        pattern = r'\b' + re.escape(tag) + r'=\S*'
+        new_tag = f"{tag}={value}"
+        if re.search(pattern, comment):
+            comment = re.sub(pattern, new_tag, comment)
+        elif comment:
+            comment = comment.rstrip() + " " + new_tag
+        else:
+            comment = new_tag
+        body = json.dumps({"comment": comment})
+        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)

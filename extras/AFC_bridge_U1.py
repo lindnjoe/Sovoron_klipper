@@ -869,7 +869,7 @@ class AFCU1Bridge:
 
     # ── Spoolman flow K sync ───────────────────────────────────────
 
-    SPOOLMAN_FLOW_K_KEY = "afc_flow_k"
+    SPOOLMAN_FLOW_K_TAG = "afc_flow_k"
 
     def _spoolman_flow_sync_enabled(self, lane) -> bool:
         """Check if spoolman_flow_sync is enabled for this lane."""
@@ -882,35 +882,37 @@ class AFCU1Bridge:
         return False
 
     def _read_flow_k_from_spoolman(self, lane) -> "Optional[float]":
-        """Read flow K from the spool's extra field in Spoolman."""
+        """Read flow K from the spool's comment in Spoolman."""
         spool_id = getattr(lane, 'spool_id', None)
         if not spool_id:
             return None
         try:
-            extra = self.afc.moonraker.get_spool_extra(int(spool_id))
-            val = extra.get(self.SPOOLMAN_FLOW_K_KEY)
-            if val is not None:
-                k = float(val)
+            spool = self.afc.moonraker.get_spool(int(spool_id))
+            if spool is None:
+                return None
+            comment = spool.get("comment") or ""
+            k = self._parse_k_from_comment(comment)
+            if k is not None:
                 self.logger.info(
                     "Read flow K=%.6f from Spoolman spool %s for %s",
                     k, spool_id, lane.name)
-                return k
-        except (TypeError, ValueError, Exception) as e:
+            return k
+        except Exception as e:
             self.logger.error(
                 "Failed to read flow K from Spoolman spool %s: %s",
                 spool_id, e)
         return None
 
     def _write_flow_k_to_spoolman(self, lane, k: float):
-        """Write flow K to the spool's extra field in Spoolman."""
+        """Write flow K to the spool's comment in Spoolman."""
         spool_id = getattr(lane, 'spool_id', None)
         if not spool_id:
             self.logger.info(
                 "Cannot save flow K to Spoolman: no spool_id on %s", lane.name)
             return
         try:
-            self.afc.moonraker.update_spool_extra(
-                int(spool_id), {self.SPOOLMAN_FLOW_K_KEY: round(k, 6)})
+            self.afc.moonraker.update_spool_comment_tag(
+                int(spool_id), self.SPOOLMAN_FLOW_K_TAG, str(round(k, 6)))
             self.logger.info(
                 "Saved flow K=%.6f to Spoolman spool %s for %s",
                 k, spool_id, lane.name)
@@ -918,6 +920,14 @@ class AFCU1Bridge:
             self.logger.error(
                 "Failed to save flow K to Spoolman spool %s: %s",
                 spool_id, e)
+
+    def _parse_k_from_comment(self, comment: str) -> "Optional[float]":
+        """Parse afc_flow_k=<value> from a spool comment string."""
+        import re
+        m = re.search(r'\bafc_flow_k=([\d.]+)', comment)
+        if m:
+            return float(m.group(1))
+        return None
 
     def _auto_insert_flow_enabled(self, lane) -> bool:
         """Check if auto_insert_flow_cal is enabled for this lane."""
