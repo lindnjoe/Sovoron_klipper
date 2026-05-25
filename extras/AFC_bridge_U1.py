@@ -21,10 +21,10 @@
 #   AFC_APPLY_LANE_FLOW_K_U1 — Apply the stored per-lane flow
 #       calibration K value for the currently loaded lane.
 #
-#   AFC_CALIBRATE_LANE_FLOW_K_U1 LANE=<name> — Run U1 flow
-#       calibration on a specific lane: loads the lane, syncs filament
-#       info, runs FLOW_CALIBRATE, stores K for auto-application on
-#       future tool loads.
+#   AFC_CALIBRATE_LANE_FLOW_K_U1 [LANE=<name>] — Run U1 flow
+#       calibration on a specific lane (or the current lane if omitted):
+#       loads the lane, syncs filament info, runs FLOW_CALIBRATE,
+#       stores K for auto-application on future tool loads.
 #
 #   AFC_RESUME_RESTORE_TEMPS_U1 — Pre-resume hook (pre_resume_cmd):
 #       re-syncs filament_exist and filament_type to print_task_config
@@ -564,7 +564,7 @@ class AFCU1Bridge:
             {k: "%.1f" % v for k, v in self._saved_temps.items()})
 
     cmd_AFC_CALIBRATE_LANE_FLOW_K_U1_options = {
-        "LANE": {"type": "string", "default": "lane1"},
+        "LANE": {"type": "string", "default": ""},
     }
 
     def cmd_AFC_CALIBRATE_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
@@ -574,10 +574,19 @@ class AFCU1Bridge:
         and stores the resulting K so it gets applied on future tool loads.
 
         Usage: ``AFC_CALIBRATE_LANE_FLOW_K_U1 LANE=<lane_name>``
+        Omit LANE to calibrate the lane currently loaded on the active extruder.
         """
         lane_name = gcmd.get("LANE", "")
         if not lane_name:
-            raise gcmd.error("AFC_CALIBRATE_LANE_FLOW_K_U1: LANE parameter required")
+            toolhead = self.printer.lookup_object("toolhead")
+            ext_name = toolhead.get_extruder().get_name()
+            ext_obj = self.afc.tools.get(ext_name)
+            if ext_obj is not None:
+                lane_name = ext_obj.lane_loaded
+            if not lane_name:
+                raise gcmd.error(
+                    "AFC_CALIBRATE_LANE_FLOW_K_U1: no LANE specified and "
+                    "no lane loaded on active extruder")
 
         lane = self.afc.lanes.get(lane_name)
         if lane is None:
