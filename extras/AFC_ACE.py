@@ -1019,6 +1019,22 @@ class afcACE(afcUnit):
         if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
             buffer_obj.enable_advance_latch()
 
+        # Pre-feed check: if the toolhead sensor detects filament before
+        # we start feeding, there's stuck filament from a previous load.
+        # Don't push more filament into an occupied toolhead.
+        if self._toolhead_sensor_triggered(cur_lane):
+            message = (
+                f"Toolhead sensor detects filament before ACE feed for "
+                f"{cur_lane.name}.\nFilament may be stuck from a previous "
+                f"load — clear the toolhead before loading.\n"
+                f"To resolve, manually retract filament from the toolhead "
+                f"or run AFC_RESET for {cur_lane.name}."
+            )
+            if afc.function.in_print():
+                message += "\nOnce cleared, click resume to continue printing"
+            afc.error.handle_lane_failure(cur_lane, message)
+            return False
+
         # ACE serial feed to toolhead area
         try:
             self._wait_for_ace_ready()
@@ -1026,7 +1042,7 @@ class afcACE(afcUnit):
             success = self._wait_for_feed_complete(slot, feed_dist, self.feed_speed, cur_lane)
 
             if not success:
-                if cur_lane.get_toolhead_pre_sensor_state():
+                if self._toolhead_sensor_triggered(cur_lane):
                     self.logger.info("Feed error but sensor triggered — continuing")
                 else:
                     success = self._smart_load_retry(cur_lane, slot)
@@ -1269,7 +1285,7 @@ class afcACE(afcUnit):
             self.afc.reactor.pause(
                 self.afc.reactor.monotonic() + poll_interval)
 
-            if lane is not None and lane.get_toolhead_pre_sensor_state():
+            if lane is not None and self._toolhead_sensor_triggered(lane):
                 self.logger.debug(
                     f"ACE wait: toolhead sensor triggered for slot {slot_index}")
                 try:
@@ -1304,7 +1320,7 @@ class afcACE(afcUnit):
                 self._wait_for_ace_ready()
                 self._ace.feed_filament(slot, self.sensor_step, self.feed_speed)
                 self._wait_for_feed_complete(slot, self.sensor_step, self.feed_speed)
-                if cur_lane.get_toolhead_pre_sensor_state():
+                if self._toolhead_sensor_triggered(cur_lane):
                     return True
             except Exception:
                 pass

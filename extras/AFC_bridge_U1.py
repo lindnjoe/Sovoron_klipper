@@ -49,6 +49,8 @@ class AFCU1Bridge:
         self.logger = logging.getLogger("AFC_bridge_U1")
         self._afc = None
         self._lane_flow_k = {}
+        self._saved_temps = {}
+        self._afc_managed_extruders = set()
         self.physical_extruder_num = PHYSICAL_EXTRUDER_NUM
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("afc:tool_loaded", self._handle_tool_loaded)
@@ -77,6 +79,26 @@ class AFCU1Bridge:
             self.cmd_AFC_APPLY_LANE_FLOW_K_U1,
             "Apply per-lane flow calibration K for the current lane",
         )
+        self.functions.register_commands(
+            afc.show_macros,
+            "AFC_RESUME_RESTORE_TEMPS_U1",
+            self.cmd_AFC_RESUME_RESTORE_TEMPS_U1,
+            "Pre-resume: sync AFC filament to U1 and restore extruder temps",
+        )
+        self.functions.register_commands(
+            afc.show_macros,
+            "AFC_RESTORE_TEMPS_U1",
+            self.cmd_AFC_RESTORE_TEMPS_U1,
+            "Restore extruder temps from last saved state",
+        )
+
+        msm = self.printer.lookup_object("machine_state_manager", None)
+        if msm is not None and afc.pre_resume_cmd is None:
+            afc.pre_resume_cmd = "AFC_RESUME_RESTORE_TEMPS_U1"
+            self.logger.info(
+                "Auto-configured pre_resume_cmd = AFC_RESUME_RESTORE_TEMPS_U1")
+
+        self._patch_filament_exist_update()
         self.logger.info("AFC_bridge_U1 initialized")
 
     @property
@@ -253,6 +275,57 @@ class AFCU1Bridge:
             self.printer.update_snapmaker_config_file(
                 ptc.config_path, cfg, None)
 
+    def _save_extruder_temps(self):
+        """Snapshot current target temps for all physical extruders."""
+        for i in range(self.physical_extruder_num):
+            name = "extruder" if i == 0 else "extruder{}".format(i)
+            ext = self.printer.lookup_object(name, None)
+            if ext is None:
+                continue
+            heater = ext.get_heater()
+            if heater is not None:
+                self._saved_temps[name] = heater.target_temp
+
+    def _restore_extruder_temps(self):
+        """Restore saved extruder temps via SET_HEATER_TEMPERATURE."""
+        if not self._saved_temps:
+            self.logger.info("No saved temps to restore")
+            return
+        for name, temp in self._saved_temps.items():
+            if temp > 0:
+                self.gcode.run_script_from_command(
+                    "SET_HEATER_TEMPERATURE HEATER={name} TARGET={temp}".format(
+                        name=name, temp=temp))
+                self.logger.info("Restored %s to %.1f°C", name, temp)
+
+    def _patch_filament_exist_update(self):
+        """Wrap print_task_config.update_filament_exist_flag to force
+        filament_exist=True for AFC-managed extruders.
+
+        The U1 polls hardware sensors on every get_status() and resets
+        filament_exist to False when AFC filament doesn't trigger the
+        native feed-port sensors.  This patch re-asserts True for any
+        extruder that AFC has loaded filament into.
+        """
+        ptc = self.printer.lookup_object("print_task_config", None)
+        if ptc is None or not hasattr(ptc, 'update_filament_exist_flag'):
+            return
+        original_fn = ptc.update_filament_exist_flag
+        bridge = self
+
+        def patched_update():
+            original_fn()
+            cfg = ptc.print_task_config
+            filament_exist = cfg.get("filament_exist")
+            if filament_exist is None:
+                return
+            for phys in bridge._afc_managed_extruders:
+                if phys < len(filament_exist):
+                    filament_exist[phys] = True
+
+        ptc.update_filament_exist_flag = patched_update
+        self.logger.info("Patched update_filament_exist_flag for AFC extruders")
+
     def _apply_print_config(self, ptc, map_entries, used_physical,
                             flow_calibrate, bed_mesh, shaper_calibrate,
                             flow_calib_phys=None):
@@ -343,6 +416,9 @@ class AFCU1Bridge:
             map_entries, used_physical
         )
 
+        # Track which physical extruders AFC manages
+        self._afc_managed_extruders = set(used_physical)
+
         # ── 1b. Build per-extruder lane usage for flow cal ──────
         lanes_per_ext = self._build_lanes_per_extruder(used_tools)
         flow_calib_phys = set(used_physical) if flow_calibrate else set()
@@ -413,6 +489,7 @@ class AFCU1Bridge:
                     "SM_PRINT_PREEXTRUDE_FILAMENT INDEX={idx}".format(idx=logical)
                 )
 
+        self._save_extruder_temps()
         self.logger.info("AFC_PRINT_SETUP_U1: complete")
 
     def cmd_AFC_SYNC_FILAMENT_U1(self, gcmd: "GCodeCommand"):
@@ -423,6 +500,36 @@ class AFCU1Bridge:
         _, _, phys_to_lane, _ = self._build_extruder_map()
         if phys_to_lane:
             self._sync_filament_to_ptc(ptc, phys_to_lane)
+
+    def cmd_AFC_RESUME_RESTORE_TEMPS_U1(self, gcmd: "GCodeCommand"):
+        """Pre-resume command: sync filament data and restore extruder temps.
+
+        Runs before _AFC_RENAMED_RESUME_ (U1's INNER_RESUME) to ensure
+        filament_exist and filament_type are correct (prevents error 523)
+        and extruder temps are restored to pre-pause values.
+
+        Usage: set ``pre_resume_cmd: AFC_RESUME_RESTORE_TEMPS_U1`` in AFC config.
+        """
+        ptc = self.printer.lookup_object("print_task_config", None)
+        if ptc is not None:
+            _, _, phys_to_lane, _ = self._build_extruder_map()
+            if phys_to_lane:
+                self._sync_filament_to_ptc(ptc, phys_to_lane)
+                self.logger.info(
+                    "Pre-resume: synced filament for extruders %s",
+                    sorted(phys_to_lane.keys()))
+
+        self._restore_extruder_temps()
+
+    def cmd_AFC_RESTORE_TEMPS_U1(self, gcmd: "GCodeCommand"):
+        """Manual recovery: restore extruder temps from last saved snapshot."""
+        if not self._saved_temps:
+            gcmd.respond_info("AFC_RESTORE_TEMPS_U1: no saved temps available")
+            return
+        self._restore_extruder_temps()
+        gcmd.respond_info(
+            "AFC_RESTORE_TEMPS_U1: restored %s" %
+            {k: "%.1f" % v for k, v in self._saved_temps.items()})
 
     # ── calibration helpers ──────────────────────────────────────
 
@@ -574,10 +681,18 @@ class AFCU1Bridge:
         return None
 
     def _handle_tool_loaded(self, cur_lane):
-        """Event handler for afc:tool_loaded — apply per-lane flow K."""
-        if not self._lane_flow_k:
-            return
-        self._apply_lane_flow_k(cur_lane.name)
+        """Event handler for afc:tool_loaded — sync filament, save temps, apply flow K."""
+        ptc = self.printer.lookup_object("print_task_config", None)
+        if ptc is not None:
+            phys = self._get_physical_index(cur_lane.extruder_obj.name)
+            if phys is not None:
+                self._afc_managed_extruders.add(phys)
+                self._sync_filament_to_ptc(ptc, {phys: cur_lane})
+
+        self._save_extruder_temps()
+
+        if self._lane_flow_k:
+            self._apply_lane_flow_k(cur_lane.name)
 
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
         """Apply the calibrated flow K for the currently loading/loaded lane.
