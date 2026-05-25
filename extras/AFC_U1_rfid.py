@@ -22,6 +22,10 @@ from extras.AFC_RFID import (
 )
 
 POLL_INTERVAL = 2.0
+_MAX_CONSECUTIVE_FAILURES = 5
+_BACKOFF_INTERVAL = 10.0
+_FORCE_READ_TIMEOUT = 1.0
+_FORCE_READ_POLL_STEP = 0.05
 
 
 class AFC_U1_RFID:
@@ -40,6 +44,8 @@ class AFC_U1_RFID:
         self._poll_timer = None
         self._scanner_channels: set = set()
         self._channel_to_lane: Dict[int, str] = {}
+        self._consecutive_failures: Dict[int, int] = {}
+        self._backed_off: bool = False
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel."""
@@ -47,6 +53,7 @@ class AFC_U1_RFID:
         self._lane_objects[lane.name] = lane
         self._last_uid[channel] = None
         self._channel_to_lane[channel] = lane.name
+        self._consecutive_failures[channel] = 0
 
     def start(self):
         """Start polling filament_detect for RFID data."""
@@ -71,8 +78,8 @@ class AFC_U1_RFID:
             try:
                 self._filament_detect.register_cb_2_update_filament_info(
                     self._on_filament_info_update)
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.warning(f"U1 RFID: failed to register info callback: {e}")
         self._poll_timer = self.reactor.register_timer(
             self._poll_cb, self.reactor.monotonic() + POLL_INTERVAL)
 
@@ -85,35 +92,77 @@ class AFC_U1_RFID:
             if lane_name is not None:
                 try:
                     self._check_channel(lane_name, channel, info=info)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.warning(
+                        f"U1 RFID: _on_filament_info_update error ch{channel}: {e}")
             return
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.warning(
+                    f"U1 RFID: _on_filament_info_update error {lane_name}: {e}")
 
     def stop(self):
         """Stop polling."""
         if self._poll_timer is not None:
             self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
 
+    def _trigger_channel_update(self, channel: int) -> bool:
+        """Trigger a fresh read from hardware for a scanner channel.
+        Returns True on success, False on failure."""
+        fd = self._filament_detect
+        if hasattr(fd, 'update_filament_info'):
+            try:
+                fd.update_filament_info(channel)
+                return True
+            except Exception:
+                pass
+        if hasattr(fd, 'request_update'):
+            try:
+                fd.request_update(channel)
+                return True
+            except Exception:
+                pass
+        try:
+            self._gcode.run_script_from_command(
+                f"FILAMENT_DT_UPDATE CHANNEL={channel}")
+            return True
+        except Exception as e:
+            self.logger.warning(
+                f"U1 RFID: FILAMENT_DT_UPDATE failed ch{channel}: {e}")
+            return False
+
     def _poll_cb(self, eventtime):
         """Periodic check for new RFID data on registered channels."""
         for ch in self._scanner_channels:
-            try:
-                self._gcode.run_script_from_command(
-                    f"FILAMENT_DT_UPDATE CHANNEL={ch}")
-            except Exception:
-                pass
+            if not self._trigger_channel_update(ch):
+                self._consecutive_failures[ch] = \
+                    self._consecutive_failures.get(ch, 0) + 1
+                if self._consecutive_failures[ch] == _MAX_CONSECUTIVE_FAILURES:
+                    self.logger.error(
+                        f"U1 RFID: ch{ch} failed {_MAX_CONSECUTIVE_FAILURES} "
+                        f"times consecutively, backing off")
+                    self._backed_off = True
+            else:
+                self._consecutive_failures[ch] = 0
+
         for lane_name, channel in self._lane_channel_map.items():
             if channel in self._scanner_channels:
                 continue
             try:
                 self._check_channel(lane_name, channel)
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.warning(
+                    f"U1 RFID: poll error on {lane_name} ch{channel}: {e}")
+
+        if self._backed_off:
+            all_recovered = all(
+                self._consecutive_failures.get(ch, 0) < _MAX_CONSECUTIVE_FAILURES
+                for ch in self._scanner_channels)
+            if all_recovered:
+                self._backed_off = False
+            return eventtime + _BACKOFF_INTERVAL
         return eventtime + POLL_INTERVAL
 
     _LOCKED_STATES = frozenset({
@@ -336,16 +385,25 @@ class AFC_U1_RFID:
             self.reactor.register_callback(
                 lambda e: self.logger.raw("// action:prompt_end"),
                 self.reactor.monotonic() + 10.0)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(f"U1 RFID: notification error: {e}")
 
     def force_read(self, lane_name: str):
-        """Force an RFID re-read for a specific lane (triggers FILAMENT_DT_UPDATE)."""
+        """Force an RFID re-read for a specific lane."""
         channel = self._lane_channel_map.get(lane_name)
         if channel is None:
             return
         self._last_uid[channel] = None
-        self.afc.gcode.run_script_from_command(
-            f"FILAMENT_DT_UPDATE CHANNEL={channel}")
-        self.reactor.pause(self.reactor.monotonic() + 0.5)
+        if not self._trigger_channel_update(channel):
+            self.logger.warning(
+                f"U1 RFID: force_read failed to trigger update for {lane_name}")
+            return
+        deadline = self.reactor.monotonic() + _FORCE_READ_TIMEOUT
+        while self.reactor.monotonic() < deadline:
+            info = self._get_channel_info(channel)
+            if info is not None and info.get("CARD_UID"):
+                self._check_channel(lane_name, channel, info=info)
+                return
+            self.reactor.pause(
+                self.reactor.monotonic() + _FORCE_READ_POLL_STEP)
         self._check_channel(lane_name, channel)
