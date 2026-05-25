@@ -615,6 +615,8 @@ class AFCU1Bridge:
                 "AFC_CALIBRATE_LANE_FLOW_K_U1: flow calibration did not "
                 "confirm for %s on %s" % (lane_name, ext_name))
 
+        self._exit_discard_bin()
+
     # ── calibration helpers ──────────────────────────────────────
 
     def _run_home_z(self, z_offset=0.0):
