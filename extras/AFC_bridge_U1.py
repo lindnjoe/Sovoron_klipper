@@ -568,6 +568,7 @@ class AFCU1Bridge:
                             "Scanner ch%d: re-synced AFC data for %s"
                             % (channel, loaded_lane_name))
                     return
+                original_cb(channel, info, is_clear)
                 return
             original_cb(channel, info, is_clear)
 
