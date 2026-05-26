@@ -411,24 +411,32 @@ class AFC_U1_RFID:
                 lambda e: self.logger.raw("// action:prompt_end"),
                 self.reactor.monotonic() + 10.0)
 
-            em = self.printer.lookup_object("exception_manager", None)
-            if em is not None:
-                parts = []
-                if brand:
-                    parts.append(brand)
-                if material:
-                    parts.append(material)
-                if cname:
-                    parts.append(cname)
-                msg = "%s: %s" % (title, " ".join(parts)) if parts else title
-                channel = self._lane_channel_map.get(lane_name, 0)
-                em.raise_exception_async(
-                    id=529,
-                    index=channel,
-                    code=99,
-                    message=msg,
-                    oneshot=1,
-                    level=1)
+            if is_scanner:
+                em = self.printer.lookup_object("exception_manager", None)
+                if em is not None:
+                    parts = []
+                    if brand:
+                        parts.append(brand)
+                    if material:
+                        parts.append(material)
+                    if cname:
+                        parts.append(cname)
+                    msg = "%s: %s" % (title, " ".join(parts)) if parts else title
+                    channel = self._lane_channel_map.get(lane_name, 0)
+                    exc_id = 529
+                    exc_code = 99
+                    em.raise_exception_async(
+                        id=exc_id,
+                        index=channel,
+                        code=exc_code,
+                        message=msg,
+                        oneshot=0,
+                        level=1)
+                    def _auto_clear(eventtime, _em=em, _id=exc_id,
+                                    _idx=channel, _code=exc_code):
+                        _em.clear_exception(_id, _idx, _code)
+                    self.reactor.register_callback(
+                        _auto_clear, self.reactor.monotonic() + 8.0)
         except Exception as e:
             self.logger.warning(f"U1 RFID: notification error: {e}")
 
