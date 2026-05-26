@@ -1331,6 +1331,8 @@ class AfcToolchanger(afcUnit):
         finally:
             self.afc.current_state = State.IDLE
 
+        self.printer.send_event("afc:tool_loaded", lane)
+
     cmd_AFC_SET_TOOLHEAD_LED_help = "Turns on leds for toolhead specified by mapping, does not affect status led if status_led_idx variable is provided"
     cmd_AFC_SET_TOOLHEAD_LED_options = {
         "MAP": {"type": "string", "default": "T0"},
