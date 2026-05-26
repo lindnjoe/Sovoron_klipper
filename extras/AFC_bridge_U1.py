@@ -84,6 +84,8 @@ class AFCU1Bridge:
         self.printer.register_event_handler("afc:lane_inserted", self._handle_lane_inserted)
         self.printer.register_event_handler("extruder:activate_extruder",
                                             self._handle_activate_extruder)
+        self.printer.register_event_handler("homing:home_rails_end",
+                                            self._handle_home_rails_end)
 
     def _handle_connect(self):
         self.functions = self.printer.lookup_object('AFC_functions')
@@ -1091,6 +1093,13 @@ class AFCU1Bridge:
 
     def _handle_activate_extruder(self):
         """Re-apply flow K when an extruder is activated (e.g. after G28)."""
+        self._reapply_current_k()
+
+    def _handle_home_rails_end(self, homing_state, rails):
+        """Re-apply flow K after homing completes."""
+        self._reapply_current_k()
+
+    def _reapply_current_k(self):
         if not self.afc.prep_done:
             return
         if self.afc.current_state != "Idle":
