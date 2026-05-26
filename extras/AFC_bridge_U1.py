@@ -85,6 +85,12 @@
 #       Re-applies the current lane's flow K after homing completes,
 #       since homing can reset extruder state and pressure advance.
 #
+#   afc:pre_resume event:
+#       Syncs filament info to print_task_config before AFC resumes.
+#       Ensures filament_exist and filament_type are correct so the
+#       U1's INNER_RESUME won't throw error 523.  Runs before
+#       pre_resume_cmd so it works regardless of that command's content.
+#
 #   pre_resume_cmd auto-configuration:
 #       On U1 printers, automatically sets pre_resume_cmd to
 #       AFC_RESUME_RESTORE_TEMPS_U1 if not already configured.
@@ -153,6 +159,8 @@ class AFCU1Bridge:
                                             self._handle_activate_extruder)
         self.printer.register_event_handler("homing:home_rails_end",
                                             self._handle_home_rails_end)
+        self.printer.register_event_handler("afc:pre_resume",
+                                            self._handle_pre_resume)
 
     def _handle_connect(self):
         self.functions = self.printer.lookup_object('AFC_functions')
@@ -1406,6 +1414,23 @@ class AFCU1Bridge:
         :param rails: List of rails that were homed
         """
         self._reapply_current_k()
+
+    def _handle_pre_resume(self):
+        """
+        Event handler for ``afc:pre_resume``.
+        Syncs filament info to print_task_config before AFC resumes the print.
+        Ensures filament_exist and filament_type are correct so INNER_RESUME
+        won't throw error 523.  Runs before ``pre_resume_cmd`` so it works
+        regardless of whether that command also syncs filament.
+        """
+        ptc = self.printer.lookup_object("print_task_config", None)
+        if ptc is not None:
+            _, _, phys_to_lane, _ = self._build_extruder_map()
+            if phys_to_lane:
+                self._sync_filament_to_ptc(ptc, phys_to_lane)
+                self.logger.info(
+                    "Pre-resume: synced filament for extruders %s"
+                    % sorted(phys_to_lane.keys()))
 
     def _reapply_current_k(self):
         """
