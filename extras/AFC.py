@@ -2170,6 +2170,18 @@ class afc:
         CHANGE_TOOL LANE=lane1 PURGE_LENGTH=100 NEW_EXTRUDER_TEMP=220
         ```
         """
+        # U1 power resume and temperature commands pass A=0 to activate the
+        # extruder without a full tool change.  Pass through to the original
+        # handler so homing/unload/load are skipped.
+        a_param = gcmd.get('A', None)
+        if a_param is not None:
+            cmd = gcmd.get_commandline().split()[0].upper()
+            renamed = "_%s" % cmd
+            orig = self.gcode.ready_gcode_handlers.get(renamed)
+            if orig is not None:
+                orig(gcmd)
+                return
+
         # Check if the bypass filament sensor detects filament; if so, abort the tool change.
         if self._check_bypass(unload=False): return
 
