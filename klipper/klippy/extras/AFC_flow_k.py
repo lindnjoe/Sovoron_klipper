@@ -47,6 +47,8 @@ class AFCFlowK:
         self.printer.register_event_handler("afc:tool_loaded", self._handle_tool_loaded)
         self.printer.register_event_handler("extruder:activate_extruder",
                                             self._handle_activate_extruder)
+        self.printer.register_event_handler("homing:home_rails_end",
+                                            self._handle_home_rails_end)
 
     def _handle_connect(self):
         self.afc = self.printer.lookup_object("AFC")
@@ -103,7 +105,17 @@ class AFCFlowK:
                     % (cur_lane.name, getattr(cur_lane, 'spool_id', None)))
 
     def _handle_activate_extruder(self):
-        """Re-apply K when extruder is activated (e.g. after G28)."""
+        """Re-apply K when extruder is activated."""
+        self._reapply_current_k()
+
+    def _handle_home_rails_end(self, homing_state, rails):
+        """Re-apply K after homing completes (G28)."""
+        self._reapply_current_k()
+
+    def _reapply_current_k(self):
+        """Re-apply stored K for the current lane if available."""
+        if self.afc is None:
+            return
         if not self.afc.prep_done:
             return
         if self.afc.current_state != State.IDLE:
