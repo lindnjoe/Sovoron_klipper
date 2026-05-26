@@ -7,41 +7,103 @@
 # AFC U1 Bridge — integrates AFC with the Snapmaker U1 state machine.
 # Loaded automatically by AFC_Toolchanger; no-ops on non-U1 printers.
 #
-# Provides:
-#   AFC_PRINT_SETUP_U1 — Full pre-print orchestration:
-#       builds extruder_map_table, syncs filament info, configures
-#       calibrations, runs bed defect detection, preheats, homes Z,
-#       cleans nozzles, runs bed mesh/shaper, enters PRINTING state,
-#       verifies dock/undock switching, runs per-lane flow calibration,
-#       and pre-extrudes filament for used tools.
+# ── GCode Commands ──────────────────────────────────────────────────
 #
-#   AFC_SYNC_FILAMENT_U1 — Push AFC lane filament data (type, color,
-#       vendor) to print_task_config without running calibrations.
+#   AFC_PRINT_SETUP_U1 [BED_MESH=0|1] [FLOW_CALIBRATE=0|1]
+#                       [SHAPER_CALIBRATE=0|1] [Z_OFFSET=<mm>]
+#       Full pre-print orchestration:
+#       1. Parses gcode file metadata to determine which tools are used
+#       2. Builds extruder_map_table (logical T-index → physical extruder)
+#       3. Syncs AFC filament info (type, color, vendor) to print_task_config
+#       4. Configures calibration flags (flow, bed mesh, shaper)
+#       5. Runs bed foreign-object detection (DEFECT_DETECTION_DETECT_BED)
+#       6. Preheats all used extruders to 150°C
+#       7. Homes Z (with optional Z_OFFSET) and cleans nozzles
+#       8. Optionally runs bed mesh and/or input shaper calibration
+#       9. Enters PRINTING state
+#      10. Verifies dock/undock switching for all used extruders
+#      11. Runs per-lane flow calibration (skips lanes with existing K)
+#      12. Loads Spoolman flow K for any remaining uncalibrated lanes
+#      13. Pre-extrudes filament for single-lane extruders
+#      14. Saves extruder target temperatures for later restoration
 #
-#   AFC_APPLY_LANE_FLOW_K_U1 — Apply the stored per-lane flow
-#       calibration K value for the currently loaded lane.
+#   AFC_SYNC_FILAMENT_U1
+#       Push AFC lane filament data (type, color, vendor, soft flag) to
+#       print_task_config without running calibrations. Useful as a
+#       standalone resync after RFID clear events or manual changes.
 #
-#   AFC_CALIBRATE_LANE_FLOW_K_U1 [LANE=<name>] — Run U1 flow
-#       calibration on a specific lane (or the current lane if omitted):
-#       loads the lane, syncs filament info, runs FLOW_CALIBRATE,
-#       stores K for auto-application on future tool loads.
+#   AFC_APPLY_LANE_FLOW_K_U1
+#       Apply the stored per-lane flow calibration K value for the
+#       currently loading or loaded lane. Checks current_loading first
+#       (set before poop_cmd runs) then falls back to lane_loaded.
+#       Intended for use in poop/purge macros.
 #
-#   AFC_RESUME_RESTORE_TEMPS_U1 — Pre-resume hook (pre_resume_cmd):
-#       re-syncs filament_exist and filament_type to print_task_config
-#       so INNER_RESUME won't error (523), and restores extruder temps
-#       from the last saved snapshot.
+#   AFC_CALIBRATE_LANE_FLOW_K_U1 [LANE=<name>]
+#       Run U1 flow calibration on a specific lane (or the current
+#       lane if omitted). Loads the lane if needed (via T-command for
+#       shared extruders, AFC_SELECT_TOOL for standalone), syncs
+#       filament info, starts feed assist for ACE lanes, runs
+#       FLOW_CALIBRATE, and stores K for auto-application on future
+#       tool loads. Writes K to Spoolman if spoolman_flow_sync is on.
 #
-#   AFC_RESTORE_TEMPS_U1 — Manual recovery: restore extruder temps
-#       from the last saved snapshot.
+#   AFC_RESUME_RESTORE_TEMPS_U1
+#       Pre-resume hook (pre_resume_cmd): re-syncs filament_exist and
+#       filament_type to print_task_config so INNER_RESUME won't throw
+#       error 523, then restores extruder target temps from the last
+#       saved snapshot.
 #
-# Automatic behaviors:
-#   - Patches update_filament_exist_flag so the U1's periodic hardware
-#     sensor polling cannot reset filament_exist to False for AFC-managed
-#     extruders (AFC filament doesn't trigger native feed-port sensors).
-#   - On every tool load (afc:tool_loaded): re-syncs filament info to
-#     print_task_config (counteracts RFID clear events), saves extruder
-#     temps, and applies per-lane flow K if calibrated.
-#   - Auto-configures pre_resume_cmd on U1 printers if not already set.
+#   AFC_RESTORE_TEMPS_U1
+#       Manual recovery: restore extruder temps from the last saved
+#       snapshot. Reports the restored values.
+#
+# ── Automatic Behaviors ─────────────────────────────────────────────
+#
+#   filament_exist patch:
+#       Wraps print_task_config.update_filament_exist_flag so the U1's
+#       periodic hardware sensor polling cannot reset filament_exist to
+#       False for AFC-managed extruders (AFC filament bypasses the
+#       native feed-port sensors).
+#
+#   afc:tool_loaded event:
+#       On every tool load: re-syncs filament info to print_task_config
+#       (counteracts asynchronous RFID clear events from dock/undock),
+#       saves extruder target temps, and applies per-lane flow K.
+#       Loads K from Spoolman on-demand if not already in memory.
+#
+#   afc:lane_inserted event:
+#       When filament is inserted into a lane with auto_insert_flow_cal
+#       enabled: checks for existing K (memory or Spoolman), homes the
+#       printer if needed, loads filament to toolhead via TOOL_LOAD,
+#       runs flow calibration, and stores K (to Spoolman if enabled).
+#       Skipped during printing or before prep completes.
+#
+#   extruder:activate_extruder event:
+#       Re-applies the current lane's flow K after any extruder
+#       activation (e.g. after G28 resets pressure advance).
+#
+#   homing:home_rails_end event:
+#       Re-applies the current lane's flow K after homing completes,
+#       since homing can reset extruder state and pressure advance.
+#
+#   pre_resume_cmd auto-configuration:
+#       On U1 printers, automatically sets pre_resume_cmd to
+#       AFC_RESUME_RESTORE_TEMPS_U1 if not already configured.
+#
+#   Deferred Spoolman flow K loading:
+#       On klippy:ready, waits for AFC prep to complete, then loads
+#       flow K from Spoolman for all lanes in two passes: immediately
+#       after prep (for lanes with saved spool_id from lane_data),
+#       and again after 10s (for RFID-detected lanes).
+#
+# ── Spoolman Flow K Sync ────────────────────────────────────────────
+#
+#   When spoolman_flow_sync is enabled (per-lane or per-unit config):
+#   - Flow K is stored in the spool's Spoolman comment as an
+#     "afc_flow_k=<value>" tag
+#   - K is read from Spoolman on startup, tool load, and lane insert
+#   - K is written to Spoolman after calibration (with retry + verify)
+#   - K is tagged with spool_id; if the spool changes, stale K is
+#     discarded and recalibration is needed
 
 from __future__ import annotations
 import copy
@@ -66,6 +128,11 @@ class AFCU1Bridge:
     INNER_PAUSE/INNER_RESUME, filament_exist polling, and flow calibrator
     all work correctly with AFC-managed filament that bypasses the native
     feed-port sensors and RFID system.
+
+    Key state:
+        _lane_flow_k:           {lane_name: (spool_id, k)} — per-lane flow K cache
+        _saved_temps:           {extruder_name: target_temp} — snapshot for restore
+        _afc_managed_extruders: set of physical indices with AFC filament loaded
     """
 
     def __init__(self, config) -> None:
