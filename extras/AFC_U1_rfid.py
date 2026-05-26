@@ -171,7 +171,16 @@ class AFC_U1_RFID:
     })
 
     def _check_channel(self, lane_name: str, channel: int, info: dict = None):
-        """Check a single channel for new or changed RFID data."""
+        """Check a single channel for new or changed RFID data.
+
+        For spool_scanner lanes the spool is assigned directly to the lane
+        (bypassing the ``next_spool_id`` staging mechanism) so that Spoolman
+        flow K sync triggers immediately on scan.
+
+        :param lane_name: AFC lane name mapped to this RFID channel.
+        :param channel: U1 filament_detect channel index.
+        :param info: Pre-fetched RFID info dict, or *None* to read live.
+        """
         if self._filament_detect is None:
             return
 
@@ -194,7 +203,7 @@ class AFC_U1_RFID:
 
         if card_uid == self._last_uid.get(channel):
             if is_scanner:
-                if getattr(self.afc.spool, 'next_spool_id', None):
+                if getattr(lane, 'spool_id', None) not in (None, "", 0):
                     return
             else:
                 return
@@ -222,10 +231,13 @@ class AFC_U1_RFID:
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
+            apply_filament_defaults(lane, slot_info)
             allow_create = get_auto_spoolman_create(lane)
             sync_rfid_to_spoolman(
                 self.afc, lane, slot_info, self.logger, "U1 RFID",
-                allow_create=allow_create, set_next=True)
+                allow_create=allow_create)
+            lane.send_lane_data()
+            self.afc.save_vars()
             self._notify_scan(brand, material, color, slot_info)
             return
 
