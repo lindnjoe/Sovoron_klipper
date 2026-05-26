@@ -546,7 +546,11 @@ class AFCExtruderStepper(AFCLane):
             return default
 
     def _add_fps_endstop(self, buffer_name):
-        """Register FPS buffer software endstops when no hardware advance pin exists."""
+        """
+        Register FPS buffer software endstops when no hardware advance pin exists.
+
+        :param buffer_name: Name of the AFC_buffer or AFC_FPS object to look up
+        """
         try:
             buffer_obj = self.printer.lookup_object(f'AFC_buffer {buffer_name}')
         except Exception:

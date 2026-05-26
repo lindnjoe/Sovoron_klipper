@@ -722,11 +722,15 @@ class afc:
 
     @staticmethod
     def is_u1_motion_sensor(extruder_obj):
-        """Check if an extruder uses a U1 filament_motion_sensor.
+        """
+        Check if an extruder uses a U1 filament_motion_sensor.
 
         U1 motion sensors expose runout_buttun_state (raw hardware switch)
         which can diverge from filament_present during printing. Regular
         switch sensors don't have this attribute.
+
+        :param extruder_obj: AFC extruder object to inspect
+        :return bool: True if the extruder's filament sensor is a U1 motion sensor
         """
         sensor_obj = getattr(extruder_obj, 'filament_sensor_obj', None)
         return sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state')
@@ -2160,6 +2164,10 @@ class afc:
         Optionally setting NEW_EXTRUDER_TEMP to set and wait for that temperature on the new extruder before
         performing the tool change.
 
+        On U1 printers, if the ``A`` parameter is present (e.g. ``T0 A0`` from power resume or temperature
+        commands), the call is passed through to the original (renamed) T handler without performing a full
+        AFC tool change. This prevents homing and filament swap during extruder activation.
+
         Usage
         -----
         `CHANGE_TOOL LANE=<lane> PURGE_LENGTH=<purge_length>(optional) NEW_EXTRUDER_TEMP=<temp>(optional)`
@@ -2770,6 +2778,20 @@ class afc:
 
     _cmd_U1_RFID_READ_help = "Force RFID re-read for a U1 lane"
     def _cmd_U1_RFID_READ(self, gcmd):
+        """
+        Force a U1 RFID re-read for a specific lane. Triggers the U1 RFID scanner
+        to re-read the spool tag and update filament info (type, color, spool_id).
+
+        Usage
+        -----
+        `AFC_RFID_READ LANE=<lane_name>`
+
+        Example
+        ------
+        ```
+        AFC_RFID_READ LANE=lane1
+        ```
+        """
         if self.u1_rfid is None:
             gcmd.respond_info("U1 RFID not configured")
             return

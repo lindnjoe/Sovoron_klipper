@@ -503,7 +503,15 @@ class AFC_moonraker:
         return error
 
     def _spoolman_proxy(self, method, path, body=None, print_error=True):
-        """Helper for Spoolman API calls via moonraker's proxy."""
+        """
+        Helper for Spoolman API calls via moonraker's proxy endpoint.
+
+        :param method: HTTP method (GET, POST, PATCH, DELETE)
+        :param path: Spoolman API path (e.g. ``/v1/spool/123``)
+        :param body: Optional request body string (JSON-encoded)
+        :param print_error: Whether to log errors on failure
+        :return dict or list or None: Parsed JSON response, or None on error
+        """
         payload = {"request_method": method, "path": path}
         if body is not None:
             payload["body"] = body
@@ -513,6 +521,14 @@ class AFC_moonraker:
         return self._get_results(req, print_error)
 
     def search_filaments(self, article_number=None, vendor_name=None, material=None):
+        """
+        Search Spoolman filaments by article number, vendor name, and/or material.
+
+        :param article_number: Filter by article/SKU number (optional)
+        :param vendor_name: Filter by vendor name (optional)
+        :param material: Filter by material type e.g. ``PLA``, ``PETG`` (optional)
+        :return list: List of matching filament dicts, or empty list on error
+        """
         parts = []
         if article_number:
             parts.append(f"article_number={quote(str(article_number))}")
@@ -526,6 +542,12 @@ class AFC_moonraker:
         return resp if isinstance(resp, list) else []
 
     def search_spools(self, filament_id=None):
+        """
+        Search Spoolman spools, optionally filtered by filament ID.
+
+        :param filament_id: Filter by Spoolman filament ID (optional)
+        :return list: List of matching spool dicts, or empty list on error
+        """
         parts = []
         if filament_id is not None:
             parts.append(f"filament.id={filament_id}")
@@ -535,6 +557,12 @@ class AFC_moonraker:
         return resp if isinstance(resp, list) else []
 
     def get_or_create_vendor(self, name):
+        """
+        Look up a Spoolman vendor by name, creating it if it doesn't exist.
+
+        :param name: Vendor name to search for or create
+        :return dict or None: Vendor dict with ``id`` and ``name``, or None on error
+        """
         resp = self._spoolman_proxy("GET", f"/v1/vendor?name={quote(str(name))}", print_error=False)
         if isinstance(resp, list) and resp:
             for v in resp:
@@ -548,6 +576,22 @@ class AFC_moonraker:
                         diameter=None, color_hex=None, settings_extruder_temp=None,
                         settings_bed_temp=None, weight=None, spool_weight=None,
                         article_number=None):
+        """
+        Create a new filament entry in Spoolman.
+
+        :param name: Filament name/label
+        :param vendor_id: Spoolman vendor ID (optional)
+        :param material: Material type e.g. ``PLA``, ``PETG`` (optional)
+        :param density: Filament density in g/cm³ (optional)
+        :param diameter: Filament diameter in mm (optional)
+        :param color_hex: Hex color string e.g. ``FF0000`` (optional)
+        :param settings_extruder_temp: Recommended extruder temperature (optional)
+        :param settings_bed_temp: Recommended bed temperature (optional)
+        :param weight: Net filament weight in grams (optional)
+        :param spool_weight: Empty spool weight in grams (optional)
+        :param article_number: Vendor article/SKU number (optional)
+        :return dict or None: Created filament dict, or None on error
+        """
         data = {"name": name}
         if vendor_id is not None: data["vendor_id"] = vendor_id
         if material is not None: data["material"] = material
@@ -563,6 +607,15 @@ class AFC_moonraker:
 
     def create_spool(self, filament_id, initial_weight=None, remaining_weight=None,
                      spool_weight=None):
+        """
+        Create a new spool entry in Spoolman linked to a filament.
+
+        :param filament_id: Spoolman filament ID to link the spool to
+        :param initial_weight: Starting filament weight in grams (optional)
+        :param remaining_weight: Current remaining weight in grams (optional)
+        :param spool_weight: Empty spool weight in grams (optional)
+        :return dict or None: Created spool dict, or None on error
+        """
         data = {"filament_id": filament_id}
         if initial_weight is not None: data["initial_weight"] = initial_weight
         if remaining_weight is not None: data["remaining_weight"] = remaining_weight
@@ -570,7 +623,17 @@ class AFC_moonraker:
         return self._spoolman_proxy("POST", "/v1/spool", body=json.dumps(data))
 
     def update_spool_comment_tag(self, spool_id: int, tag: str, value: str):
-        """Update or insert a tag=value pair in a spool's comment field."""
+        """
+        Update or insert a ``tag=value`` pair in a spool's comment field.
+
+        If the tag already exists in the comment, its value is replaced.
+        Otherwise the tag is appended to the end of the comment.
+
+        :param spool_id: Spoolman spool ID to update
+        :param tag: Tag name (e.g. ``afc_flow_k``)
+        :param value: Value string to set (e.g. ``0.042``)
+        :return dict or None: Updated spool dict, or None on error
+        """
         import re
         existing = self.get_spool(spool_id)
         if existing is None:
@@ -588,7 +651,16 @@ class AFC_moonraker:
             "PATCH", f"/v1/spool/{spool_id}", {"comment": comment})
 
     def _spoolman_proxy_json(self, method, path, body_dict):
-        """Spoolman proxy call with body as dict so moonraker sets Content-Type."""
+        """
+        Spoolman proxy call with body as a dict so moonraker sets Content-Type
+        to ``application/json``. Used for PATCH/POST operations that require
+        JSON body encoding.
+
+        :param method: HTTP method (PATCH, POST, etc.)
+        :param path: Spoolman API path (e.g. ``/v1/spool/123``)
+        :param body_dict: Request body as a Python dict (will be JSON-encoded)
+        :return dict or None: Parsed JSON response, or None on error
+        """
         payload = json.dumps({
             "request_method": method,
             "path": path,

@@ -555,10 +555,15 @@ class afcUnit:
             self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
 
     def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
-        """Called before Phase 1 toolhead operations in unload_sequence.
+        """
+        Called before Phase 1 toolhead operations in unload_sequence.
 
         Override in subclasses that need hardware setup (e.g. follower
         reverse) before cut/park/tip runs.
+
+        :param cur_lane: AFCLane being unloaded
+        :param cur_hub: AFC_hub object for the lane's hub
+        :param cur_extruder: AFCExtruder object for the active extruder
         """
         pass
 
@@ -667,13 +672,22 @@ class afcUnit:
         return False
 
     def on_filament_insert(self, lane):
-        """Called by handle_load_runout after set_loaded() when filament is newly detected.
-        Override in unit subclasses for RFID sync, prep_post_load, etc."""
+        """
+        Called by handle_load_runout after set_loaded() when filament is newly detected.
+        Fires ``afc:lane_inserted`` event. Override in unit subclasses for RFID sync,
+        prep_post_load, etc.
+
+        :param lane: AFCLane where filament was inserted
+        """
         self.printer.send_event("afc:lane_inserted", lane)
 
     def on_filament_remove(self, lane):
-        """Called by handle_load_runout when filament removal is detected.
-        Override in unit subclasses for inventory cleanup, etc."""
+        """
+        Called by handle_load_runout when filament removal is detected.
+        Override in unit subclasses for inventory cleanup, etc.
+
+        :param lane: AFCLane where filament was removed
+        """
         pass
 
     # Functions are below are placeholders so the function exists for all units, override these function in your unit files
@@ -713,37 +727,80 @@ class afcUnit:
         return ""
 
     def abort_load(self, cur_lane):
-        """Cancel any in-progress load operation on the hardware.
-        Override in subclass for hardware-specific cancellation (ACE, OpenAMS)."""
+        """
+        Cancel any in-progress load operation on the hardware.
+        Override in subclass for hardware-specific cancellation (ACE, OpenAMS).
+
+        :param cur_lane: AFCLane with the in-progress load to cancel
+        """
         pass
 
     def lane_move(self, cur_lane, distance, speed_mode):
-        """Move filament in a lane by the given distance.
-        Override in subclass for hardware-specific movement (ACE serial, OpenAMS)."""
+        """
+        Move filament in a lane by the given distance.
+        Override in subclass for hardware-specific movement (ACE serial, OpenAMS).
+
+        :param cur_lane: AFCLane to move filament in
+        :param distance: Distance in mm to move (positive=forward, negative=retract)
+        :param speed_mode: Speed profile to use for the move
+        """
         cur_lane.move_advanced(distance, speed_mode, assist_active=AssistActive.YES)
 
     def lane_unload(self, cur_lane):
-        """Override in subclass for custom lane unload. Return non-None to skip default."""
+        """
+        Custom lane unload for hardware-specific retract sequences.
+        Override in subclass. Return non-None to skip the default unload path.
+
+        :param cur_lane: AFCLane to unload
+        :return: Non-None to indicate custom unload was performed, None to use default
+        """
         return None
 
     def on_lane_unset_loaded(self, lane, extruder_name):
-        """Called after a lane is manually unset from the toolhead via unset_lane_loaded."""
+        """
+        Called after a lane is manually unset from the toolhead via unset_lane_loaded.
+
+        :param lane: AFCLane that was unset
+        :param extruder_name: Name of the extruder the lane was unset from
+        """
         pass
 
     def prep_capture_td1(self, cur_lane):
-        """Override in subclass for custom TD-1 prep capture. Return non-None to skip default."""
+        """
+        Custom TD-1 data capture during prep. Override in subclass.
+
+        :param cur_lane: AFCLane to capture TD-1 data for
+        :return: Non-None to indicate custom capture was performed, None to use default
+        """
         return None
 
     def capture_td1_data(self, cur_lane):
-        """Override in subclass for custom TD-1 data capture. Return non-None to skip default."""
+        """
+        Custom TD-1 data capture during load. Override in subclass.
+
+        :param cur_lane: AFCLane to capture TD-1 data for
+        :return: Non-None to indicate custom capture was performed, None to use default
+        """
         return None
 
     def get_lane_reset_command(self, lane, dis):
-        """Override in subclass for custom lane reset command. Return None to use default."""
+        """
+        Custom lane reset GCode command. Override in subclass.
+
+        :param lane: AFCLane to generate reset command for
+        :param dis: Distance to reset, or None for default
+        :return str or None: Custom GCode command string, or None to use default
+        """
         return None
 
     def get_current_lane_fallback(self, tool_obj):
-        """Override in subclass to provide a fallback lane name when on_shuttle() is False."""
+        """
+        Provide a fallback lane name when on_shuttle() is False.
+        Override in subclass for units that track loaded state differently.
+
+        :param tool_obj: AFCExtruder object to find the lane for
+        :return str or None: Lane name, or None if no fallback available
+        """
         return None
 
     def get_calibrated_lanes(self) -> Optional[list[str]]:
