@@ -148,8 +148,6 @@ class AFC_U1_RFID:
                 self._consecutive_failures[ch] = 0
 
         for lane_name, channel in self._lane_channel_map.items():
-            if channel in self._scanner_channels:
-                continue
             try:
                 self._check_channel(lane_name, channel)
             except Exception as e:
