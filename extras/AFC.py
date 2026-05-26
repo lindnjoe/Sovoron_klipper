@@ -2171,15 +2171,17 @@ class afc:
         ```
         """
         # U1 power resume and temperature commands pass A=0 to activate the
-        # extruder without a full tool change.  Pass through to the original
-        # handler so homing/unload/load are skipped.
+        # extruder without a full tool change.  Rebuild in extended-param
+        # format (A=<val>) because the renamed handler (_T0) is registered
+        # as a non-traditional command and expects key=value syntax.
         a_param = gcmd.get('A', None)
         if a_param is not None:
             cmd = gcmd.get_commandline().split()[0].upper()
             renamed = "_%s" % cmd
-            orig = self.gcode.ready_gcode_handlers.get(renamed)
-            if orig is not None:
-                orig(gcmd)
+            if renamed in self.gcode.ready_gcode_handlers:
+                self.gcode.run_script_from_command(
+                    "%s A=%s" % (renamed, a_param)
+                )
                 return
 
         # Check if the bypass filament sensor detects filament; if so, abort the tool change.
