@@ -229,7 +229,3 @@ class AFCFlowK:
         if m:
             return float(m.group(1))
         return None
-
-
-def load_config(config):
-    return AFCFlowK(config)
