@@ -238,7 +238,8 @@ class AFC_U1_RFID:
                 allow_create=allow_create)
             lane.send_lane_data()
             self.afc.save_vars()
-            self._notify_scan(brand, material, color, slot_info)
+            self._notify_scan(brand, material, color, slot_info,
+                              lane_name=lane_name, is_scanner=True)
             return
 
         self.logger.info(f"U1 RFID: tag detected on {lane_name} — {tag_desc}")
@@ -249,7 +250,8 @@ class AFC_U1_RFID:
         sync_rfid_to_spoolman(
             self.afc, lane, slot_info, self.logger, "U1 RFID",
             allow_create=allow_create)
-        self._notify_scan(brand, material, color, slot_info, lane_name)
+        self._notify_scan(brand, material, color, slot_info,
+                          lane_name=lane_name)
         lane.send_lane_data()
         self.afc.save_vars()
 
@@ -338,24 +340,34 @@ class AFC_U1_RFID:
         }
 
     def _notify_scan(self, brand: str, material: str, color: str,
-                     slot_info: dict, lane_name: str = ""):
-        """Send a user-visible notification when RFID reads a spool."""
+                     slot_info: dict, lane_name: str = "",
+                     is_scanner: bool = False):
+        """Send a user-visible notification when RFID reads a spool.
+
+        Sends to three targets: Klipper console (respond_info), Mainsail/
+        Octoprint (action:prompt), and U1 factory display (exception_manager).
+
+        :param brand: Filament brand name.
+        :param material: Filament material type (e.g. "PLA").
+        :param color: Hex color string (without '#').
+        :param slot_info: Full slot info dict from RFID tag.
+        :param lane_name: Lane name; empty string if unknown.
+        :param is_scanner: True when this is a spool_scanner read.
+        """
         try:
             cname = color_name(color) if color else ""
             ext = slot_info.get("extruder_temp")
             bed = slot_info.get("bed_temp")
             raw = self.logger.raw
-            is_scanner = not lane_name
+            lane = self._lane_objects.get(lane_name) if lane_name else None
+            spool_id = getattr(lane, "spool_id", None) if lane else None
 
             if is_scanner:
                 title = "Spool Scanned"
-                header = "Spool scanned and staged for next load:"
-                spool_id = getattr(self.afc.spool, 'next_spool_id', None)
+                header = "Spool scanned on %s:" % lane_name if lane_name else "Spool scanned:"
             else:
-                title = f"Spool Loaded — {lane_name}"
-                header = f"Spool loaded on {lane_name}:"
-                lane = self._lane_objects.get(lane_name)
-                spool_id = getattr(lane, "spool_id", None) if lane else None
+                title = "Spool Loaded — %s" % lane_name if lane_name else "Spool Loaded"
+                header = "Spool loaded on %s:" % lane_name if lane_name else "Spool loaded:"
 
             lines = [header]
             if brand:
@@ -386,8 +398,7 @@ class AFC_U1_RFID:
             if bed:
                 prompt_lines.append(f"Bed: {bed}°C")
             if spool_id:
-                id_label = "Set as Spoolman next ID" if is_scanner else "Spoolman ID"
-                prompt_lines.append(f"{id_label}: {spool_id}")
+                prompt_lines.append(f"Spoolman ID: {spool_id}")
             raw(f"// action:prompt_begin {title}")
             for pl in prompt_lines:
                 raw(f"// action:prompt_text {pl}")
@@ -397,6 +408,25 @@ class AFC_U1_RFID:
             self.reactor.register_callback(
                 lambda e: self.logger.raw("// action:prompt_end"),
                 self.reactor.monotonic() + 10.0)
+
+            em = self.printer.lookup_object("exception_manager", None)
+            if em is not None:
+                parts = []
+                if brand:
+                    parts.append(brand)
+                if material:
+                    parts.append(material)
+                if cname:
+                    parts.append(cname)
+                msg = "%s: %s" % (title, " ".join(parts)) if parts else title
+                channel = self._lane_channel_map.get(lane_name, 0)
+                em.raise_exception_async(
+                    id=529,
+                    index=channel,
+                    code=99,
+                    message=msg,
+                    oneshot=1,
+                    level=1)
         except Exception as e:
             self.logger.warning(f"U1 RFID: notification error: {e}")
 
