@@ -254,6 +254,8 @@ class AFC_U1_RFID:
                           lane_name=lane_name)
         lane.send_lane_data()
         self.afc.save_vars()
+        if getattr(lane, 'tool_loaded', False):
+            self.printer.send_event("afc:tool_loaded", lane)
 
     def _clear_lane(self, lane, lane_name: str):
         """Clear RFID data from a lane when tag is removed."""

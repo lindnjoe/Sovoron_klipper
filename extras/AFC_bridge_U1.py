@@ -513,15 +513,15 @@ class AFCU1Bridge:
         self.logger.info("Patched update_filament_exist_flag for AFC extruders")
 
     def _patch_scanner_rfid_update(self):
-        """Suppress print_task_config's native RFID callback for spool_scanner
+        """Intercept print_task_config's native RFID callback for spool_scanner
         channels so the U1 display shows the AFC-loaded lane's filament data
-        instead of the scanned spool.
+        instead of the raw scanned spool.
 
         The U1's ``_rfid_filament_info_update_cb`` blindly writes RFID tag data
         to ``print_task_config`` for the detected channel and runs
         ``FLOW_RESET_K``, overwriting both the filament info and flow K that
         AFC set for the actually-loaded lane.  This patch replaces that callback
-        with one that skips scanner channels entirely.
+        with one that re-syncs AFC data for scanner channels instead.
         """
         ptc = self.printer.lookup_object("print_task_config", None)
         fd = self.printer.lookup_object("filament_detect", None)
@@ -533,18 +533,20 @@ class AFCU1Bridge:
         if original_cb is None:
             return
 
-        scanner_channels = set()
-        for lane in self.afc.lanes.values():
-            if getattr(lane, 'spool_scanner', False):
-                ch = getattr(lane, 'u1_rfid_channel', -1)
-                if ch >= 0:
-                    scanner_channels.add(ch)
-        for ext in self.afc.tools.values():
+        scanner_channels = {}
+        for ext_name, ext in self.afc.tools.items():
             tc_lane = getattr(ext, 'tc_lane', None)
             if tc_lane is not None and getattr(tc_lane, 'spool_scanner', False):
                 ch = getattr(tc_lane, 'u1_rfid_channel', -1)
                 if ch >= 0:
-                    scanner_channels.add(ch)
+                    scanner_channels[ch] = ext_name
+        for lane in self.afc.lanes.values():
+            if getattr(lane, 'spool_scanner', False):
+                ch = getattr(lane, 'u1_rfid_channel', -1)
+                if ch >= 0 and ch not in scanner_channels:
+                    ext = getattr(lane, 'extruder_obj', None)
+                    if ext is not None:
+                        scanner_channels[ch] = ext.name
 
         if not scanner_channels:
             return
@@ -553,8 +555,21 @@ class AFCU1Bridge:
 
         def patched_rfid_cb(channel, info, is_clear=False):
             if channel in scanner_channels:
+                ext_name = scanner_channels[channel]
+                ext = bridge.afc.tools.get(ext_name)
+                loaded_lane_name = getattr(ext, 'lane_loaded', None) if ext else None
+                loaded_lane = bridge.afc.lanes.get(loaded_lane_name) if loaded_lane_name else None
+                if loaded_lane is not None:
+                    phys = bridge._get_physical_index(ext_name)
+                    if phys is not None:
+                        bridge._sync_filament_to_ptc(ptc, {phys: loaded_lane})
+                        bridge.logger.debug(
+                            "Scanner ch%d: re-synced AFC data for %s"
+                            % (channel, loaded_lane_name))
+                    return
                 bridge.logger.debug(
-                    "Suppressed native RFID update for scanner ch%d" % channel)
+                    "Scanner ch%d: no lane loaded on %s, suppressing"
+                    % (channel, ext_name))
                 return
             original_cb(channel, info, is_clear)
 
@@ -562,8 +577,8 @@ class AFCU1Bridge:
             if cb == original_cb:
                 fd._notify_data_update_cb[i] = patched_rfid_cb
                 self.logger.info(
-                    "Patched RFID callback: suppressing scanner channels %s"
-                    % sorted(scanner_channels))
+                    "Patched RFID callback: intercepting scanner channels %s"
+                    % sorted(scanner_channels.keys()))
                 return
 
         self.logger.warning(
