@@ -72,6 +72,8 @@ class AFCFlowK:
     def _handle_tool_loaded(self, cur_lane):
         """On tool load: read K from Spoolman if needed, apply."""
         try:
+            if self.logger:
+                self.logger.info("AFC flow K: tool_loaded event for %s" % cur_lane.name)
             self._do_handle_tool_loaded(cur_lane)
         except Exception as e:
             if self.logger:
@@ -84,12 +86,21 @@ class AFCFlowK:
             return
 
         if not self._spoolman_flow_sync_enabled(cur_lane):
+            if self.logger:
+                self.logger.info(
+                    "AFC flow K: spoolman_flow_sync not enabled for %s"
+                    % cur_lane.name)
             return
 
         k = self._read_flow_k_from_spoolman(cur_lane)
         if k is not None:
             self._set_lane_k(cur_lane, k)
             self._apply_k(cur_lane, k)
+        else:
+            if self.logger:
+                self.logger.info(
+                    "AFC flow K: no K found in Spoolman for %s (spool_id=%s)"
+                    % (cur_lane.name, getattr(cur_lane, 'spool_id', None)))
 
     def _handle_activate_extruder(self):
         """Re-apply K when extruder is activated (e.g. after G28)."""
