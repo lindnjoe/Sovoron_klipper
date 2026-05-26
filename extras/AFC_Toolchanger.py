@@ -37,6 +37,9 @@ except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_ex
 try: from extras.AFC_lane import AFCLaneState
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
+try: from extras.AFC_flow_k import AFCFlowK
+except: raise error(ERROR_STR.format(import_lib="AFC_flow_k", trace=traceback.format_exc()))
+
 
 # Toolchanger status constants
 STATUS_UNINITIALIZED = 'uninitialized'
@@ -89,8 +92,8 @@ class AfcToolchanger(afcUnit):
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
 
-        # Load flow K module (reads per-spool K from Spoolman, applies on tool load)
-        self.printer.load_object(config, 'AFC_flow_k')
+        # Flow K module (reads per-spool K from Spoolman, applies on tool load)
+        self._flow_k = AFCFlowK(config)
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
 
         # Toolchanger config options
