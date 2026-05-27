@@ -2553,6 +2553,15 @@ class afc:
 
         if toolnum is not None:
             map = "T{}".format(toolnum)
+
+            # When tool redirect is active, source tools will never print.
+            # Block heating their extruders so idle tools don't heat up.
+            if self.allow_tool_redirect and map in self.tool_redirects:
+                self.logger.info(
+                    f"Redirect: blocking M10x for {map} "
+                    f"(redirected to {self.tool_redirects[map]})")
+                return
+
             lane = self.function.get_lane_by_map(map)
             if lane is not None:
                 extruder = lane.extruder_obj
