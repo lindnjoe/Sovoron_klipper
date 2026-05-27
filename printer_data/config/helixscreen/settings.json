@@ -164,9 +164,12 @@
             "tmc5160 stepper_z1",
             "tmc5160 stepper_z2",
             "tmc5160 stepper_z3",
-            "temperature_sensor Turtle_1"
+            "temperature_sensor ace_temp",
+            "temperature_sensor Turtle_1",
+            "temperature_sensor oams1",
+            "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-27T05:32:51Z"
+          "timestamp": "2026-05-27T05:37:45Z"
         },
         "optional": []
       },
