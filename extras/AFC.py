@@ -1852,7 +1852,7 @@ class afc:
                         em = self.printer.lookup_object("exception_manager", None)
                         if em is not None:
                             em.raise_exception_async(
-                                id=522, index=0, code=17,
+                                id=529, index=0, code=99,
                                 message="Please remove filament from the "
                                         f"{cur_extruder.name} PTFE path",
                                 oneshot=1, level=1)
