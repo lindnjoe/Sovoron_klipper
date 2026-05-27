@@ -96,21 +96,7 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {
-        "external_spool": {
-          "assigned": true,
-          "bed_temp": 60,
-          "brand": "Sunlu",
-          "color_rgb": 3309929,
-          "material": "PLA",
-          "nozzle_temp_max": 0,
-          "nozzle_temp_min": 0,
-          "remaining_weight_g": 874.6411743164063,
-          "spool_name": "Sunlu PLA - Grass Green",
-          "spoolman_id": 35,
-          "total_weight_g": 1000.0
-        }
-      },
+      "filament": {},
       "filament_sensors": {
         "sensors": null
       },
@@ -183,7 +169,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-26T00:23:41Z"
+          "timestamp": "2026-05-27T01:28:43Z"
         },
         "optional": []
       },
