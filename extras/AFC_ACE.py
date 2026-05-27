@@ -1220,15 +1220,15 @@ class afcACE(afcUnit):
     cmd_ACE_DRY_options = {
         "UNIT": {"type": "string", "default": ""},
         "TEMP": {"type": "float", "default": 50.0},
-        "DURATION": {"type": "float", "default": 240.0},
-        "FAN": {"type": "int", "default": 5000},
+        "DURATION": {"type": "float", "default": 90.0},
+        "FAN": {"type": "int", "default": 800},
     }
 
     def cmd_ACE_DRY(self, gcmd):
         """Start ACE filament dryer."""
         temp = gcmd.get_float('TEMP', 50.0)
-        duration = gcmd.get_float('DURATION', 240.0)
-        fan = gcmd.get_int('FAN', 5000)
+        duration = gcmd.get_float('DURATION', 90.0)
+        fan = gcmd.get_int('FAN', 800)
         if not self._ace or not self._ace.connected:
             gcmd.respond_info("ACE not connected")
             return
