@@ -422,7 +422,7 @@ class AFC_U1_RFID:
                     msg = "%s: %s" % (title, " ".join(parts)) if parts else title
                     channel = self._lane_channel_map.get(lane_name, 0)
                     em.raise_exception_async(
-                        id=530, index=channel, code=29,
+                        id=522, index=channel, code=17,
                         message=msg, oneshot=1, level=1)
         except Exception as e:
             self.logger.warning(f"U1 RFID: notification error: {e}")
