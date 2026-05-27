@@ -2669,6 +2669,8 @@ class afc:
         try:
             extruder = cur_lane.extruder_obj
             heater = extruder.get_heater()
+            # _get_default_material_temps uses self.heater for fallback temps
+            self.heater = heater
             target, _ = self._get_default_material_temps(cur_lane)
             if target <= 0:
                 target = heater.max_temp * 0.5
