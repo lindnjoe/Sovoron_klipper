@@ -1039,10 +1039,6 @@ class afcACE(afcUnit):
         if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
             buffer_obj.enable_advance_latch()
 
-        # Clear stale software sensor state from a previous lane's
-        # load/unload cycle so the pre-feed check reads real hardware.
-        self._clear_stale_sensor_state(cur_lane)
-
         # Pre-feed check: if the toolhead sensor detects filament before
         # we start feeding, there's stuck filament from a previous load.
         # Don't push more filament into an occupied toolhead.
