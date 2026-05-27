@@ -8,7 +8,7 @@
 # Configuration example (place AFTER your [AFC_ACE ...] section):
 #
 #   [temperature_sensor ace_temp]
-#   sensor_type: temperature_ace
+#   sensor_type: AFC_temperature_ace
 #   ace_unit: Ace1           # Name of your AFC_ACE unit (default: Ace1)
 #   min_temp: 0
 #   max_temp: 70
@@ -196,5 +196,5 @@ def _register_sensor_factory(printer):
             _fallback_logger.warning(f"temperature_ace: failed to load heaters: {e}")
             return
 
-    heaters.add_sensor_factory("temperature_ace", TemperatureACE)
+    heaters.add_sensor_factory("AFC_temperature_ace", TemperatureACE)
     _REGISTERED = True
