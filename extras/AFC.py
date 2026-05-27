@@ -1841,29 +1841,38 @@ class afc:
             # next load starts with a clean False baseline.
             cur_extruder.clear_toolhead_sensor()
 
-            # Verify U1 motion sensor physical switch confirms filament cleared.
-            # Retry several times — custom unloads (ACE) may need extra time
-            # for the filament tip to clear the sensor after retraction.
+            # Verify U1 motion sensor physical switch confirms filament cleared
             if self.is_u1_motion_sensor(cur_extruder):
-                sensor_clear = False
-                for _attempt in range(6):
-                    self.reactor.pause(self.reactor.monotonic() + 0.5)
-                    if not cur_extruder.filament_sensor_obj.runout_buttun_state:
-                        sensor_clear = True
-                        break
-                if not sensor_clear:
-                    message = (
-                        "Unload completed but U1 sensor still detects filament "
-                        f"in toolhead for {cur_lane.name}.\n"
-                        "Filament may be stuck in extruder gears.\n"
-                        "Please manually retract filament from the toolhead."
-                    )
-                    if self.function.in_print() and self.next_lane_load is not None:
-                        message += f"\nOnce cleared, manually load {self.next_lane_load} "
-                        message += f"with {self.lanes[self.next_lane_load].map} macro."
-                        message += "\nOnce lane is loaded click resume to continue printing"
-                    self.error.handle_lane_failure(cur_lane, message)
-                    return False
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+                if cur_extruder.filament_sensor_obj.runout_buttun_state:
+                    if cur_extruder.is_standalone():
+                        self.logger.info(
+                            f"Standalone filament detected in {cur_extruder.name} — "
+                            "waiting for manual removal")
+                        em = self.printer.lookup_object("exception_manager", None)
+                        if em is not None:
+                            em.raise_exception_async(
+                                id=530, index=0, code=99,
+                                message="Please remove filament from the "
+                                        f"{cur_extruder.name} PTFE path",
+                                oneshot=1, level=1)
+                        while cur_extruder.filament_sensor_obj.runout_buttun_state:
+                            self.reactor.pause(self.reactor.monotonic() + 0.5)
+                        self.logger.info(
+                            f"Filament cleared from {cur_extruder.name}")
+                    else:
+                        message = (
+                            "Unload completed but U1 sensor still detects filament "
+                            f"in toolhead for {cur_lane.name}.\n"
+                            "Filament may be stuck in extruder gears.\n"
+                            "Please manually retract filament from the toolhead."
+                        )
+                        if self.function.in_print() and self.next_lane_load is not None:
+                            message += f"\nOnce cleared, manually load {self.next_lane_load} "
+                            message += f"with {self.lanes[self.next_lane_load].map} macro."
+                            message += "\nOnce lane is loaded click resume to continue printing"
+                        self.error.handle_lane_failure(cur_lane, message)
+                        return False
 
             unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
             self.afc_stats.average_tool_unload_time.average_time(unload_time)
