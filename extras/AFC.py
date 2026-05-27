@@ -1841,10 +1841,17 @@ class afc:
             # next load starts with a clean False baseline.
             cur_extruder.clear_toolhead_sensor()
 
-            # Verify U1 motion sensor physical switch confirms filament cleared
+            # Verify U1 motion sensor physical switch confirms filament cleared.
+            # Retry several times — custom unloads (ACE) may need extra time
+            # for the filament tip to clear the sensor after retraction.
             if self.is_u1_motion_sensor(cur_extruder):
-                self.reactor.pause(self.reactor.monotonic() + 0.5)
-                if cur_extruder.filament_sensor_obj.runout_buttun_state:
+                sensor_clear = False
+                for _attempt in range(6):
+                    self.reactor.pause(self.reactor.monotonic() + 0.5)
+                    if not cur_extruder.filament_sensor_obj.runout_buttun_state:
+                        sensor_clear = True
+                        break
+                if not sensor_clear:
                     message = (
                         "Unload completed but U1 sensor still detects filament "
                         f"in toolhead for {cur_lane.name}.\n"
