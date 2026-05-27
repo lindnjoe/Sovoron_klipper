@@ -82,14 +82,19 @@ class AFCSpool:
         cur_lane.send_lane_data()
         self.afc.save_vars()
 
-    cmd_SET_MAP_help = "Redirect a lane's tool command to a different tool"
+    cmd_SET_MAP_help = "Changes T(n) mapping for a lane"
     def cmd_SET_MAP(self, gcmd):
         """
-        Redirects a lane's current T# command to a different T# target.
-        Multiple lanes can be redirected to the same target, allowing a
-        multi-color print to run on fewer physical lanes.
+        Changes the tool mapping for a lane. Behavior depends on the
+        allow_tool_redirect setting in [AFC]:
 
-        Redirects are session-only and cleared by RESET_AFC_MAPPING.
+        When allow_tool_redirect is False (default), performs a 1:1 swap
+        between the specified lane and the lane currently holding the
+        target tool command.
+
+        When allow_tool_redirect is True, redirects the lane's current
+        tool command to the target so multiple tools resolve to the same
+        lane. Redirects are session-only, cleared by RESET_AFC_MAPPING.
 
         Usage
         -----
@@ -99,9 +104,7 @@ class AFCSpool:
         -----
         ```
         SET_MAP LANE=lane0 MAP=T2
-        SET_MAP LANE=lane1 MAP=T2
         ```
-        Now T0, T1, and T2 all resolve to T2's lane.
         """
         lane = gcmd.get('LANE', None)
         if lane is None:
@@ -124,19 +127,33 @@ class AFCSpool:
             return
 
         cur_lane = self.afc.lanes[lane]
-        source_cmd = cur_lane.map
 
-        if source_cmd == map_cmd:
+        if cur_lane.map == map_cmd:
             self.logger.info(f"{lane} is already mapped to {map_cmd}")
             return
 
-        self.afc.tool_redirects[source_cmd] = map_cmd
-        cur_lane.map = map_cmd
-        cur_lane.send_lane_data()
+        if self.afc.allow_tool_redirect:
+            source_cmd = cur_lane.map
+            self.afc.tool_redirects[source_cmd] = map_cmd
+            cur_lane.map = map_cmd
+            cur_lane.send_lane_data()
+            target_lane = self.afc.tool_cmds.get(map_cmd, "?")
+            self.logger.info(
+                f"Redirected {source_cmd} ({lane}) -> {map_cmd} ({target_lane})")
+        else:
+            lane_switch = self.afc.tool_cmds[map_cmd]
+            sw_lane = self.afc.lanes[lane_switch]
+            map_switch = cur_lane.map
 
-        target_lane = self.afc.tool_cmds.get(map_cmd, "?")
-        self.logger.info(
-            f"Redirected {source_cmd} ({lane}) -> {map_cmd} ({target_lane})")
+            self.afc.tool_cmds[map_cmd] = lane
+            cur_lane.map = map_cmd
+            cur_lane.send_lane_data()
+
+            self.afc.tool_cmds[map_switch] = lane_switch
+            sw_lane.map = map_switch
+            sw_lane.send_lane_data()
+
+            self.afc.save_vars()
 
     cmd_SET_TOOL_REDIRECT_help = "Redirect one or more tool commands to a target tool"
     def cmd_SET_TOOL_REDIRECT(self, gcmd):

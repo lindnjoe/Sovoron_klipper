@@ -240,6 +240,7 @@ class afc:
         self.spool_ratio            = config.getfloat("spool_ratio",2)              # gear ratio for printed gearbox between N20 and spooler wheels
         self.full_weight            = config.getfloat("full_weight",1000, minval=1) # full weight of filament spool (not counting spool itself)
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", False) # Set to True to show all sensor switches as filament sensors in mainsail/fluidd gui
+        self.allow_tool_redirect    = config.getboolean("allow_tool_redirect", False)
         self.ignore_spoolman_material_temps = config.getboolean("ignore_spoolman_material_temps", False)  # When True, AFC will ignore temperatures set in Spoolman and use default_material_temps instead.
         self.led_use_filament_color:bool = config.getboolean('led_use_filament_color', False)  # When True, uses filament color from color field for lane LEDs instead of configured LED colors
         self.restore_extruder_temp_on_load_or_unload = config.getboolean(
@@ -2301,8 +2302,8 @@ class afc:
             self.error.AFC_error("I did not understand the change -- " + cmd, pause=self.function.in_print())
             return
 
-        # Resolve tool redirects — allows many-to-one T# mapping
-        Tcmd = self.tool_redirects.get(Tcmd, Tcmd)
+        if self.allow_tool_redirect:
+            Tcmd = self.tool_redirects.get(Tcmd, Tcmd)
 
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length, new_extruder_temp=new_extruder_temp)
 
