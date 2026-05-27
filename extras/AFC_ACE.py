@@ -89,6 +89,7 @@ class afcACE(afcUnit):
         self._feed_assist_active: set[int] = set()
         self._slot_inventory: list[dict] = [{} for _ in range(self.SLOTS_PER_UNIT)]
         self._operation_active = False
+        self._cached_hw_status = {}
         self._prev_states_stale = False
         self._prev_slot_states: dict[str, bool] = {}
         self._hub_load_suppressed: set[str] = set()
@@ -249,6 +250,7 @@ class afcACE(afcUnit):
         try:
             hw_status = self._ace.get_status(timeout=2.0)
             if isinstance(hw_status, dict):
+                self._cached_hw_status = hw_status
                 for i, slot_data in enumerate(hw_status.get("slots", [])):
                     if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
                         self._slot_inventory[i]["status"] = slot_data.get("status", "")
@@ -264,12 +266,13 @@ class afcACE(afcUnit):
 
     def _on_hw_status_callback(self, response):
         """Process heartbeat status from ACE — keep lane states in sync."""
-        if self._operation_active:
-            return
         if not isinstance(response, dict):
             return
         result = response.get("result", response)
         if not isinstance(result, dict):
+            return
+        self._cached_hw_status = result
+        if self._operation_active:
             return
         self._sync_slot_states(result)
 
