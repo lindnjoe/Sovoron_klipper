@@ -120,14 +120,18 @@ class afcACE(afcUnit):
             f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
             desc=f"Retract ACE lane filament back into unit ({self.name})")
 
-        # Register temperature_ace sensor factory during config parsing
-        # so [temperature_sensor] sections can resolve sensor_type: temperature_ace
+        # Register temperature_ace sensor factory for [temperature_sensor]
+        # sections that use sensor_type: temperature_ace.  This is a
+        # convenience — prefer [temperature_ace <name>] sections which
+        # bypass the factory mechanism and avoid config-ordering issues.
         try:
             from extras.temperature_ace import TemperatureACE
             pheaters = self.printer.load_object(config, "heaters")
             pheaters.add_sensor_factory("temperature_ace", TemperatureACE)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.info(
+                "AFC_ACE: temperature_ace factory not registered (%s); "
+                "use [temperature_ace <name>] config sections instead", e)
 
     def handle_connect(self):
         super().handle_connect()
