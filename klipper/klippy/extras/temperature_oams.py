@@ -6,8 +6,7 @@
 #
 # Configuration example:
 #
-#   [temperature_sensor oams1]
-#   sensor_type: temperature_oams
+#   [temperature_oams oams1]
 #   i2c_mcu: oams_mcu1
 #   i2c_bus: i2c0
 #   i2c_speed: 200000
@@ -55,12 +54,7 @@ class TemperatureOAMS:
         self.report_time = config.getint('report_time', 5, minval=5)
         self.temp = self.min_temp = self.max_temp = self.humidity = 0.
         self.sample_timer = self.reactor.register_timer(self._sample)
-        self.simulate_aht3x = config.getboolean(
-            'simulate_supported_sensor_mainsail', True)
-        if self.simulate_aht3x:
-            self.printer.add_object("aht3x " + self.name, self)
-        else:
-            self.printer.add_object("temperature_oams " + self.name, self)
+        self.printer.add_object("temperature_oams " + self.name, self)
         self.printer.register_event_handler("klippy:connect",
                                             self.handle_connect)
         self.temp_resolution = config.getint('temp_resolution', 14, minval=11, maxval=14)
@@ -79,6 +73,7 @@ class TemperatureOAMS:
         self.humidity_offset = config.getfloat('humidity_offset', 0.0)
         self.heater_enabled = config.getboolean('heater_enabled', False)
 
+        self._callback = None
         self.is_calibrated = False
         self.init_sent = False
         self._consecutive_errors = 0
@@ -200,8 +195,9 @@ class TemperatureOAMS:
                     % (self.name, self.temp, self.min_temp, self.max_temp))
 
         measured_time = self.reactor.monotonic()
-        print_time = self.i2c.get_mcu().estimated_print_time(measured_time)
-        self._callback(print_time, self.temp)
+        if self._callback:
+            print_time = self.i2c.get_mcu().estimated_print_time(measured_time)
+            self._callback(print_time, self.temp)
         return measured_time + self.report_time
 
     def get_status(self, eventtime):
@@ -211,18 +207,29 @@ class TemperatureOAMS:
         }
 
 
-_REGISTERED = False
+def load_config_prefix(config):
+    """Handle [temperature_oams <name>] config sections directly.
 
-def _register_sensor_factory(printer):
-    global _REGISTERED
-    if _REGISTERED:
-        return
-    try:
-        pheater = printer.lookup_object("heaters")
-        pheater.add_sensor_factory("temperature_oams", TemperatureOAMS)
-        _REGISTERED = True
-    except Exception:
-        pass
+    This avoids the sensor_type factory mechanism and its config-ordering
+    dependency — the module is loaded when Klipper encounters the section,
+    and the sensor is created and registered immediately.
+    """
+    pheaters = config.get_printer().load_object(config, "heaters")
+    sensor = TemperatureOAMS(config)
+    sensor.setup_minmax(
+        config.getfloat("min_temp", 0.0),
+        config.getfloat("max_temp", 100.0),
+    )
+    pheaters.register_sensor(config, sensor)
+    return sensor
+
 
 def load_config(config):
-    _register_sensor_factory(config.get_printer())
+    """Register temperature_oams sensor factory with Klipper.
+
+    This path is used when the user has a bare [temperature_oams] section
+    alongside a [temperature_sensor ...] section with sensor_type:
+    temperature_oams.  Prefer [temperature_oams <name>] sections instead.
+    """
+    pheater = config.get_printer().lookup_object("heaters")
+    pheater.add_sensor_factory("temperature_oams", TemperatureOAMS)
