@@ -2405,6 +2405,13 @@ class afc:
                 self.logger.info("{} already loaded".format(cur_lane.name))
                 if not self.error_state and self.current_toolchange == -1:
                     self.current_toolchange += 1
+
+                # When tool redirect is active, the slicer may have sent
+                # M104/M109 commands to cool the "old" tool before calling
+                # the T# command.  Since no actual switch happens, re-assert
+                # the active extruder's temperature so it doesn't cool down.
+                if self.allow_tool_redirect and self.tool_redirects:
+                    self._reassert_extruder_temp(cur_lane)
         # Copilot yes this is a bare exception, ignore please since this is being done on purpose
         # to make sure all exceptions are catched
         except Exception:
@@ -2650,6 +2657,30 @@ class afc:
             else max(0, last_heater.target_temp - last_extruder.toolchange_temp_drop)
         self.logger.info("Cooling down last extruder: {} to {}".format(last_extruder.name, temperature))
         pheaters.set_temperature(last_heater, temperature, False)
+
+    def _reassert_extruder_temp(self, cur_lane: AFCLane) -> None:
+        """Re-apply the active extruder's target temperature after a
+        redirected tool change that didn't actually switch lanes.
+
+        The slicer may have emitted M104 S0 for the "old" tool before
+        the T# command, cooling the extruder that is still printing.
+        This captures the lane's expected temp and re-sets it.
+        """
+        try:
+            extruder = cur_lane.extruder_obj
+            heater = extruder.get_heater()
+            target, _ = self._get_default_material_temps(cur_lane)
+            if target <= 0:
+                target = heater.max_temp * 0.5
+            cur_temp = heater.target_temp
+            if cur_temp < target - 5:
+                pheaters = self.printer.lookup_object('heaters')
+                pheaters.set_temperature(heater, target, False)
+                self.logger.info(
+                    f"Redirect: re-asserting {extruder.name} to {target:.0f}C "
+                    f"(was {cur_temp:.0f}C)")
+        except Exception as e:
+            self.logger.debug(f"Redirect temp reassert failed: {e}")
 
     def _wait_for_temp_within_tolerance(self, heater, target_temp, tolerance=20):
         """
