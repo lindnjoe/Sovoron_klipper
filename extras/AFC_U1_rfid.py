@@ -133,21 +133,9 @@ class AFC_U1_RFID:
                 f"U1 RFID: FILAMENT_DT_UPDATE failed ch{channel}: {e}")
             return False
 
-    def _scanner_extruder_has_lane_loaded(self, channel: int) -> bool:
-        """Check if the extruder associated with a scanner channel has a lane loaded."""
-        lane_name = self._channel_to_lane.get(channel)
-        lane = self._lane_objects.get(lane_name) if lane_name else None
-        ext = getattr(lane, 'extruder_obj', None) if lane else None
-        if ext is None:
-            return False
-        loaded = getattr(ext, 'lane_loaded', None)
-        return loaded is not None
-
     def _poll_cb(self, eventtime):
         """Periodic check for new RFID data on registered channels."""
         for ch in self._scanner_channels:
-            if self._scanner_extruder_has_lane_loaded(ch):
-                continue
             if not self._trigger_channel_update(ch):
                 self._consecutive_failures[ch] = \
                     self._consecutive_failures.get(ch, 0) + 1
