@@ -117,17 +117,34 @@ class afcACE(afcUnit):
             f'ACE_DRY_{unit_suffix}', self.cmd_ACE_DRY,
             desc=f"Start ACE filament dryer ({self.name})")
         self.gcode.register_command(
+            f'ACE_DRY_STOP_{unit_suffix}', self.cmd_ACE_DRY_STOP,
+            desc=f"Stop ACE filament dryer ({self.name})")
+        self.gcode.register_command(
             f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
             desc=f"Retract ACE lane filament back into unit ({self.name})")
+        # Register base commands (first unit wins for single-unit setups)
+        try:
+            self.gcode.register_command(
+                'ACE_DRY', self.cmd_ACE_DRY,
+                desc="Start ACE filament dryer")
+            self.gcode.register_command(
+                'ACE_DRY_STOP', self.cmd_ACE_DRY_STOP,
+                desc="Stop ACE filament dryer")
+        except Exception:
+            pass
 
-        # Register temperature_ace sensor factory during config parsing
-        # so [temperature_sensor] sections can resolve sensor_type: temperature_ace
+        # Register temperature_ace sensor factory for [temperature_sensor]
+        # sections that use sensor_type: temperature_ace.  This is a
+        # convenience — prefer [temperature_ace <name>] sections which
+        # bypass the factory mechanism and avoid config-ordering issues.
         try:
             from extras.temperature_ace import TemperatureACE
             pheaters = self.printer.load_object(config, "heaters")
             pheaters.add_sensor_factory("temperature_ace", TemperatureACE)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.info(
+                "AFC_ACE: temperature_ace factory not registered (%s); "
+                "use [temperature_ace <name>] config sections instead", e)
 
     def handle_connect(self):
         super().handle_connect()
@@ -1203,15 +1220,15 @@ class afcACE(afcUnit):
     cmd_ACE_DRY_options = {
         "UNIT": {"type": "string", "default": ""},
         "TEMP": {"type": "float", "default": 50.0},
-        "DURATION": {"type": "float", "default": 240.0},
-        "FAN": {"type": "int", "default": 5000},
+        "DURATION": {"type": "float", "default": 90.0},
+        "FAN": {"type": "int", "default": 800},
     }
 
     def cmd_ACE_DRY(self, gcmd):
         """Start ACE filament dryer."""
         temp = gcmd.get_float('TEMP', 50.0)
-        duration = gcmd.get_float('DURATION', 240.0)
-        fan = gcmd.get_int('FAN', 5000)
+        duration = gcmd.get_float('DURATION', 90.0)
+        fan = gcmd.get_int('FAN', 800)
         if not self._ace or not self._ace.connected:
             gcmd.respond_info("ACE not connected")
             return
@@ -1220,6 +1237,17 @@ class afcACE(afcUnit):
             gcmd.respond_info(f"ACE dryer started: {temp}°C for {duration} min")
         except Exception as e:
             gcmd.respond_info(f"Error starting dryer: {e}")
+
+    def cmd_ACE_DRY_STOP(self, gcmd):
+        """Stop ACE filament dryer."""
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        try:
+            self._ace.stop_drying()
+            gcmd.respond_info("ACE dryer stopped")
+        except Exception as e:
+            gcmd.respond_info(f"Error stopping dryer: {e}")
 
     def cmd_ACE_LANE_RESET(self, gcmd):
         """Retract lane filament back into ACE unit."""

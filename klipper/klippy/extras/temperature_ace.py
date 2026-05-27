@@ -7,7 +7,8 @@
 #
 # Configuration example (place AFTER your [AFC_ACE ...] section):
 #
-#   [temperature_ace ace_temp]
+#   [temperature_sensor ace_temp]
+#   sensor_type: temperature_ace
 #   ace_unit: Ace1           # Name of your AFC_ACE unit (default: Ace1)
 #   min_temp: 0
 #   max_temp: 70
@@ -176,30 +177,8 @@ class TemperatureACE:
         }
 
 
-def load_config_prefix(config):
-    """Handle [temperature_ace <name>] config sections directly.
-
-    This avoids the sensor_type factory mechanism and its config-ordering
-    dependency — the module is loaded when Klipper encounters the section,
-    and the sensor is created and registered immediately.
-    """
-    pheaters = config.get_printer().load_object(config, "heaters")
-    sensor = TemperatureACE(config)
-    sensor.setup_minmax(
-        config.getfloat("min_temp", 0.0),
-        config.getfloat("max_temp", 70.0),
-    )
-    pheaters.register_sensor(config, sensor)
-    return sensor
-
-
 def load_config(config):
-    """Register temperature_ace sensor factory with Klipper (config hook).
-
-    This path is used when the user has a bare [temperature_ace] section
-    alongside a [temperature_sensor ...] section with sensor_type:
-    temperature_ace.  Prefer [temperature_ace <name>] sections instead.
-    """
+    """Register temperature_ace sensor factory with Klipper (config hook)."""
     _register_sensor_factory(config.get_printer())
 
 
