@@ -559,16 +559,13 @@ class AFCU1Bridge:
                 ext = bridge.afc.tools.get(ext_name)
                 loaded_lane_name = getattr(ext, 'lane_loaded', None) if ext else None
                 loaded_lane = bridge.afc.lanes.get(loaded_lane_name) if loaded_lane_name else None
-                if (loaded_lane is not None
-                        and getattr(loaded_lane, 'status', '') == 'Tool Loaded'):
+                if loaded_lane is not None:
                     phys = bridge._get_physical_index(ext_name)
                     if phys is not None:
                         bridge._sync_filament_to_ptc(ptc, {phys: loaded_lane})
                         bridge.logger.debug(
                             "Scanner ch%d: re-synced AFC data for %s"
                             % (channel, loaded_lane_name))
-                    return
-                original_cb(channel, info, is_clear)
                 return
             original_cb(channel, info, is_clear)
 
