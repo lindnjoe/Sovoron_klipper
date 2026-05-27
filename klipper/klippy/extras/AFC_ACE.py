@@ -123,15 +123,18 @@ class afcACE(afcUnit):
             f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
             desc=f"Retract ACE lane filament back into unit ({self.name})")
         # Register base commands (first unit wins for single-unit setups)
-        try:
-            self.gcode.register_command(
-                'ACE_DRY', self.cmd_ACE_DRY,
-                desc="Start ACE filament dryer")
-            self.gcode.register_command(
-                'ACE_DRY_STOP', self.cmd_ACE_DRY_STOP,
-                desc="Stop ACE filament dryer")
-        except Exception:
-            pass
+        for cmd, handler, desc in [
+            ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
+            ('ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB, "Calibrate ACE feed distance to hub"),
+            ('ACE_STATUS', self.cmd_ACE_STATUS, "Query ACE hardware status"),
+            ('ACE_DRY', self.cmd_ACE_DRY, "Start ACE filament dryer"),
+            ('ACE_DRY_STOP', self.cmd_ACE_DRY_STOP, "Stop ACE filament dryer"),
+            ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
+        ]:
+            try:
+                self.gcode.register_command(cmd, handler, desc=desc)
+            except Exception:
+                pass
 
         # Register temperature_ace sensor factory for [temperature_sensor]
         # sections that use sensor_type: temperature_ace.  This is a
@@ -353,11 +356,11 @@ class afcACE(afcUnit):
                         self.afc.spool.set_active_spool(lane.spool_id)
                         self.lane_tool_loaded(lane)
                         lane.status = AFCLaneState.TOOLED
-                        if self._use_feed_assist(lane):
-                            self._start_feed_assist(slot)
                     else:
                         self.lane_tool_loaded_idle(lane)
                     lane.enable_buffer()
+                    if self._use_feed_assist(lane):
+                        self._start_feed_assist(slot)
                 else:
                     if lane.name in self._hub_load_suppressed:
                         lane._load_suppressed = True
@@ -813,13 +816,15 @@ class afcACE(afcUnit):
                             self.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
                             self.printer.send_event("afc:tool_loaded", cur_lane)
-
-                            # Start feed assist immediately for loaded tool
-                            if self._use_feed_assist(cur_lane):
-                                self._start_feed_assist(slot)
                         else:
                             self.lane_tool_loaded_idle(cur_lane)
                         cur_lane.enable_buffer()
+
+                        # Start feed assist for any lane confirmed in the
+                        # toolhead — don't gate on self.afc.current which
+                        # may be None on toolchangers during prep.
+                        if self._use_feed_assist(cur_lane):
+                            self._start_feed_assist(slot)
 
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
