@@ -48,13 +48,8 @@ class TemperatureACE:
         # Klipper temperature callback
         self._callback = None
 
-        # Register object — simulate aht3x so Mainsail displays the sensor
-        self.simulate_aht3x = config.getboolean(
-            'simulate_supported_sensor_mainsail', True)
-        if self.simulate_aht3x:
-            self.printer.add_object("aht3x " + self.name, self)
-        else:
-            self.printer.add_object("temperature_ace " + self.name, self)
+        # Register object
+        self.printer.add_object("temperature_ace " + self.name, self)
 
         # Skip timers in debug mode
         if self.printer.get_start_args().get("debugoutput") is not None:
