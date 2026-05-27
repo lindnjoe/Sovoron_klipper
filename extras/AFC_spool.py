@@ -131,6 +131,9 @@ class AFCSpool:
             return
 
         self.afc.tool_redirects[source_cmd] = map_cmd
+        cur_lane.map = map_cmd
+        cur_lane.send_lane_data()
+
         target_lane = self.afc.tool_cmds.get(map_cmd, "?")
         self.logger.info(
             f"Redirected {source_cmd} ({lane}) -> {map_cmd} ({target_lane})")
@@ -577,17 +580,20 @@ class AFCSpool:
         ```
         """
 
-        # Gathering existing lane mapping and add to list
-        existing_cmds = [lane.map for lane in self.afc.lanes.values()]
-        # Gather manually assigned mappings and add to list
-        manually_assigned = [ lane._map for lane in self.afc.lanes.values()]
-        # Remove manually assigned mappings from auto assigned mappings
-        existing_cmds = list(set(existing_cmds) - set(manually_assigned))
-        # Sort list in numerical order
-        existing_cmds = sorted(existing_cmds, key=lambda x: int("".join([i for i in x if i.isdigit()])))
+        # Gather all tool commands from original config (_map) and current assignments
+        all_cmds = set()
+        for lane in self.afc.lanes.values():
+            if lane._map is not None:
+                all_cmds.add(lane._map)
+            elif lane.map is not None:
+                all_cmds.add(lane.map)
+        # Build pool of auto-assignable commands (not manually configured)
+        manually_assigned = {lane._map for lane in self.afc.lanes.values() if lane._map is not None}
+        existing_cmds = sorted(
+            all_cmds - manually_assigned,
+            key=lambda x: int("".join([i for i in x if i.isdigit()])))
         for key, unit in self.afc.units.items():
             for lane in unit.lanes.values():
-                # Reassigning manually assigned mapping to lane
                 if lane._map is not None:
                     map_cmd = lane._map
                 else:
@@ -595,6 +601,7 @@ class AFCSpool:
 
                 self.afc.tool_cmds[map_cmd] = lane.name
                 self.afc.lanes[lane.name].map = map_cmd
+                lane.send_lane_data()
 
         # Resetting runout lanes to None
         runout_opt = gcmd.get('RUNOUT', 'yes').lower()
