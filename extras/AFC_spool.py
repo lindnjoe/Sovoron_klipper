@@ -35,6 +35,8 @@ class AFCSpool:
         self.printer.register_event_handler("afc_stepper:register_macros",self.register_lane_macros)
 
         self.gcode.register_command("RESET_AFC_MAPPING", self.cmd_RESET_AFC_MAPPING, desc=self.cmd_RESET_AFC_MAPPING_help)
+        self.gcode.register_command("SET_TOOL_REDIRECT", self.cmd_SET_TOOL_REDIRECT, desc=self.cmd_SET_TOOL_REDIRECT_help)
+        self.gcode.register_command("CLEAR_TOOL_REDIRECTS", self.cmd_CLEAR_TOOL_REDIRECTS, desc=self.cmd_CLEAR_TOOL_REDIRECTS_help)
         self.gcode.register_command("SET_NEXT_SPOOL_ID", self.cmd_SET_NEXT_SPOOL_ID, desc=self.cmd_SET_NEXT_SPOOL_ID_help)
 
     def register_lane_macros(self, lane_obj):
@@ -128,6 +130,75 @@ class AFCSpool:
         sw_lane.map = map_switch
         sw_lane.send_lane_data()
         self.afc.save_vars()
+
+    cmd_SET_TOOL_REDIRECT_help = "Redirect one or more tool commands to a target tool"
+    def cmd_SET_TOOL_REDIRECT(self, gcmd):
+        """
+        Redirects one or more T# commands to a target T# command so that
+        multiple tools from a print all resolve to the same lane. This
+        allows a multi-color print to run on fewer physical lanes.
+
+        Redirects are session-only and cleared on restart or by
+        RESET_AFC_MAPPING / CLEAR_TOOL_REDIRECTS.
+
+        Usage
+        -----
+        `SET_TOOL_REDIRECT SOURCE=<T#[,T#,...]> TARGET=<T#>`
+
+        Example
+        -----
+        ```
+        SET_TOOL_REDIRECT SOURCE=T0,T4 TARGET=T6
+        ```
+        This makes T0 and T4 both resolve to T6's lane.
+        """
+        source = gcmd.get('SOURCE', None)
+        target = gcmd.get('TARGET', None)
+
+        if source is None:
+            self.logger.info("No SOURCE parameter provided")
+            return
+        if target is None:
+            self.logger.info("No TARGET parameter provided")
+            return
+
+        target = target.upper()
+        if target not in self.afc.tool_cmds:
+            self.logger.error(f"TARGET {target} is not a valid tool command")
+            return
+
+        sources = [s.strip().upper() for s in source.split(',') if s.strip()]
+        if not sources:
+            self.logger.info("No valid SOURCE tools provided")
+            return
+
+        redirected = []
+        for src in sources:
+            if src == target:
+                continue
+            if src not in self.afc.tool_cmds:
+                self.logger.warning(f"SOURCE {src} is not a registered tool, skipping")
+                continue
+            self.afc.tool_redirects[src] = target
+            redirected.append(src)
+
+        if redirected:
+            target_lane = self.afc.tool_cmds.get(target, "?")
+            self.logger.info(
+                f"Redirected {','.join(redirected)} -> {target} ({target_lane})")
+
+    cmd_CLEAR_TOOL_REDIRECTS_help = "Clear all tool redirects"
+    def cmd_CLEAR_TOOL_REDIRECTS(self, gcmd):
+        """
+        Clears all tool redirects set by SET_TOOL_REDIRECT.
+
+        Usage
+        -----
+        `CLEAR_TOOL_REDIRECTS`
+        """
+        count = len(self.afc.tool_redirects)
+        self.afc.tool_redirects.clear()
+        self.logger.info(f"Cleared {count} tool redirect(s)")
 
     cmd_SET_COLOR_help = "Set filaments color for a lane"
     def cmd_SET_COLOR(self, gcmd):
@@ -526,6 +597,9 @@ class AFCSpool:
         if runout_opt != 'no':
             for lane in self.afc.lanes.values():
                 lane.runout_lane = None
+
+        # Clear any session-only tool redirects
+        self.afc.tool_redirects.clear()
 
         self.afc.save_vars()
         self.logger.info("Tool mappings reset" + ("" if runout_opt == "no" else " and runout lanes reset"))

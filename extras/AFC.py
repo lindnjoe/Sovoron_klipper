@@ -108,6 +108,7 @@ class afc:
         self.hubs       = {}
         self.buffers    = {}
         self.tool_cmds  = {}
+        self.tool_redirects = {}
         self.led_obj    = {}
         self.led_state  = True
         self.bypass     = None
@@ -2300,6 +2301,9 @@ class afc:
             self.error.AFC_error("I did not understand the change -- " + cmd, pause=self.function.in_print())
             return
 
+        # Resolve tool redirects — allows many-to-one T# mapping
+        Tcmd = self.tool_redirects.get(Tcmd, Tcmd)
+
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length, new_extruder_temp=new_extruder_temp)
 
     def CHANGE_TOOL(self, cur_lane: AFCLane, purge_length: Optional[float]=None, restore_pos: bool=True, new_extruder_temp: Optional[float]=None) -> None:
@@ -2461,6 +2465,7 @@ class afc:
         str['units'] = list(unitdisplay)
         str['lanes'] = list(self.lanes.keys())
         str["maps"] = list(self.tool_cmds.keys())
+        str["tool_redirects"] = dict(self.tool_redirects)
         str["extruders"] = list(self.tools.keys())
         str["hubs"] = list(self.hubs.keys())
         str["buffers"] = list(self.buffers.keys())
