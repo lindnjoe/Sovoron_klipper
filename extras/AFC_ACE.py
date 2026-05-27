@@ -117,8 +117,21 @@ class afcACE(afcUnit):
             f'ACE_DRY_{unit_suffix}', self.cmd_ACE_DRY,
             desc=f"Start ACE filament dryer ({self.name})")
         self.gcode.register_command(
+            f'ACE_DRY_STOP_{unit_suffix}', self.cmd_ACE_DRY_STOP,
+            desc=f"Stop ACE filament dryer ({self.name})")
+        self.gcode.register_command(
             f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
             desc=f"Retract ACE lane filament back into unit ({self.name})")
+        # Register base commands (first unit wins for single-unit setups)
+        try:
+            self.gcode.register_command(
+                'ACE_DRY', self.cmd_ACE_DRY,
+                desc="Start ACE filament dryer")
+            self.gcode.register_command(
+                'ACE_DRY_STOP', self.cmd_ACE_DRY_STOP,
+                desc="Stop ACE filament dryer")
+        except Exception:
+            pass
 
         # Register temperature_ace sensor factory for [temperature_sensor]
         # sections that use sensor_type: temperature_ace.  This is a
@@ -1224,6 +1237,17 @@ class afcACE(afcUnit):
             gcmd.respond_info(f"ACE dryer started: {temp}°C for {duration} min")
         except Exception as e:
             gcmd.respond_info(f"Error starting dryer: {e}")
+
+    def cmd_ACE_DRY_STOP(self, gcmd):
+        """Stop ACE filament dryer."""
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        try:
+            self._ace.stop_drying()
+            gcmd.respond_info("ACE dryer stopped")
+        except Exception as e:
+            gcmd.respond_info(f"Error stopping dryer: {e}")
 
     def cmd_ACE_LANE_RESET(self, gcmd):
         """Retract lane filament back into ACE unit."""
