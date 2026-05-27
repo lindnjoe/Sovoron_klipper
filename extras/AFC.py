@@ -109,6 +109,7 @@ class afc:
         self.buffers    = {}
         self.tool_cmds  = {}
         self.tool_redirects = {}
+        self.print_used_tools = None
         self.led_obj    = {}
         self.led_state  = True
         self.bypass     = None
@@ -564,6 +565,7 @@ class afc:
         self.gcode.run_script_from_command("CLEAR_PAUSE")
         self.number_of_toolchanges = 0
         self.current_toolchange    = -1
+        self.print_used_tools      = None
         self.save_vars()
 
     def in_print_reactor_timer(self, eventtime):
@@ -2554,12 +2556,18 @@ class afc:
         if toolnum is not None:
             map = "T{}".format(toolnum)
 
-            # When tool redirect is active, source tools will never print.
-            # Block heating their extruders so idle tools don't heat up.
+            # Resolve redirects so heating targets the actual lane.
             if self.allow_tool_redirect and map in self.tool_redirects:
+                resolved = self.tool_redirects[map]
+                self.logger.debug(
+                    f"Redirect: M10x {map} -> {resolved}")
+                map = resolved
+                toolnum = int(resolved[1:])
+
+            # Block heating for tools not used in the current print.
+            if self.print_used_tools is not None and map not in self.print_used_tools:
                 self.logger.info(
-                    f"Redirect: blocking M10x for {map} "
-                    f"(redirected to {self.tool_redirects[map]})")
+                    f"Blocking M10x for {map} — not used in current print")
                 return
 
             lane = self.function.get_lane_by_map(map)

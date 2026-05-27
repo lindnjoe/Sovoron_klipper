@@ -721,6 +721,12 @@ class AFCU1Bridge:
         # Track which physical extruders AFC manages
         self._afc_managed_extruders = set(used_physical)
 
+        # Store used tool commands so M104/M109 can block unused tools
+        if used_tools is not None:
+            self.afc.print_used_tools = {"T{}".format(i) for i in used_tools}
+        else:
+            self.afc.print_used_tools = set(self.afc.tool_cmds.keys())
+
         # ── 1b. Build per-extruder lane usage for flow cal ──────
         lanes_per_ext = self._build_lanes_per_extruder(used_tools)
         flow_calib_phys = set(used_physical) if flow_calibrate else set()

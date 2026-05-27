@@ -644,8 +644,9 @@ class AFCSpool:
             for lane in self.afc.lanes.values():
                 lane.runout_lane = None
 
-        # Clear any session-only tool redirects
+        # Clear any session-only tool redirects and print usage
         self.afc.tool_redirects.clear()
+        self.afc.print_used_tools = None
 
         self.afc.save_vars()
         self.logger.info("Tool mappings reset" + ("" if runout_opt == "no" else " and runout lanes reset"))
