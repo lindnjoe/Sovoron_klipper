@@ -241,13 +241,10 @@ class AFC_U1_RFID:
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
-            apply_filament_defaults(lane, slot_info)
             allow_create = get_auto_spoolman_create(lane)
             sync_rfid_to_spoolman(
                 self.afc, lane, slot_info, self.logger, "U1 RFID",
-                allow_create=allow_create)
-            lane.send_lane_data()
-            self.afc.save_vars()
+                allow_create=allow_create, set_next=True)
             self._notify_scan(brand, material, color, slot_info,
                               lane_name=lane_name, is_scanner=True)
             return
