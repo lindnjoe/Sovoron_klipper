@@ -20,6 +20,8 @@ class AFCSpool:
         Handle the connection event.
         This function is called when the printer connects. It looks up the AFC object
         and assigns it to the instance variable `self.AFC`.
+
+        :return: None
         """
         self.afc        = self.printer.lookup_object('AFC')
         self.error      = self.afc.error
@@ -239,6 +241,12 @@ class AFCSpool:
         self.afc.save_vars()
 
     def set_active_spool(self, ID):
+        """
+        Set the active spool in Spoolman via a remote webhook call.
+
+        :param ID: Spool ID to set as active
+        :return: None
+        """
         webhooks = self.printer.lookup_object('webhooks')
         if self.afc.spoolman is not None:
             if ID and ID is not None:
@@ -316,6 +324,9 @@ class AFCSpool:
     def _set_values(self, cur_lane):
         """
         Helper function for setting lane spool values
+
+        :param cur_lane: AFCLane object whose spool values are being set
+        :return: None
         """
         # Always reset debounce on spool change
         cur_lane.auto_switch_triggered = False
@@ -355,6 +366,9 @@ class AFCSpool:
     def clear_values(self, cur_lane):
         """
         Helper function for clearing out lane spool values
+
+        :param cur_lane: AFCLane object whose spool values are being cleared
+        :return: None
         """
         cur_lane.spool_id = None
         cur_lane.material = ''
@@ -367,6 +381,14 @@ class AFCSpool:
         cur_lane.clear_lane_data()
 
     def set_spoolID(self, cur_lane, SpoolID, save_vars=True):
+        """
+        Set the spool ID for a lane and update its values from Spoolman.
+
+        :param cur_lane: AFCLane object to assign the spool to
+        :param SpoolID: Spool ID to assign to the lane
+        :param save_vars: Whether to persist variables after setting (default True)
+        :return: None
+        """
         if self.afc.spoolman is not None:
             if SpoolID not in ('', None):
                 try:

@@ -319,6 +319,13 @@ class afc:
         return self.function.get_current_lane()
 
     def _remove_after_last(self, string, char):
+        """
+        Remove all characters after the last occurrence of a given character.
+
+        :param string: The input string to process.
+        :param char: The character to search for.
+        :return: The string truncated after the last occurrence of char, or the original string if char is not found.
+        """
         last_index = string.rfind(char)
         if last_index != -1:
             return string[:last_index + 1]
@@ -326,7 +333,12 @@ class afc:
             return string
 
     def _update_trsync(self, config):
-        # Logic to update trsync values
+        """
+        Update trsync timeout values in the klipper MCU to help with Timer Too Close errors.
+
+        :param config: Klipper config object containing trsync settings.
+        :return: None
+        """
         update_trsync = config.getboolean("trsync_update", False)                   # Set to true to enable updating trsync value in klipper mcu. Enabling this and updating the timeouts can help with Timer Too Close(TTC) errors
         if update_trsync:
             try:
@@ -345,7 +357,12 @@ class afc:
                 self.logger.info("Unable to update TRSYNC_TIMEOUT: {}".format(e))
 
     def register_config_callback(self, option):
-        # Function needed for virtual pins, does nothing
+        """
+        No-op callback required for virtual pin registration.
+
+        :param option: Configuration option passed by the virtual pin interface.
+        :return: None
+        """
         return
 
     def register_lane_macros(self, lane_obj: AFCLane):
@@ -442,6 +459,9 @@ class afc:
     def print_version(self, console_only=False):
         """
         Calculated AFC git version and displays to console and log
+
+        :param console_only: If True, only display the version to the console.
+        :return: None
         """
         import subprocess
         import os
@@ -534,6 +554,8 @@ class afc:
         this callback.
 
         AFC errors are also reset as well as pause states are cleared in klipper's pause_resume module
+
+        :return: None
         """
         self.in_print_timer = self.reactor.register_timer( self.in_print_reactor_timer, self.reactor.monotonic() + 5 )
         self.error.reset_failure()
@@ -547,6 +569,9 @@ class afc:
         Print timer callback to check if printer is currently in a print. If printer is in a print,
         current filename is looked up and metadata is pulled from moonraker to get total filament change
         count. Once this is done timer callback is stopped and unregistered.
+
+        :param eventtime: The current event time from the reactor.
+        :return: None
         """
         # Remove timer from reactor
         self.reactor.unregister_timer(self.in_print_timer)
@@ -609,6 +634,10 @@ class afc:
     def _check_extruder_temp(self, cur_lane: AFCLane, no_wait: bool=False):
         """
         Helper function that check to see if extruder needs to be heated, and wait for hotend to get to temp if needed
+
+        :param cur_lane: The lane object whose material temperature settings are used.
+        :param no_wait: If True, do not wait for the extruder to reach temperature.
+        :return: True if the extruder needed to wait for heating, False otherwise.
         """
 
         # Prepare extruder and heater.
@@ -708,7 +737,7 @@ class afc:
         """
         Helper function to return if quiet is on or off
 
-        :return Returns current state of quiet switch
+        :return: Current state of quiet switch.
         """
         if self.show_quiet_mode:
             try:
@@ -739,7 +768,7 @@ class afc:
         """
         Helper function to return if filament is present in bypass sensor
 
-        :return Returns current state of bypass sensor. If bypass sensor does not exist, always returns False
+        :return: Current state of bypass sensor. If bypass sensor does not exist, always returns False.
         """
         bypass_state = False
 
@@ -772,8 +801,8 @@ class afc:
         """
         Helper function that checks if bypass has filament loaded
 
-        :param unload: Set True if user is trying to unload, when set to True and filament is loaded AFC runs users renamed stock UNLOAD_FILAMENT macro
-        :return        Returns true if filament is present in sensor
+        :param unload: Set True if user is trying to unload, when set to True and filament is loaded AFC runs users renamed stock UNLOAD_FILAMENT macro.
+        :return: True if filament is present in bypass sensor, False otherwise.
         """
         try:
             if self._get_bypass_state():
@@ -992,6 +1021,7 @@ class afc:
         :param speed: Speed to perform move at
         :param log_string: Additional string or name to log to logger when recording toolhead position in log
         :param wait_tool: Set to True to wait on toolhead moves
+        :return: None
         """
         newpos = self.gcode_move.last_position
         newpos[3] += e_amount
@@ -1003,6 +1033,8 @@ class afc:
     def save_pos(self):
         """
         Only save previous location on the first toolchange call to keep an error state from overwriting the location
+
+        :return: None
         """
         if not self.in_toolchange:
             if not self.error_state and not self.function.is_paused() and not self.position_saved:
@@ -1037,7 +1069,8 @@ class afc:
         restore_pos function restores the previous saved position, speed and coord type. The resume uses
         the z_hop value to lift, move to previous x,y coords, then lower to saved z position.
 
-        :param move_z_first: Enable to move z before moving x,y
+        :param move_z_first: Enable to move z before moving x,y.
+        :return: None
         """
         msg = "Restoring Position {}".format(self.last_toolhead_position)
         msg += " Base position: {}".format(self.base_position)
@@ -1090,6 +1123,8 @@ class afc:
         """
         save_vars function saves lane variables to var file and prints with indents to
                   make it more readable for users
+
+        :return: None
         """
 
         # Return early if prep is not done so that file is not overridden until prep is at least done
@@ -1214,6 +1249,12 @@ class afc:
         self.LANE_UNLOAD( cur_lane )
 
     def LANE_UNLOAD(self, cur_lane: AFCLane):
+        """
+        Unload filament from the specified lane, reversing it back to the home position.
+
+        :param cur_lane: The lane object to unload.
+        :return: None
+        """
         custom_result = cur_lane.unit_obj.lane_unload(cur_lane)
         if custom_result is not None:
             return custom_result
@@ -1461,6 +1502,7 @@ class afc:
         :param cur_lane: The lane object to be loaded.
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
+        :return: True if the load sequence completed successfully, False on failure.
         """
         if self.park_pre_load:
             self.gcode.run_script_from_command(self.park_pre_load_cmd)
@@ -1888,6 +1930,7 @@ class afc:
         :param cur_lane: The lane object to be unloaded.
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
+        :return: True if the unload sequence completed successfully, False on failure.
         """
         # ── Phase 1: Toolhead operations (shared by ALL unit types) ──
 
@@ -2260,6 +2303,15 @@ class afc:
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length, new_extruder_temp=new_extruder_temp)
 
     def CHANGE_TOOL(self, cur_lane: AFCLane, purge_length: Optional[float]=None, restore_pos: bool=True, new_extruder_temp: Optional[float]=None) -> None:
+        """
+        Perform a full tool change, unloading the current lane and loading the specified lane.
+
+        :param cur_lane: The lane object to change to.
+        :param purge_length: Optional purge length override. If None, the default purge length is used.
+        :param restore_pos: If True, restore the toolhead position after the tool change.
+        :param new_extruder_temp: Optional target temperature for the new extruder. If None, material defaults are used.
+        :return: None
+        """
         try:
             self.afcDeltaTime.set_start_time()
             # Check if the bypass filament sensor detects filament; if so, abort the tool change.
@@ -2381,6 +2433,9 @@ class afc:
     def get_status(self, eventtime=None):
         """
         Displays current status of AFC for webhooks
+
+        :param eventtime: Reactor event time (unused, required by Klipper status API).
+        :return: Dict containing current AFC state for webhooks.
         """
         str = {}
         str['current_load']             = self.current
@@ -2416,6 +2471,9 @@ class afc:
     def _webhooks_status(self, web_request):
         """
         Webhooks callback for <ip_address>/printer/afc/status, and displays current AFC status for everything
+
+        :param web_request: Klipper web request object to send the response to.
+        :return: None
         """
         str = {}
         numoflanes = 0
@@ -2590,6 +2648,11 @@ class afc:
     def _wait_for_temp_within_tolerance(self, heater, target_temp, tolerance=20):
         """
         Waits until the heater's temperature is within the specified tolerance.
+
+        :param heater: Klipper heater object to monitor.
+        :param target_temp: Target temperature in degrees Celsius.
+        :param tolerance: Acceptable temperature range around the target (default 20).
+        :return: None
         """
         if tolerance is None or target_temp <= 0:
             return

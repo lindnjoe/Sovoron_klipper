@@ -90,6 +90,8 @@ class AFCExtruderStats:
         Function that should be called at the beginning of PREP so that moonraker has
         enough time to start before AFC tries to connect. This fixes a race condition that can
         happen between klipper and moonraker when first starting up.
+
+        :return: None
         """
         self.moonraker = self.obj.afc.moonraker
         values = self.moonraker.get_afc_stats()
@@ -138,6 +140,8 @@ class AFCExtruderStats:
         """
         Function checks current cut value against users threshold value, outputs warning when cut is within
         1k cuts of threshold. Outputs errors once number of cuts exceed threshold
+
+        :return: None
         """
         send_message = False
         message_type = None
@@ -174,6 +178,8 @@ class AFCExtruderStats:
     def increase_cut_total(self):
         """
         Helper function for increasing all cut counts
+
+        :return: None
         """
         self.cut_total.increase_count()
         self.cut_total_since_changed.increase_count()
@@ -183,6 +189,8 @@ class AFCExtruderStats:
         """
         Helper function for increasing total toolchange count and number of toolchanges with
         error count.
+
+        :return: None
         """
         self.tc_total.increase_count()
         self.obj.afc.afc_stats.increase_toolchange_wo_error()
@@ -190,6 +198,8 @@ class AFCExtruderStats:
     def reset_stats(self):
         """
         Resets extruders load/unload/change total/select/unselect values and updates database
+
+        :return: None
         """
         self.tc_total.reset_count()
         self.tc_tool_unload.reset_count()
@@ -361,8 +371,11 @@ class AFCExtruder:
         return self.name
 
     def check_lanes(self):
-        # Checks to see if there are multiple lanes per toolhead, remove self created lane if
-        # there are more than 1 lanes registered
+        """Checks to see if there are multiple lanes per toolhead, remove self created lane if
+        there are more than 1 lanes registered.
+
+        :return: None
+        """
         if self.tc_lane is None:
             return
 
@@ -373,8 +386,11 @@ class AFCExtruder:
             self.printer.objects.pop(f"AFC_lane {self.name}")
 
     def handle_ready(self):
-        # Check to see if extruder name is currently in `self.lanes`, if it is then that means that
-        # no other lanes are setup for this extruder, and that this is a "standalone" toolhead
+        """Check to see if extruder name is currently in ``self.lanes``, if it is then that means that
+        no other lanes are setup for this extruder, and that this is a standalone toolhead.
+
+        :return: None
+        """
         if self.name in self.lanes:
             self.no_lanes = True
             self.logger.info(f"{self.name} no lanes")
@@ -392,6 +408,8 @@ class AFCExtruder:
         Handle the connection event.
         This function is called when the printer connects. It looks up AFC info
         and assigns it to the instance variable `self.AFC`.
+
+        :return: None
         """
         self.reactor = self.afc.reactor
         self.afc.tools[self.name] = self
@@ -451,6 +469,8 @@ class AFCExtruder:
         Function that should be called at the beginning of PREP so that moonraker has
         enough time to start before AFC tries to connect. This fixes a race condition that can
         happen between klipper and moonraker when first starting up.
+
+        :return: None
         """
         self.estats.handle_moonraker_stats()
 
@@ -460,6 +480,7 @@ class AFCExtruder:
         Notifies the currently loaded lane if filament is missing at the toolhead sensor.
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         :param sensor_name: Name of the triggering sensor ("tool_start" or "tool_end")
+        :return: None
         """
         # Notify the currently loaded lane if filament is missing at toolhead
         if not state and self.lane_loaded and self.lane_loaded in self.lanes:
@@ -477,11 +498,18 @@ class AFCExtruder:
         updated then future switch changes will not be detected.
 
         :param eventtime: Event time from the button press
+        :return: None
         """
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
 
     def note_tool_start_callback(self, state, force=False):
+        """Wrapper around the original note_filament_present that also triggers tool_start_callback.
+
+        :param state: Boolean indicating sensor state (True = filament present, False = runout)
+        :param force: If True, force the callback regardless of current state
+        :return: None
+        """
         self.orig_note_filament_present(state, force)
         self.tool_start_callback(0, state)
 
@@ -491,6 +519,8 @@ class AFCExtruder:
         Sets state directly rather than through note_filament_present(False)
         because calling that during printing triggers the runout event path
         which sets min_event_systime=NEVER, blocking future sensor events.
+
+        :return: None
         """
         if (self.filament_sensor_name is not None
                 and self.filament_sensor_obj is not None
@@ -513,6 +543,7 @@ class AFCExtruder:
 
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
+        :return: None
         """
         if state != self.tool_start_state:
             if self.tc_unit_name and self.is_standalone():
@@ -536,6 +567,12 @@ class AFCExtruder:
 
 
     def buffer_trailing_callback(self, eventtime, state):
+        """Callback for the buffer trailing sensor state update.
+
+        :param eventtime: Event time from the button press
+        :param state: Boolean indicating buffer trailing sensor state
+        :return: None
+        """
         self.buffer_trailing = state
 
     def handle_end_runout( self, eventtime):
@@ -548,6 +585,7 @@ class AFCExtruder:
         updated then future switch changes will not be detected.
 
         :param eventtime: Event time from the button press
+        :return: None
         """
 
         # TODO: Need to figure out correct runout for toolheads without units attached (toolchanger setups)
@@ -561,12 +599,15 @@ class AFCExtruder:
 
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
+        :return: None
         """
         self.tool_end_state = state
 
     def get_heater(self) -> Heater:
         """
         Helper function for returning extruders Heater object
+
+        :return: The Heater object for this extruder
         """
 
         return self.toolhead_extruder.get_heater()
@@ -722,6 +763,7 @@ class AFCExtruder:
         Helper function to set tool_stn length
 
         :param length: Length to set to tool_stn parameter
+        :return: None
         """
         if length > 0:
             msg = "tool_stn updated old: {}, new: {}".format(self.tool_stn, length)
@@ -736,6 +778,7 @@ class AFCExtruder:
         Helper function to set tool_stn_unload length
 
         :param length: Length to set to tool_stn_unload parameter
+        :return: None
         """
         if length >= 0:
             msg = "tool_stn_unload updated old: {}, new: {}".format(self.tool_stn_unload, length)
@@ -750,6 +793,7 @@ class AFCExtruder:
         Helper function to set tool_sensor_after_extruder length
 
         :param length: Length to set to tool_sensor_after_extruder parameter
+        :return: None
         """
         if length > 0:
             msg = "tool_sensor_after_extruder updated old: {}, new: {}".format(self.tool_sensor_after_extruder, length)
@@ -764,6 +808,7 @@ class AFCExtruder:
         Function to set status led indexes on toolhead if user defines `status_led_idx`
 
         :param color: Color to set led indexes
+        :return: None
         """
         if self.toolhead_led_obj is None:
             return
@@ -788,6 +833,7 @@ class AFCExtruder:
         then only sets leds that are defined in that index.
 
         :param state: Set to 1 to turn on the leds, set to 0 to turn off leds
+        :return: Tuple of (success, error_string) where success is a bool and error_string is a str
         """
         if self.toolhead_led_obj is None:
             error_string = f"led_name variable not set in [{self.fullname}] config section"
@@ -965,6 +1011,11 @@ class AFCExtruder:
             raise gcmd.error(error_string)
 
     def get_status(self, eventtime=None):
+        """Return the current status of this extruder for Klipper status reporting.
+
+        :param eventtime: Optional event time for the status query
+        :return: Dict containing extruder state such as tool_stn, lane_loaded, and sensor statuses
+        """
         self.response = {}
         self.response['tool_stn'] = self.tool_stn
         self.response['tool_stn_unload'] = self.tool_stn_unload

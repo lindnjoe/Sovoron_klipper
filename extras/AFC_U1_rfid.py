@@ -48,7 +48,12 @@ class AFC_U1_RFID:
         self._backed_off: bool = False
 
     def register_lane(self, lane: AFCLane, channel: int):
-        """Register a lane to monitor a specific filament_detect channel."""
+        """Register a lane to monitor a specific filament_detect channel.
+
+        :param lane: AFC lane instance to associate with the channel.
+        :param channel: U1 filament_detect channel index.
+        :return: None
+        """
         self._lane_channel_map[lane.name] = channel
         self._lane_objects[lane.name] = lane
         self._last_uid[channel] = None
@@ -56,7 +61,10 @@ class AFC_U1_RFID:
         self._consecutive_failures[channel] = 0
 
     def start(self):
-        """Start polling filament_detect for RFID data."""
+        """Start polling filament_detect for RFID data.
+
+        :return: None
+        """
         if not self._lane_channel_map:
             return
         self._filament_detect = self.printer.lookup_object("filament_detect", None)
@@ -84,7 +92,11 @@ class AFC_U1_RFID:
             self._poll_cb, self.reactor.monotonic() + POLL_INTERVAL)
 
     def _on_filament_info_update(self, *args):
-        """Callback fired by filament_detect with (channel, info_dict, official)."""
+        """Callback fired by filament_detect with (channel, info_dict, official).
+
+        :param args: Variable positional arguments forwarded by filament_detect.
+        :return: None
+        """
         if len(args) >= 2 and isinstance(args[0], int) and isinstance(args[1], dict):
             channel = args[0]
             info = args[1]
@@ -104,13 +116,20 @@ class AFC_U1_RFID:
                     f"U1 RFID: _on_filament_info_update error {lane_name}: {e}")
 
     def stop(self):
-        """Stop polling."""
+        """Stop polling.
+
+        :return: None
+        """
         if self._poll_timer is not None:
             self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
 
     def _trigger_channel_update(self, channel: int) -> bool:
         """Trigger a fresh read from hardware for a scanner channel.
-        Returns True on success, False on failure."""
+        Returns True on success, False on failure.
+
+        :param channel: U1 filament_detect channel index.
+        :return: True on success, False on failure.
+        """
         fd = self._filament_detect
         if hasattr(fd, 'update_filament_info'):
             try:
@@ -134,7 +153,11 @@ class AFC_U1_RFID:
             return False
 
     def _poll_cb(self, eventtime):
-        """Periodic check for new RFID data on registered channels."""
+        """Periodic check for new RFID data on registered channels.
+
+        :param eventtime: Current reactor monotonic time.
+        :return: Next poll time as a float.
+        """
         for ch in self._scanner_channels:
             if not self._trigger_channel_update(ch):
                 self._consecutive_failures[ch] = \
@@ -178,6 +201,7 @@ class AFC_U1_RFID:
         :param lane_name: AFC lane name mapped to this RFID channel.
         :param channel: U1 filament_detect channel index.
         :param info: Pre-fetched RFID info dict, or *None* to read live.
+        :return: None
         """
         if self._filament_detect is None:
             return
@@ -249,7 +273,12 @@ class AFC_U1_RFID:
             self.printer.send_event("afc:tool_loaded", lane)
 
     def _clear_lane(self, lane, lane_name: str):
-        """Clear RFID data from a lane when tag is removed."""
+        """Clear RFID data from a lane when tag is removed.
+
+        :param lane: AFC lane instance to clear.
+        :param lane_name: Name of the lane being cleared.
+        :return: None
+        """
         lane.material = ""
         lane.color = ""
         if getattr(lane, "spool_id", None) not in (None, "", 0):
@@ -262,7 +291,11 @@ class AFC_U1_RFID:
         self.afc.save_vars()
 
     def _get_channel_info(self, channel: int) -> Optional[dict]:
-        """Read filament info for a channel from filament_detect."""
+        """Read filament info for a channel from filament_detect.
+
+        :param channel: U1 filament_detect channel index.
+        :return: RFID info dict for the channel, or None if unavailable.
+        """
         fd = self._filament_detect
         if hasattr(fd, 'get_a_filament_info'):
             try:
@@ -298,7 +331,11 @@ class AFC_U1_RFID:
         return None
 
     def _map_to_slot_info(self, info: dict) -> dict:
-        """Map filament_detect fields to AFC RFID slot_info format."""
+        """Map filament_detect fields to AFC RFID slot_info format.
+
+        :param info: Raw RFID info dict from filament_detect.
+        :return: Normalized slot info dict for AFC use.
+        """
         rgb_int = info.get("RGB_1", 0)
         if rgb_int == 16777215 or rgb_int == 0:
             color_hex = ""
@@ -346,6 +383,7 @@ class AFC_U1_RFID:
         :param slot_info: Full slot info dict from RFID tag.
         :param lane_name: Lane name; empty string if unknown.
         :param is_scanner: True when this is a spool_scanner read.
+        :return: None
         """
         try:
             cname = color_name(color) if color else ""
@@ -421,7 +459,11 @@ class AFC_U1_RFID:
             self.logger.warning(f"U1 RFID: notification error: {e}")
 
     def force_read(self, lane_name: str):
-        """Force an RFID re-read for a specific lane."""
+        """Force an RFID re-read for a specific lane.
+
+        :param lane_name: Name of the lane to re-read.
+        :return: None
+        """
         channel = self._lane_channel_map.get(lane_name)
         if channel is None:
             return

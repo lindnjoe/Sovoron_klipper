@@ -163,6 +163,10 @@ class AFCU1Bridge:
                                             self._handle_pre_resume)
 
     def _handle_connect(self):
+        """Register G-code commands, patch U1 callbacks, and complete initialization.
+
+        :return: None
+        """
         self.functions = self.printer.lookup_object('AFC_functions')
         afc = self.printer.lookup_object("AFC")
         self.logger = afc.logger
@@ -218,7 +222,10 @@ class AFCU1Bridge:
         self.logger.info("AFC_bridge_U1 initialized")
 
     def _handle_ready(self):
-        """Defer Spoolman flow K loading and patch scanner RFID callback."""
+        """Defer Spoolman flow K loading and patch scanner RFID callback.
+
+        :return: None
+        """
         self._patch_scanner_rfid_update()
         self.printer.get_reactor().register_callback(self._deferred_load_flow_k)
 
@@ -456,6 +463,8 @@ class AFCU1Bridge:
 
         Stores into ``_saved_temps`` dict for later restoration via
         ``_restore_extruder_temps()``.
+
+        :return: None
         """
         for i in range(self.physical_extruder_num):
             name = "extruder" if i == 0 else "extruder{}".format(i)
@@ -472,6 +481,8 @@ class AFCU1Bridge:
 
         Uses temps captured by ``_save_extruder_temps()``. Skips extruders
         whose saved target was 0.
+
+        :return: None
         """
         if not self._saved_temps:
             self.logger.info("No saved temps to restore")
@@ -492,6 +503,8 @@ class AFCU1Bridge:
         filament_exist to False when AFC filament doesn't trigger the
         native feed-port sensors.  This patch re-asserts True for any
         extruder tracked in ``_afc_managed_extruders``.
+
+        :return: None
         """
         ptc = self.printer.lookup_object("print_task_config", None)
         if ptc is None or not hasattr(ptc, 'update_filament_exist_flag'):
@@ -522,6 +535,8 @@ class AFCU1Bridge:
         ``FLOW_RESET_K``, overwriting both the filament info and flow K that
         AFC set for the actually-loaded lane.  This patch replaces that callback
         with one that re-syncs AFC data for scanner channels instead.
+
+        :return: None
         """
         ptc = self.printer.lookup_object("print_task_config", None)
         fd = self.printer.lookup_object("filament_detect", None)
@@ -598,6 +613,7 @@ class AFCU1Bridge:
         :param shaper_calibrate: Whether to enable input shaper calibration (0 or 1)
         :param flow_calib_phys: Set of physical indices to flow-calibrate, or
             None to calibrate all used_physical
+        :return: None
         """
         cfg = ptc.print_task_config
 
@@ -981,6 +997,7 @@ class AFCU1Bridge:
         Home Z axis with optional offset.
 
         :param z_offset: Z offset to apply during homing (default 0.0)
+        :return: None
         """
         if z_offset:
             self.gcode.run_script_from_command(
@@ -993,6 +1010,7 @@ class AFCU1Bridge:
         Run adaptive bed mesh calibration.
 
         :param z_offset: Z offset to apply during probing (default 0.0)
+        :return: None
         """
         cmd = "BED_MESH_CALIBRATE PROBE_COUNT=11,11 ADAPTIVE=1 ADAPTIVE_MARGIN=50"
         if z_offset:
@@ -1000,9 +1018,17 @@ class AFCU1Bridge:
         self.gcode.run_script_from_command(cmd)
 
     def _run_shaper_calibrate(self):
+        """Run fast input shaper calibration via SM_FAST_SHAPER_CALIBRATE.
+
+        :return: None
+        """
         self.gcode.run_script_from_command("SM_FAST_SHAPER_CALIBRATE")
 
     def _run_defect_detection(self):
+        """Run bed defect detection via DEFECT_DETECTION_DETECT_BED.
+
+        :return: None
+        """
         self.gcode.run_script_from_command("DEFECT_DETECTION_DETECT_BED")
 
     def _ensure_feed_assist(self, lane):
@@ -1036,6 +1062,10 @@ class AFCU1Bridge:
             pass
 
     def _exit_discard_bin(self):
+        """Move the toolhead out of the discard bin via SNAPMAKER_EXIT_DISCARD_BIN.
+
+        :return: None
+        """
         self.gcode.run_script_from_command("SNAPMAKER_EXIT_DISCARD_BIN")
 
     def _run_switch_check(self, used_physical):
@@ -1046,6 +1076,7 @@ class AFCU1Bridge:
         the toolchanger mechanism works for all extruders in this print.
 
         :param used_physical: Sorted list of physical extruder indices to check
+        :return: None
         """
         self.gcode.run_script_from_command(
             "SET_ACTION_CODE ACTION=PRINT_SWITCH_CHECKING"
@@ -1059,6 +1090,10 @@ class AFCU1Bridge:
         self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=IDLE")
 
     def _run_nozzle_clean(self):
+        """Move to discard position, clean the nozzle, and exit the discard bin.
+
+        :return: None
+        """
         self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
         self.gcode.run_script_from_command("ROUGHLY_CLEAN_NOZZLE")
         self._exit_discard_bin()
@@ -1069,6 +1104,7 @@ class AFCU1Bridge:
 
         :param used_physical: List of physical extruder indices to preheat
         :param preheat_temp: Target preheat temperature in °C (default 150)
+        :return: None
         """
         for ext in used_physical:
             self.gcode.run_script_from_command(
@@ -1094,6 +1130,7 @@ class AFCU1Bridge:
         :param flow_calib_phys: Set of physical extruder indices to calibrate
         :param phys_to_lane: Dict mapping physical index to first AFCLane on that extruder
         :param lanes_per_ext: Dict mapping physical index to list of (logical_index, lane) tuples
+        :return: None
         """
         flow_cal = self.printer.lookup_object("flow_calibrator", None)
 
@@ -1189,6 +1226,7 @@ class AFCU1Bridge:
 
         :param lane: AFCLane object
         :param k: Flow calibration K value to store
+        :return: None
         """
         spool_id = self._norm_spool_id(getattr(lane, 'spool_id', None))
         self._lane_flow_k[lane.name] = (spool_id, k)
@@ -1255,6 +1293,8 @@ class AFCU1Bridge:
         before printing starts.  Lanes that already have K in memory (e.g.
         from flow calibration in step 9) are skipped. Only queries Spoolman
         for lanes with ``spoolman_flow_sync`` enabled.
+
+        :return: None
         """
         for lane in self.afc.lanes.values():
             if self._get_lane_k(lane) is not None:
@@ -1327,6 +1367,7 @@ class AFCU1Bridge:
 
         :param lane: AFCLane object with a valid spool_id
         :param k: Flow calibration K value to write
+        :return: None
         """
         spool_id = getattr(lane, 'spool_id', None)
         if not spool_id:
@@ -1419,6 +1460,7 @@ class AFCU1Bridge:
         For unidentified spools: stores K in memory only for this session.
 
         :param cur_lane: AFCLane object to calibrate
+        :return: None
         """
         lane_name = cur_lane.name
         ext_name = cur_lane.extruder_obj.name
@@ -1467,6 +1509,8 @@ class AFCU1Bridge:
         Event handler for ``extruder:activate_extruder``.
         Re-applies flow K when an extruder is activated (e.g. after G28
         resets pressure advance to the extruder's default).
+
+        :return: None
         """
         self._reapply_current_k()
 
@@ -1478,6 +1522,7 @@ class AFCU1Bridge:
 
         :param homing_state: Klipper homing state object
         :param rails: List of rails that were homed
+        :return: None
         """
         self._reapply_current_k()
 
@@ -1488,6 +1533,8 @@ class AFCU1Bridge:
         Ensures filament_exist and filament_type are correct so INNER_RESUME
         won't throw error 523.  Runs before ``pre_resume_cmd`` so it works
         regardless of whether that command also syncs filament.
+
+        :return: None
         """
         ptc = self.printer.lookup_object("print_task_config", None)
         if ptc is not None:
@@ -1504,6 +1551,8 @@ class AFCU1Bridge:
 
         Guards against running before prep completes or during non-Idle states.
         Falls back to Spoolman if K is not in memory.
+
+        :return: None
         """
         if not self.afc.prep_done:
             return
@@ -1529,6 +1578,7 @@ class AFCU1Bridge:
         Loads filament to the toolhead via TOOL_LOAD if not already loaded.
 
         :param cur_lane: AFCLane object that had filament inserted
+        :return: None
         """
         if not self.afc.prep_done:
             return
@@ -1583,6 +1633,7 @@ class AFCU1Bridge:
         errors don't crash the print.
 
         :param cur_lane: AFCLane object that was just loaded into the toolhead
+        :return: None
         """
         try:
             self._do_handle_tool_loaded(cur_lane)
@@ -1601,6 +1652,7 @@ class AFCU1Bridge:
         (from memory or Spoolman).
 
         :param cur_lane: AFCLane object that was just loaded into the toolhead
+        :return: None
         """
         ptc = self.printer.lookup_object("print_task_config", None)
         if ptc is not None:
@@ -1678,4 +1730,9 @@ class AFCU1Bridge:
 
 
 def load_config(config):
+    """Klipper module entry point for AFC_bridge_U1.
+
+    :param config: Klipper config object for this section
+    :return: AFCU1Bridge instance
+    """
     return AFCU1Bridge(config)
