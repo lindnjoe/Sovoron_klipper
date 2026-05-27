@@ -123,15 +123,18 @@ class afcACE(afcUnit):
             f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
             desc=f"Retract ACE lane filament back into unit ({self.name})")
         # Register base commands (first unit wins for single-unit setups)
-        try:
-            self.gcode.register_command(
-                'ACE_DRY', self.cmd_ACE_DRY,
-                desc="Start ACE filament dryer")
-            self.gcode.register_command(
-                'ACE_DRY_STOP', self.cmd_ACE_DRY_STOP,
-                desc="Stop ACE filament dryer")
-        except Exception:
-            pass
+        for cmd, handler, desc in [
+            ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
+            ('ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB, "Calibrate ACE feed distance to hub"),
+            ('ACE_STATUS', self.cmd_ACE_STATUS, "Query ACE hardware status"),
+            ('ACE_DRY', self.cmd_ACE_DRY, "Start ACE filament dryer"),
+            ('ACE_DRY_STOP', self.cmd_ACE_DRY_STOP, "Stop ACE filament dryer"),
+            ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
+        ]:
+            try:
+                self.gcode.register_command(cmd, handler, desc=desc)
+            except Exception:
+                pass
 
         # Register temperature_ace sensor factory for [temperature_sensor]
         # sections that use sensor_type: temperature_ace.  This is a
