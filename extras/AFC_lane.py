@@ -2061,6 +2061,9 @@ class AFCLane:
         response['buffer_status'] = self.buffer_status()
         response['lane'] = self.index
         response['map'] = self.map
+        afc = self.printer.lookup_object('AFC', None)
+        if afc and afc.allow_tool_redirect and self.map in afc.tool_redirects:
+            response['redirect_target'] = afc.tool_redirects[self.map]
         response['load'] = self.load_state
         response["prep"] =bool(self.prep_state)
         if self._selector_state is not None:

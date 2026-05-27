@@ -128,19 +128,37 @@ class AFCSpool:
 
         cur_lane = self.afc.lanes[lane]
 
-        if cur_lane.map == map_cmd:
-            self.logger.info(f"{lane} is already mapped to {map_cmd}")
-            return
-
         if self.afc.allow_tool_redirect:
-            source_cmd = cur_lane.map
+            # Find the lane's original tool from tool_cmds (never modified
+            # in redirect mode), not lane.map which other calls may have
+            # already changed.
+            source_cmd = None
+            for tcmd, lname in self.afc.tool_cmds.items():
+                if lname == lane:
+                    source_cmd = tcmd
+                    break
+            if source_cmd is None:
+                self.logger.error(f"Cannot find tool command for {lane}")
+                return
+            if source_cmd == map_cmd:
+                return
+
+            # Don't allow redirecting a tool that is already a redirect
+            # target — that would break existing redirects pointing at it.
+            if source_cmd in self.afc.tool_redirects.values():
+                self.logger.debug(
+                    f"Skipping redirect for {source_cmd} — it is a redirect target")
+                return
+
             self.afc.tool_redirects[source_cmd] = map_cmd
-            cur_lane.map = map_cmd
-            cur_lane.send_lane_data()
             target_lane = self.afc.tool_cmds.get(map_cmd, "?")
             self.logger.info(
                 f"Redirected {source_cmd} ({lane}) -> {map_cmd} ({target_lane})")
         else:
+            if cur_lane.map == map_cmd:
+                self.logger.info(f"{lane} is already mapped to {map_cmd}")
+                return
+
             lane_switch = self.afc.tool_cmds[map_cmd]
             sw_lane = self.afc.lanes[lane_switch]
             map_switch = cur_lane.map
