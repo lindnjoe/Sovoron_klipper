@@ -699,6 +699,8 @@ class AFCExtruder:
                 if self.current_move_distance > 0:
                     self.tc_lane.set_loaded()
                     self.tc_lane.set_tool_loaded()
+                    self.lane_loaded = self.tc_lane.name
+                    self.printer.send_event("afc:tool_loaded", self.tc_lane)
                 else:
                     self.tc_lane.set_tool_unloaded()
             else:
