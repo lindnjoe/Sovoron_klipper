@@ -289,8 +289,8 @@ class afcUnit:
         # Selection buttons
         buttons.append(("Calibrate Lanes", "UNIT_LANE_CALIBRATION UNIT={}".format(self.name), "primary"))
 
-        direct_hubs = any( lane.is_direct_hub() for lane in self.lanes.values())
-        lanes_loaded = any( lane.load_state and not lane.is_direct_hub() for lane in self.lanes.values())
+        direct_hubs = any( lane.is_direct_dist() for lane in self.lanes.values())
+        lanes_loaded = any( (lane.load_state and not getattr(lane.hub_obj, "use_dist_hub", False)) and not lane.is_direct_hub() for lane in self.lanes.values())
         any_lane_has_td1_ids = any( lane.td1_device_id for lane in self.lanes.values())
 
         if not direct_hubs or lanes_loaded:
