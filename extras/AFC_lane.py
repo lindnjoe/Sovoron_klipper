@@ -292,8 +292,9 @@ class AFCLane:
         if (self.hub
             and "direct" not in self.hub):
             self._get_hub_object()
-            self._set_homing_endstop(query_endstops, ppins,
-                                     self.hub_obj.switch_pin, AFCHomingPoints.HUB)
+            if not self.hub_obj.is_virtual_pin():
+                self._set_homing_endstop(query_endstops, ppins,
+                                         self.hub_obj.switch_pin, AFCHomingPoints.HUB)
         if self.buffer_name:
             self._get_buffer_object()
             self._set_homing_endstop(query_endstops, ppins,
