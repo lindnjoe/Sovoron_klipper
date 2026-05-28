@@ -637,7 +637,8 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
+        if lane.led_spool_index is not None:
+            self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
 
     def lane_fault(self, lane):
         """
