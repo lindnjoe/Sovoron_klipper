@@ -89,6 +89,7 @@ class afcACE(afcUnit):
         self._feed_assist_active: set[int] = set()
         self._slot_inventory: list[dict] = [{} for _ in range(self.SLOTS_PER_UNIT)]
         self._operation_active = False
+        self._cached_hw_status = {}
         self._prev_states_stale = False
         self._prev_slot_states: dict[str, bool] = {}
         self._hub_load_suppressed: set[str] = set()
@@ -116,17 +117,35 @@ class afcACE(afcUnit):
             f'ACE_DRY_{unit_suffix}', self.cmd_ACE_DRY,
             desc=f"Start ACE filament dryer ({self.name})")
         self.gcode.register_command(
+            f'ACE_DRY_STOP_{unit_suffix}', self.cmd_ACE_DRY_STOP,
+            desc=f"Stop ACE filament dryer ({self.name})")
+        self.gcode.register_command(
             f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
             desc=f"Retract ACE lane filament back into unit ({self.name})")
+        # Register base commands (first unit wins for single-unit setups)
+        for cmd, handler, desc in [
+            ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
+            ('ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB, "Calibrate ACE feed distance to hub"),
+            ('ACE_STATUS', self.cmd_ACE_STATUS, "Query ACE hardware status"),
+            ('ACE_DRY', self.cmd_ACE_DRY, "Start ACE filament dryer"),
+            ('ACE_DRY_STOP', self.cmd_ACE_DRY_STOP, "Stop ACE filament dryer"),
+            ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
+        ]:
+            try:
+                self.gcode.register_command(cmd, handler, desc=desc)
+            except Exception:
+                pass
 
-        # Register temperature_ace sensor factory during config parsing
-        # so [temperature_sensor] sections can resolve sensor_type: temperature_ace
+        # Register temperature_ace sensor factory for [temperature_sensor]
+        # sections that use sensor_type: temperature_ace.
         try:
             from extras.temperature_ace import TemperatureACE
             pheaters = self.printer.load_object(config, "heaters")
             pheaters.add_sensor_factory("temperature_ace", TemperatureACE)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.info(
+                "AFC_ACE: temperature_ace factory not registered (%s); "
+                "use [temperature_ace <name>] config sections instead", e)
 
     def handle_connect(self):
         super().handle_connect()
@@ -249,6 +268,7 @@ class afcACE(afcUnit):
         try:
             hw_status = self._ace.get_status(timeout=2.0)
             if isinstance(hw_status, dict):
+                self._cached_hw_status = hw_status
                 for i, slot_data in enumerate(hw_status.get("slots", [])):
                     if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
                         self._slot_inventory[i]["status"] = slot_data.get("status", "")
@@ -264,12 +284,13 @@ class afcACE(afcUnit):
 
     def _on_hw_status_callback(self, response):
         """Process heartbeat status from ACE — keep lane states in sync."""
-        if self._operation_active:
-            return
         if not isinstance(response, dict):
             return
         result = response.get("result", response)
         if not isinstance(result, dict):
+            return
+        self._cached_hw_status = result
+        if self._operation_active:
             return
         self._sync_slot_states(result)
 
@@ -1202,15 +1223,15 @@ class afcACE(afcUnit):
     cmd_ACE_DRY_options = {
         "UNIT": {"type": "string", "default": ""},
         "TEMP": {"type": "float", "default": 50.0},
-        "DURATION": {"type": "float", "default": 240.0},
-        "FAN": {"type": "int", "default": 5000},
+        "DURATION": {"type": "float", "default": 90.0},
+        "FAN": {"type": "int", "default": 800},
     }
 
     def cmd_ACE_DRY(self, gcmd):
         """Start ACE filament dryer."""
         temp = gcmd.get_float('TEMP', 50.0)
-        duration = gcmd.get_float('DURATION', 240.0)
-        fan = gcmd.get_int('FAN', 5000)
+        duration = gcmd.get_float('DURATION', 90.0)
+        fan = gcmd.get_int('FAN', 800)
         if not self._ace or not self._ace.connected:
             gcmd.respond_info("ACE not connected")
             return
@@ -1219,6 +1240,17 @@ class afcACE(afcUnit):
             gcmd.respond_info(f"ACE dryer started: {temp}°C for {duration} min")
         except Exception as e:
             gcmd.respond_info(f"Error starting dryer: {e}")
+
+    def cmd_ACE_DRY_STOP(self, gcmd):
+        """Stop ACE filament dryer."""
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        try:
+            self._ace.stop_drying()
+            gcmd.respond_info("ACE dryer stopped")
+        except Exception as e:
+            gcmd.respond_info(f"Error stopping dryer: {e}")
 
     def cmd_ACE_LANE_RESET(self, gcmd):
         """Retract lane filament back into ACE unit."""
