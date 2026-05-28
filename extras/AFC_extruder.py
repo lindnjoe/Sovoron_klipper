@@ -249,6 +249,8 @@ class AFCExtruder:
         self.set_status_color_fn        = None
         self.check_transmit_status_fn   = None
         self.status_led_count:int       = 0
+        self._captured_toolhead_temp: Optional[dict] = None
+
         # U1 only related variables
         self.filament_sensor_name: str  = config.get('u1_filament_sensor_name', None)
         self.park_detector: str         = config.get("u1_park_detector_name", None)
@@ -671,8 +673,16 @@ class AFCExtruder:
 
         axis_r, accel_t, cruise_t, cruise_v = calc_move_time(distance, self.tool_load_speed, 5)
         print_time = toolhead.get_last_move_time()
-        self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
-                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5, 0) # TODO: add a check for the zero
+
+        trapq_append_args = (self.trapq, print_time, accel_t, cruise_t, accel_t,
+                             0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5,)
+
+        # Checking to see if zero needs to be appended, this is mainly for Snapmaker U1 klipper version
+        if self.afc.trapq_append_line:
+            trapq_append_args = trapq_append_args + (0,)
+
+        self.trapq_append(*trapq_append_args)
+
         print_time = print_time + accel_t + cruise_t + accel_t
 
         if self.motion_queuing is None:
