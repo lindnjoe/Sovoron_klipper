@@ -211,18 +211,6 @@ class TemperatureOAMS:
         }
 
 
-_REGISTERED = False
-
-def _register_sensor_factory(printer):
-    global _REGISTERED
-    if _REGISTERED:
-        return
-    try:
-        pheater = printer.lookup_object("heaters")
-        pheater.add_sensor_factory("temperature_oams", TemperatureOAMS)
-        _REGISTERED = True
-    except Exception:
-        pass
-
 def load_config(config):
-    _register_sensor_factory(config.get_printer())
+    pheater = config.get_printer().lookup_object("heaters")
+    pheater.add_sensor_factory("temperature_oams", TemperatureOAMS)
