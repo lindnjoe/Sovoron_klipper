@@ -151,6 +151,8 @@ class AFCSpool:
                 return
 
             self.afc.tool_redirects[source_cmd] = map_cmd
+            cur_lane.map = map_cmd
+            cur_lane.send_lane_data()
             target_lane = self.afc.tool_cmds.get(map_cmd, "?")
             self.logger.info(
                 f"Redirected {source_cmd} ({lane}) -> {map_cmd} ({target_lane})")
@@ -222,6 +224,12 @@ class AFCSpool:
                 self.logger.warning(f"SOURCE {src} is not a registered tool, skipping")
                 continue
             self.afc.tool_redirects[src] = target
+            src_lane_name = self.afc.tool_cmds.get(src)
+            if src_lane_name:
+                src_lane = self.afc.lanes.get(src_lane_name)
+                if src_lane:
+                    src_lane.map = target
+                    src_lane.send_lane_data()
             redirected.append(src)
 
         if redirected:
@@ -615,13 +623,13 @@ class AFCSpool:
         ```
         """
 
-        # Gather all tool commands from original config (_map) and current assignments
-        all_cmds = set()
+        # Gather all tool commands from tool_cmds (never modified in redirect
+        # mode) and original config (_map).  Using lane.map would collapse
+        # duplicates created by redirects.
+        all_cmds = set(self.afc.tool_cmds.keys())
         for lane in self.afc.lanes.values():
             if lane._map is not None:
                 all_cmds.add(lane._map)
-            elif lane.map is not None:
-                all_cmds.add(lane.map)
         # Build pool of auto-assignable commands (not manually configured)
         manually_assigned = {lane._map for lane in self.afc.lanes.values() if lane._map is not None}
         existing_cmds = sorted(
