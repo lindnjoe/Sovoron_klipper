@@ -1678,20 +1678,20 @@ class AFCLane:
             scan_time = self.td1_data['scan_time'] if 'scan_time' in self.td1_data else ""
             td        = self.td1_data['td']        if 'td'        in self.td1_data else ""
 
-            lane_number = self.map.replace("T", "")
             lane_data = {
                 "namespace": "lane_data",
                 "key": self.name,
                 "value": {
-                    "color"         : self.color,
-                    "material"      : self.material,
-                    "bed_temp"      : self.bed_temp,
-                    "nozzle_temp"   : self.extruder_temp,
-                    "scan_time"     : scan_time,
-                    "td"            : td,
-                    "lane"          : lane_number,
-                    "spool_id"      : self.spool_id,
-                    "weight"        : self.weight
+                    "color"          : self.color,
+                    "material"       : self.material,
+                    "bed_temp"       : self.bed_temp,
+                    "nozzle_temp"    : self.extruder_temp,
+                    "scan_time"      : scan_time,
+                    "td"             : td,
+                    "lane"           : self.lane_index,
+                    "extruder_index" : self.lane_extruder_index,
+                    "spool_id"       : self.spool_id,
+                    "weight"         : self.weight
                 }
             }
             self.afc.moonraker.send_lane_data(lane_data)
@@ -1701,19 +1701,19 @@ class AFCLane:
         Clears lane data that is currently stored at moonrakers `machine/set_lane_data` endpoint
         """
         if self.map is not None and "T" in self.map:
-            lane_number = self.map.replace("T", "")
             lane_data = {
                 "namespace": "lane_data",
                 "key": self.name,
                 "value": {
-                    "color"         :  "",
-                    "material"      : "",
-                    "bed_temp"      : "",
-                    "nozzle_temp"   : "",
-                    "scan_time"     : "",
-                    "td"            : "",
-                    "lane"          : lane_number,
-                    "spool_id"      : None
+                    "color"          : "",
+                    "material"       : "",
+                    "bed_temp"       : "",
+                    "nozzle_temp"    : "",
+                    "scan_time"      : "",
+                    "td"             : "",
+                    "lane"           : self.lane_index,
+                    "extruder_index" : self.lane_extruder_index,
+                    "spool_id"       : None
                 }
             }
             self.afc.moonraker.send_lane_data(lane_data)
@@ -1874,15 +1874,17 @@ class AFCLane:
                                      "Switch status can be checked with the AFC_STATUS command.".format(self.name), pause=False)
             return
 
-        # Do not set lane as loaded if virtual bypass or normal bypass is enabled/triggered
-        if self.afc.bypass.sensor_enabled:
+        # Do not set lane as loaded if virtual bypass or normal bypass is triggered
+        if self.afc._get_bypass_state():
             disable_msg = ""
+            detected_msg = " detects filament"
             msg = f"Cannot set {self.name} as loaded, "
 
             if 'virtual' in self.afc.bypass.name:
                 msg += "virtual "
+                detected_msg = " is enabled"
                 disable_msg = " and disable"
-            msg += f"bypass is enabled.\nPlease unload{disable_msg} before trying to set lanes as loaded."
+            msg += f"bypass{detected_msg}.\nPlease unload{disable_msg} before trying to set lanes as loaded."
             self.logger.error(msg)
             return
 

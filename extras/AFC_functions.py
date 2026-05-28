@@ -951,7 +951,7 @@ class afcFunction:
                 if hasattr(lane, "hub_obj") and hasattr(lane.hub_obj, "state"):
                     reset_lane = lane.hub_obj.state
 
-                self._afc_cali_fail(cali=lane, dis=abs(pos), reset_lane=(pos!=0 and reset_lane),fail_message=msg)
+                self._afc_cali_fail(cali=lane.name, dis=abs(pos), reset_lane=(pos!=0 and reset_lane),fail_message=msg)
                 return checked, [], []
             else:
                 if msg == "calibration_lane":
