@@ -292,9 +292,8 @@ class AFCLane:
         if (self.hub
             and "direct" not in self.hub):
             self._get_hub_object()
-            if not self.hub_obj.is_virtual_pin():
-                self._set_homing_endstop(query_endstops, ppins,
-                                         self.hub_obj.switch_pin, AFCHomingPoints.HUB)
+            self._set_homing_endstop(query_endstops, ppins,
+                                     self.hub_obj.switch_pin, AFCHomingPoints.HUB)
         if self.buffer_name:
             self._get_buffer_object()
             self._set_homing_endstop(query_endstops, ppins,
@@ -414,6 +413,39 @@ class AFCLane:
             if v[0] in value:
                 self.filament_density = float(v[1])
                 break
+
+    @property
+    def lane_index(self) -> str:
+        """
+        Strip's T from lane map and return integer as string.
+
+        :returns str: Returns lane mapping index as string
+        """
+        if self.map is None:
+            return ""
+
+        return self.map.replace("T", "")
+
+    @property
+    def lane_extruder_index(self) -> int:
+        """
+        Finds lanes extruder integer number and returns as integer.
+
+        :return int: Returns lanes extruder index as integer.
+        """
+        extruder_index = 0
+        if not hasattr(self, "extruder_obj") or self.extruder_obj is None:
+            return extruder_index
+
+        extruder_name = self.extruder_obj.name
+
+        if extruder_name == "extruder":
+            return extruder_index
+
+        try:
+            return int(extruder_name.replace("extruder", ""))
+        except ValueError:
+            return extruder_index
 
     def _handle_mcu_identify(self):
         """
@@ -603,8 +635,7 @@ class AFCLane:
         # Checking if buffer was defined in extruder if not defined in unit/stepper
         elif (self.buffer_obj is None
               and self.extruder_obj.tool_start == "buffer"
-              and len(self.extruder_obj.lanes) > 1
-              and self.name != self.extruder_obj.name):
+              and len(self.extruder_obj.lanes) > 1):
             buf_name = self.extruder_obj.buffer_name or getattr(self.unit_obj, 'buffer_name', None)
             if buf_name is not None:
                 self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(buf_name))
@@ -818,6 +849,16 @@ class AFCLane:
         :return boolean: True if hub for lane is 'direct' or 'direct_load'
         """
         return self.hub in VALID_DIRECT_HUB
+
+    def is_direct_dist(self):
+        """
+        Helper method that returns True when dist_hub value should be used when loading to toolhead.
+
+        :return boolean: True when lane is setup as "direct hub" or lanes hub has "use_dist_hub"
+                         variable set to True
+        """
+        return (self.is_direct_hub()
+                or (self.hub_obj and getattr(self.hub_obj, "use_dist_hub", False) ))
 
     def select_lane(self):
         """
