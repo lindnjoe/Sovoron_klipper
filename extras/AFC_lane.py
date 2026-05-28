@@ -1875,7 +1875,7 @@ class AFCLane:
             return
 
         # Do not set lane as loaded if virtual bypass or normal bypass is triggered
-        if self.afc._get_bypass_state():
+        if self.afc.get_bypass_state():
             disable_msg = ""
             detected_msg = " detects filament"
             msg = f"Cannot set {self.name} as loaded, "
