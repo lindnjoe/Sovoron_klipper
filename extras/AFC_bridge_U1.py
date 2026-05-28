@@ -369,8 +369,9 @@ class AFCU1Bridge:
         # ── 5b. Clean nozzles after preheat ──────────────────────
         self._run_nozzle_clean()
 
-        # ── 5c. Precise Z home after nozzle clean ─────────────
+        # ── 5c. Clean nozzle and precise Z home before bed mesh ──
         if bed_mesh:
+            self._run_nozzle_clean()
             self._run_home_z(z_offset)
 
         # ── 6. Exit PRINTING for calibrations that need IDLE ───
