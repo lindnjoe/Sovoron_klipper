@@ -37,6 +37,7 @@ class AFCSpool:
         self.gcode.register_command("RESET_AFC_MAPPING", self.cmd_RESET_AFC_MAPPING, desc=self.cmd_RESET_AFC_MAPPING_help)
         self.gcode.register_command("SET_TOOL_REDIRECT", self.cmd_SET_TOOL_REDIRECT, desc=self.cmd_SET_TOOL_REDIRECT_help)
         self.gcode.register_command("CLEAR_TOOL_REDIRECTS", self.cmd_CLEAR_TOOL_REDIRECTS, desc=self.cmd_CLEAR_TOOL_REDIRECTS_help)
+        self.gcode.register_command("SHOW_MAP", self.cmd_SHOW_MAP, desc=self.cmd_SHOW_MAP_help)
         self.gcode.register_command("SET_NEXT_SPOOL_ID", self.cmd_SET_NEXT_SPOOL_ID, desc=self.cmd_SET_NEXT_SPOOL_ID_help)
 
     def register_lane_macros(self, lane_obj):
@@ -304,6 +305,54 @@ class AFCSpool:
                     src_lane.send_lane_data()
         self.afc.tool_redirects.clear()
         self.logger.info(f"Cleared {count} tool redirect(s)")
+
+    cmd_SHOW_MAP_help = "Show current lane-to-tool mappings and redirects"
+    def cmd_SHOW_MAP(self, gcmd):
+        """
+        Displays the current lane names, their tool mappings, material,
+        and any active redirects in a formatted table.
+
+        Usage
+        -----
+        `SHOW_MAP`
+        """
+        lines = []
+        lines.append("AFC Tool Mapping")
+        lines.append("-" * 52)
+        lines.append(f"{'Lane':<14} {'Tool':<6} {'Material':<10} {'Redirect'}")
+        lines.append("-" * 52)
+
+        # Build reverse redirect lookup: source_cmd -> target_cmd
+        redirects = self.afc.tool_redirects if self.afc.allow_tool_redirect else {}
+
+        for unit_name, unit in self.afc.units.items():
+            for lane in unit.lanes.values():
+                # Find this lane's original tool from tool_cmds
+                orig_cmd = None
+                for tcmd, lname in self.afc.tool_cmds.items():
+                    if lname == lane.name:
+                        orig_cmd = tcmd
+                        break
+                orig_cmd = orig_cmd or "?"
+
+                material = lane.material or ""
+
+                redirect_str = ""
+                if orig_cmd in redirects:
+                    target = redirects[orig_cmd]
+                    target_lane = self.afc.tool_cmds.get(target, "?")
+                    redirect_str = f"-> {target} ({target_lane})"
+
+                lines.append(f"{lane.name:<14} {orig_cmd:<6} {material:<10} {redirect_str}")
+
+        lines.append("-" * 52)
+
+        if redirects:
+            lines.append(f"Active redirects: {len(redirects)}")
+        else:
+            lines.append("No active redirects")
+
+        self.gcode.respond_info("\n".join(lines))
 
     cmd_SET_COLOR_help = "Set filaments color for a lane"
     def cmd_SET_COLOR(self, gcmd):
