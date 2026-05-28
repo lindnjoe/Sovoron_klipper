@@ -293,10 +293,9 @@ class AFCLane:
         if (self.hub
             and "direct" not in self.hub):
             self._get_hub_object()
-            hub_pin = getattr(self.hub_obj, "switch_pin", None)
-            if hub_pin and str(hub_pin).lower() != "virtual":
+            if not self.hub_obj.is_virtual_pin():
                 self._set_homing_endstop(query_endstops, ppins,
-                                         hub_pin, AFCHomingPoints.HUB)
+                                         self.hub_obj.switch_pin, AFCHomingPoints.HUB)
         if self.buffer_name:
             self._get_buffer_object()
             self._set_homing_endstop(query_endstops, ppins,
@@ -416,6 +415,39 @@ class AFCLane:
             if v[0] in value:
                 self.filament_density = float(v[1])
                 break
+
+    @property
+    def lane_index(self) -> str:
+        """
+        Strip's T from lane map and return integer as string.
+
+        :returns str: Returns lane mapping index as string
+        """
+        if self.map is None:
+            return ""
+
+        return self.map.replace("T", "")
+
+    @property
+    def lane_extruder_index(self) -> int:
+        """
+        Finds lanes extruder integer number and returns as integer.
+
+        :return int: Returns lanes extruder index as integer.
+        """
+        extruder_index = 0
+        if not hasattr(self, "extruder_obj") or self.extruder_obj is None:
+            return extruder_index
+
+        extruder_name = self.extruder_obj.name
+
+        if extruder_name == "extruder":
+            return extruder_index
+
+        try:
+            return int(extruder_name.replace("extruder", ""))
+        except ValueError:
+            return extruder_index
 
     def _handle_mcu_identify(self):
         """
@@ -613,8 +645,7 @@ class AFCLane:
         # Checking if buffer was defined in extruder if not defined in unit/stepper
         elif (self.buffer_obj is None
               and self.extruder_obj.tool_start == "buffer"
-              and len(self.extruder_obj.lanes) > 1
-              and self.name != self.extruder_obj.name):
+              and len(self.extruder_obj.lanes) > 1):
             buf_name = self.extruder_obj.buffer_name or getattr(self.unit_obj, 'buffer_name', None)
             if buf_name is not None:
                 self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(buf_name))
@@ -828,6 +859,16 @@ class AFCLane:
         :return boolean: True if hub for lane is 'direct' or 'direct_load'
         """
         return self.hub in VALID_DIRECT_HUB
+
+    def is_direct_dist(self):
+        """
+        Helper method that returns True when dist_hub value should be used when loading to toolhead.
+
+        :return boolean: True when lane is setup as "direct hub" or lanes hub has "use_dist_hub"
+                         variable set to True
+        """
+        return (self.is_direct_hub()
+                or (self.hub_obj and getattr(self.hub_obj, "use_dist_hub", False) ))
 
     def select_lane(self):
         """
@@ -1637,20 +1678,20 @@ class AFCLane:
             scan_time = self.td1_data['scan_time'] if 'scan_time' in self.td1_data else ""
             td        = self.td1_data['td']        if 'td'        in self.td1_data else ""
 
-            lane_number = self.map.replace("T", "")
             lane_data = {
                 "namespace": "lane_data",
                 "key": self.name,
                 "value": {
-                    "color"         : self.color,
-                    "material"      : self.material,
-                    "bed_temp"      : self.bed_temp,
-                    "nozzle_temp"   : self.extruder_temp,
-                    "scan_time"     : scan_time,
-                    "td"            : td,
-                    "lane"          : lane_number,
-                    "spool_id"      : self.spool_id,
-                    "weight"        : self.weight
+                    "color"          : self.color,
+                    "material"       : self.material,
+                    "bed_temp"       : self.bed_temp,
+                    "nozzle_temp"    : self.extruder_temp,
+                    "scan_time"      : scan_time,
+                    "td"             : td,
+                    "lane"           : self.lane_index,
+                    "extruder_index" : self.lane_extruder_index,
+                    "spool_id"       : self.spool_id,
+                    "weight"         : self.weight
                 }
             }
             self.afc.moonraker.send_lane_data(lane_data)
@@ -1660,19 +1701,19 @@ class AFCLane:
         Clears lane data that is currently stored at moonrakers `machine/set_lane_data` endpoint
         """
         if self.map is not None and "T" in self.map:
-            lane_number = self.map.replace("T", "")
             lane_data = {
                 "namespace": "lane_data",
                 "key": self.name,
                 "value": {
-                    "color"         :  "",
-                    "material"      : "",
-                    "bed_temp"      : "",
-                    "nozzle_temp"   : "",
-                    "scan_time"     : "",
-                    "td"            : "",
-                    "lane"          : lane_number,
-                    "spool_id"      : None
+                    "color"          : "",
+                    "material"       : "",
+                    "bed_temp"       : "",
+                    "nozzle_temp"    : "",
+                    "scan_time"      : "",
+                    "td"             : "",
+                    "lane"           : self.lane_index,
+                    "extruder_index" : self.lane_extruder_index,
+                    "spool_id"       : None
                 }
             }
             self.afc.moonraker.send_lane_data(lane_data)
@@ -1833,15 +1874,17 @@ class AFCLane:
                                      "Switch status can be checked with the AFC_STATUS command.".format(self.name), pause=False)
             return
 
-        # Do not set lane as loaded if virtual bypass or normal bypass is enabled/triggered
-        if self.afc.bypass.sensor_enabled:
+        # Do not set lane as loaded if virtual bypass or normal bypass is triggered
+        if self.afc.get_bypass_state():
             disable_msg = ""
+            detected_msg = " detects filament"
             msg = f"Cannot set {self.name} as loaded, "
 
             if 'virtual' in self.afc.bypass.name:
                 msg += "virtual "
+                detected_msg = " is enabled"
                 disable_msg = " and disable"
-            msg += f"bypass is enabled.\nPlease unload{disable_msg} before trying to set lanes as loaded."
+            msg += f"bypass{detected_msg}.\nPlease unload{disable_msg} before trying to set lanes as loaded."
             self.logger.error(msg)
             return
 

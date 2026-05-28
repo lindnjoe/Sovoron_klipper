@@ -60,6 +60,7 @@ def load_config(config):
     return afc(config)
 
 class afc:
+    SNAPMAKER_TRAPQ_APPEND_LEN = 15
     def __init__(self, config: ConfigWrapper):
         self.config  = config
         self.printer = config.get_printer()
@@ -184,7 +185,7 @@ class afc:
         self.tool_cut_cmd           = config.get('tool_cut_cmd', None)              # Macro to use when doing toolhead cutting. Change macro name if you would like to use your own cutting macro
 
         # CHOICES
-        self.park_pre_load:str      = config.getboolean("park_pre_load", False)
+        self.park_pre_load:bool     = config.getboolean("park_pre_load", False)
         self.park_pre_load_cmd:str  = config.get("park_pre_load_cmd", None)
         self.park                   = config.getboolean("park", False)              # Set to True to enable parking during unload
         self.park_cmd               = config.get('park_cmd', None)                  # Macro to use when parking. Change macro name if you would like to use your own park macro
@@ -314,6 +315,8 @@ class afc:
         self.function.register_commands(self.show_macros, 'AFC_RESET_STATS', self.cmd_AFC_RESET_STATS,
                                         self.cmd_AFC_RESET_STATS_help, self.cmd_AFC_RESET_STATS_options)
 
+        self._check_trapq_append_sig()
+
     @property
     def current(self):
         return self.function.get_current_lane()
@@ -343,6 +346,19 @@ class afc:
                 else : self.logger.info("TRSYNC_SINGLE_MCU_TIMEOUT does not exist in mcu file, not updating")
             except Exception as e:
                 self.logger.info("Unable to update TRSYNC_TIMEOUT: {}".format(e))
+
+    def _check_trapq_append_sig(self):
+        """
+        Method for checking trapq_append signature since Snapmaker U1 firmware has an additional
+        parameter that needs to be passed in when calling this trapq_append c function.
+        """
+        import chelper
+        ffi_main, ffi_lib = chelper.get_ffi()
+        self.trapq_append_line = False
+        trapq_append_sig = ffi_main.typeof(ffi_lib.trapq_append)
+        if len(trapq_append_sig.args) == self.SNAPMAKER_TRAPQ_APPEND_LEN:
+            self.logger.info("Found Snapmaker trapq_append signature")
+            self.trapq_append_line = True
 
     def register_config_callback(self, option):
         # Function needed for virtual pins, does nothing
@@ -731,7 +747,7 @@ class afc:
         sensor_obj = getattr(extruder_obj, 'filament_sensor_obj', None)
         return sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state')
 
-    def _get_bypass_state(self):
+    def get_bypass_state(self):
         """
         Helper function to return if filament is present in bypass sensor
 
@@ -772,7 +788,7 @@ class afc:
         :return        Returns true if filament is present in sensor
         """
         try:
-            if self._get_bypass_state():
+            if self.get_bypass_state():
                 if unload:
                     self.logger.info("Bypass detected, calling manual unload filament routine")
                     self.gcode.run_script_from_command(self.RENAMED_UNLOAD_FILAMENT)
@@ -898,7 +914,7 @@ class afc:
             self.message_queue.append((warning_text, "warning"))
 
     cmd_LANE_MOVE_help = "Lane Manual Movements"
-    cmd_LANE_MOVE_options = {"LANE": {"type": "string", "default": "lane1"}, "DISTANCE": {"type": "int", "default": 20}}
+    cmd_LANE_MOVE_options = {"LANE": {"type": "string", "default": "lane1"}, "DISTANCE": {"type": "int", "default": 20}, "FORCE": {"type": "int", "default": 0}}
     def cmd_LANE_MOVE(self, gcmd):
         """
         This function handles the manual movement of a specified lane. It retrieves the lane
@@ -906,9 +922,12 @@ class afc:
 
         Distance's lower than 200 moves extruder at short_move_speed/accel, values above 200 move extruder at long_move_speed/accel
 
+        The 'FORCE' parameter overrides the is_printing() check, use with caution. Enable when not
+        paused (e.g. in a macro) to move a lane independent of the toolhead extruder.
+
         Usage
         -----
-        `LANE_MOVE LANE=<lane> DISTANCE=<distance>`
+        `LANE_MOVE LANE=<lane> DISTANCE=<distance> FORCE=<0/1>`
 
         Example
         -----
@@ -916,7 +935,8 @@ class afc:
         LANE_MOVE LANE=lane1 DISTANCE=100
         ```
         """
-        if self.function.is_printing():
+        force = gcmd.get_int('FORCE', 0) == 1
+        if self.function.is_printing() and not force:
             self.error.AFC_error("Cannot move lane while printer is printing", pause=False)
             return
         lane = gcmd.get('LANE', None)
@@ -936,7 +956,7 @@ class afc:
         if abs(distance) >= 200: speed_mode = SpeedMode.LONG
 
         cur_lane.set_load_current() # Making current is set correctly when doing lane moves
-        cur_lane.unit_obj.lane_move(cur_lane, distance, speed_mode)
+        cur_lane.move_advanced(distance, speed_mode, assist_active = AssistActive.YES)
         cur_lane.do_enable(False)
         self.current_state = State.IDLE
         cur_lane.unit_obj.return_to_home()
@@ -1106,7 +1126,7 @@ class afc:
         str["system"]['num_lanes'] = len(self.lanes)
         str["system"]['num_extruders'] = len(self.tools)
         str["system"]["extruders"]={}
-        str["system"]["bypass"] = {"enabled": self._get_bypass_state() }
+        str["system"]["bypass"] = {"enabled": self.get_bypass_state() }
 
         for extrude in self.tools.keys():
             cur_extruder = self.tools[extrude]
@@ -2133,10 +2153,12 @@ class afc:
 
             if (cur_lane.is_direct_hub()
                 and not cur_lane.extruder_obj.is_standalone()):
-                while cur_lane.raw_load_state:
-                    cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT,
-                                           assist_active=AssistActive.YES)
-                cur_lane.move_advanced(cur_lane.short_move_dis * -5, SpeedMode.SHORT)
+                park_tries = 0
+                while not cur_lane.raw_load_state and cur_lane.prep_state:
+                    park_tries += 1
+                    cur_lane.move_advanced(cur_lane.short_move_dis, SpeedMode.SHORT)
+                    if park_tries >= 5:
+                        break
 
         if self.post_unload_macro is not None:
             self.gcode.run_script_from_command(self.post_unload_macro)
@@ -2360,7 +2382,7 @@ class afc:
         str["td1_present"]              = self.td1_present
         str["lane_data_enabled"]        = self.lane_data_enabled
         str['error_state']              = self.error_state
-        str["bypass_state"]             = bool(self._get_bypass_state())
+        str["bypass_state"]             = bool(self.get_bypass_state())
         str["quiet_mode"]               = bool(self._get_quiet_mode())
         str["position_saved"]           = self.position_saved
 
