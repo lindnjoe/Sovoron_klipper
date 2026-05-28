@@ -718,6 +718,10 @@ class AFCSpool:
                 self.afc.tool_cmds[map_cmd] = lane.name
                 self.afc.lanes[lane.name].map = map_cmd
 
+        # Clear any active tool redirects
+        if self.afc.tool_redirects:
+            self.afc.tool_redirects.clear()
+
         # Resetting runout lanes to None
         runout_opt = gcmd.get('RUNOUT', 'yes').lower()
         if runout_opt != 'no':
@@ -725,7 +729,12 @@ class AFCSpool:
                 lane.runout_lane = None
 
         self.afc.save_vars()
-        self.logger.info("Tool mappings reset" + ("" if runout_opt == "no" else " and runout lanes reset"))
+        msg = "Tool mappings reset"
+        if runout_opt != "no":
+            msg += " and runout lanes reset"
+        if self.afc.allow_tool_redirect:
+            msg += ", redirects cleared"
+        self.logger.info(msg)
 
     cmd_SET_NEXT_SPOOL_ID_help = "Set the spool id to be loaded next into AFC"
     def cmd_SET_NEXT_SPOOL_ID(self, gcmd):
