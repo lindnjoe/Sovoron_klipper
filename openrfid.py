@@ -13,10 +13,25 @@ MAX_LOG_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_BACKUPS = 1  # keep 2 total: current + 1 backup
 
 
-class _RetryCycleFilter(logging.Filter):
-    """Drop the high-frequency 'will retry' INFO lines from runtime.py."""
+class _OpenRFIDFilter(logging.Filter):
+    """Suppress openrfid noise while keeping successful reads and real errors.
+
+    OpenRFID uses colon-separated logger names (rfid_reader:name,
+    controller:name) which bypass Python's dot-based logger hierarchy,
+    so setLevel on parent loggers has no effect — filtering must happen here.
+    """
     def filter(self, record):
-        return "will retry" not in record.getMessage()
+        # rfid_reader errors are expected when no tag is present and are
+        # retried at a higher level; runtime.py logs WARNING on final failure
+        if record.name.startswith("rfid_reader:"):
+            return False
+        # controller debug/info from moonraker polling
+        if record.name.startswith("controller:") and record.levelno < logging.WARNING:
+            return False
+        # retry-cycle INFO spam from runtime.py
+        if "will retry" in record.getMessage():
+            return False
+        return True
 
 
 def main():
@@ -43,15 +58,10 @@ def main():
 
     logging.root.handlers = [syslogHandler, stderrHandler, fileHandler]
     logging.root.setLevel(logging.INFO)
-    logging.root.addFilter(_RetryCycleFilter())
+    logging.root.addFilter(_OpenRFIDFilter())
 
-    # Suppress noisy loggers that spam on every RFID retry cycle
+    # urllib3 uses standard dot-hierarchy so setLevel works
     logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
-    # wakeup err / Scan error are expected when no tag is present
-    logging.getLogger("rfid_reader").setLevel(logging.CRITICAL)
-    # moonraker property-change controllers log on every status poll
-    logging.getLogger("controller").setLevel(logging.WARNING)
 
     target = sys.argv[1]
     sources = sys.argv[2:]
