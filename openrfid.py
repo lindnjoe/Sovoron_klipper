@@ -36,7 +36,15 @@ def main():
         handler.setFormatter(formatter)
 
     logging.root.handlers = [syslogHandler, stderrHandler, fileHandler]
-    logging.root.setLevel(logging.DEBUG)
+    logging.root.setLevel(logging.WARNING)
+
+    # Suppress noisy loggers that spam on every RFID retry cycle
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+    # wakeup err / Scan error are expected when no tag is present
+    logging.getLogger("rfid_reader").setLevel(logging.CRITICAL)
+    # moonraker property-change controllers log on every status poll
+    logging.getLogger("controller").setLevel(logging.WARNING)
 
     target = sys.argv[1]
     sources = sys.argv[2:]
