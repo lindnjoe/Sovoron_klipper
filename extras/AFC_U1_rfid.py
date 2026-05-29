@@ -24,6 +24,7 @@ from extras.AFC_RFID import (
 POLL_INTERVAL = 2.0
 _MAX_CONSECUTIVE_FAILURES = 5
 _BACKOFF_INTERVAL = 10.0
+_BACKOFF_RESET_CYCLES = 18  # ~3 min at 10s intervals before retrying normal speed
 _FORCE_READ_TIMEOUT = 1.0
 _FORCE_READ_POLL_STEP = 0.05
 
@@ -46,6 +47,7 @@ class AFC_U1_RFID:
         self._channel_to_lane: Dict[int, str] = {}
         self._consecutive_failures: Dict[int, int] = {}
         self._backed_off: bool = False
+        self._backoff_cycles: int = 0
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel.
@@ -67,10 +69,7 @@ class AFC_U1_RFID:
         """
         if not self._lane_channel_map:
             return
-        self._filament_detect = self.printer.lookup_object("filament_detect", None)
-        if self._filament_detect is None:
-            self.logger.info("U1 RFID: filament_detect module not found")
-            return
+        self._gcode = self.afc.gcode
         channels = list(self._lane_channel_map.items())
         self._scanner_channels = {ch for name, ch in channels
                                    if getattr(self._lane_objects.get(name), 'spool_scanner', False)}
@@ -81,15 +80,29 @@ class AFC_U1_RFID:
             scanner_names = [name for name, ch in channels
                              if ch in self._scanner_channels]
             self.logger.info(f"U1 RFID: spool scanner active on: {', '.join(scanner_names)}")
-        self._gcode = self.afc.gcode
-        if hasattr(self._filament_detect, 'register_cb_2_update_filament_info'):
+        self._try_attach_filament_detect()
+        self._poll_timer = self.reactor.register_timer(
+            self._poll_cb, self.reactor.monotonic() + POLL_INTERVAL)
+
+    def _try_attach_filament_detect(self) -> bool:
+        """Look up filament_detect and register the push callback.
+
+        :return: True if filament_detect is available, False otherwise.
+        """
+        if self._filament_detect is not None:
+            return True
+        fd = self.printer.lookup_object("filament_detect", None)
+        if fd is None:
+            return False
+        self._filament_detect = fd
+        self.logger.info("U1 RFID: filament_detect attached")
+        if hasattr(fd, 'register_cb_2_update_filament_info'):
             try:
-                self._filament_detect.register_cb_2_update_filament_info(
+                fd.register_cb_2_update_filament_info(
                     self._on_filament_info_update)
             except Exception as e:
                 self.logger.warning(f"U1 RFID: failed to register info callback: {e}")
-        self._poll_timer = self.reactor.register_timer(
-            self._poll_cb, self.reactor.monotonic() + POLL_INTERVAL)
+        return True
 
     def _on_filament_info_update(self, *args):
         """Callback fired by filament_detect with (channel, info_dict, official).
@@ -131,6 +144,8 @@ class AFC_U1_RFID:
         :return: True on success, False on failure.
         """
         fd = self._filament_detect
+        if fd is None:
+            return False
         if hasattr(fd, 'update_filament_info'):
             try:
                 fd.update_filament_info(channel)
@@ -158,6 +173,9 @@ class AFC_U1_RFID:
         :param eventtime: Current reactor monotonic time.
         :return: Next poll time as a float.
         """
+        if not self._try_attach_filament_detect():
+            return eventtime + _BACKOFF_INTERVAL
+
         for ch in self._scanner_channels:
             if not self._trigger_channel_update(ch):
                 self._consecutive_failures[ch] = \
@@ -178,11 +196,20 @@ class AFC_U1_RFID:
                     f"U1 RFID: poll error on {lane_name} ch{channel}: {e}")
 
         if self._backed_off:
-            all_recovered = all(
-                self._consecutive_failures.get(ch, 0) < _MAX_CONSECUTIVE_FAILURES
-                for ch in self._scanner_channels)
-            if all_recovered:
+            self._backoff_cycles += 1
+            if self._backoff_cycles >= _BACKOFF_RESET_CYCLES:
                 self._backed_off = False
+                self._backoff_cycles = 0
+                for ch in self._scanner_channels:
+                    self._consecutive_failures[ch] = 0
+                self.logger.info("U1 RFID: backoff reset, retrying normal polling")
+            else:
+                all_recovered = all(
+                    self._consecutive_failures.get(ch, 0) < _MAX_CONSECUTIVE_FAILURES
+                    for ch in self._scanner_channels)
+                if all_recovered:
+                    self._backed_off = False
+                    self._backoff_cycles = 0
             return eventtime + _BACKOFF_INTERVAL
         return eventtime + POLL_INTERVAL
 
