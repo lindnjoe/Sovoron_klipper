@@ -13,6 +13,12 @@ MAX_LOG_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_BACKUPS = 1  # keep 2 total: current + 1 backup
 
 
+class _RetryCycleFilter(logging.Filter):
+    """Drop the high-frequency 'will retry' INFO lines from runtime.py."""
+    def filter(self, record):
+        return "will retry" not in record.getMessage()
+
+
 def main():
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <target.cfg> [source.cfg ...]")
@@ -36,7 +42,8 @@ def main():
         handler.setFormatter(formatter)
 
     logging.root.handlers = [syslogHandler, stderrHandler, fileHandler]
-    logging.root.setLevel(logging.WARNING)
+    logging.root.setLevel(logging.INFO)
+    logging.root.addFilter(_RetryCycleFilter())
 
     # Suppress noisy loggers that spam on every RFID retry cycle
     logging.getLogger("urllib3").setLevel(logging.WARNING)
