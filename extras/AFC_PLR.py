@@ -423,24 +423,7 @@ class AFCPLR:
                 run("TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.0f"
                     % (name, temp - 2))
 
-        # 8. Restore fan speeds
-        for fname, speed in fan_speeds.items():
-            if fname == 'fan':
-                run("M106 S%d" % int(speed * 255))
-            elif fname.startswith('fan_generic'):
-                run("SET_FAN_SPEED FAN=%s SPEED=%.2f"
-                    % (fname.split()[-1], speed))
-
-        # 9. Move to saved XY position
-        gcmd.respond_info(
-            "AFC_PLR: Moving to X%.2f Y%.2f" % (gcode_pos[0], gcode_pos[1]))
-        run("G90")
-        run("G1 X%.4f Y%.4f F6000" % (gcode_pos[0], gcode_pos[1]))
-
-        # 10. Lower to layer Z
-        run("G1 Z%.4f F600" % layer_z)
-
-        # 11. Prime nozzle
+        # 8. Prime nozzle (before moving to print — purge at homing corner)
         if self.purge_length > 0:
             gcmd.respond_info(
                 "AFC_PLR: Purging %.1fmm" % self.purge_length)
@@ -449,6 +432,23 @@ class AFCPLR:
                 self.purge_length, int(self.purge_speed * 60)))
             run("G1 E-1.0 F1800")
             run("G4 P500")
+
+        # 9. Restore fan speeds
+        for fname, speed in fan_speeds.items():
+            if fname == 'fan':
+                run("M106 S%d" % int(speed * 255))
+            elif fname.startswith('fan_generic'):
+                run("SET_FAN_SPEED FAN=%s SPEED=%.2f"
+                    % (fname.split()[-1], speed))
+
+        # 10. Move to saved XY position
+        gcmd.respond_info(
+            "AFC_PLR: Moving to X%.2f Y%.2f" % (gcode_pos[0], gcode_pos[1]))
+        run("G90")
+        run("G1 X%.4f Y%.4f F6000" % (gcode_pos[0], gcode_pos[1]))
+
+        # 11. Lower to layer Z
+        run("G1 Z%.4f F600" % layer_z)
 
         # 12. Restore speed/flow factors
         if speed_factor != 1.0:
