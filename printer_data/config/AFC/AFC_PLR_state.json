@@ -1,0 +1,58 @@
+{
+  "timestamp": 1780165074.5897672,
+  "layer_z": 0.2,
+  "current_z": 0.2,
+  "file_path": "/home/pii/printer_data/gcodes/3D-printable_sand_play_set_Small_Showel_By_CT3D.xyz__0.2mm_PLA_Generic ToolChanger Printer_46m30s.gcode",
+  "file_position": 90798,
+  "file_name": "3D-printable_sand_play_set_Small_Showel_By_CT3D.xyz__0.2mm_PLA_Generic ToolChanger Printer_46m30s.gcode",
+  "gcode_position": [
+    168.463,
+    174.588,
+    0.2,
+    149.69614000000007
+  ],
+  "base_position": [
+    0.0,
+    0.0,
+    0.0,
+    17.8
+  ],
+  "homing_position": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "speed": 50.0,
+  "speed_factor": 0.016666666666666666,
+  "extrude_factor": 1.0,
+  "absolute_coord": true,
+  "absolute_extrude": false,
+  "toolhead_position": [
+    169.304,
+    172.835,
+    0.6807179254898695,
+    149.69614000000007
+  ],
+  "active_extruder": "extruder5",
+  "current_lane": "lane12",
+  "extruder_temps": {
+    "heater_bed": 55.0,
+    "extruder": 0.0,
+    "extruder1": 0.0,
+    "extruder2": 0.0,
+    "extruder3": 0.0,
+    "extruder4": 0.0,
+    "extruder5": 220.0
+  },
+  "pressure_advance": {
+    "extruder": 0.032,
+    "extruder1": 0.032,
+    "extruder2": 0.032,
+    "extruder3": 0.032,
+    "extruder4": 0.032,
+    "extruder5": 0.032
+  },
+  "bed_temp": 55.0,
+  "fan_speeds": {}
+}
