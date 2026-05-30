@@ -687,17 +687,14 @@ class afcAMS(afcUnit):
                     self._last_f1s[slot] = new_f1s
 
             # Hub HES sensor (filament at hub)
-            # Latch loaded_to_hub: set True when hub detects filament,
-            # only clear when both hub AND F1S are False (spool removed).
+            # Match _sync_lanes_from_hardware: loaded_to_hub is True when
+            # either hub or F1S detects filament (OAMS feeds on demand).
             if slot < len(hub_values):
                 new_hub = bool(hub_values[slot])
                 old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
                 new_f1s_val = bool(getattr(lane, '_load_state', False))
 
-                if new_hub:
-                    lane.loaded_to_hub = True
-                elif not new_f1s_val:
-                    lane.loaded_to_hub = False
+                lane.loaded_to_hub = new_hub or new_f1s_val
 
                 if resync_prev or (old_hub is not None and new_hub != old_hub):
                     hub = getattr(lane, 'hub_obj', None)
@@ -1424,6 +1421,7 @@ class afcAMS(afcUnit):
 
     def on_filament_insert(self, lane):
         """OAMS insert: update lane state and publish event."""
+        lane.loaded_to_hub = True
         self.lane_loaded(lane)
         self.lane_illuminate_spool(lane)
         spool_index = self._spool_map.get(lane.name)
