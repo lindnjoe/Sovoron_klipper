@@ -466,7 +466,7 @@ class AFCPLR:
         run("G90" if absolute_coord else "G91")
         run("M82" if absolute_extrude else "M83")
 
-        # 15. Seek file and start printing
+        # 15. Select file, seek to saved position, then start printing
         gcmd.respond_info(
             "AFC_PLR: Resuming %s from position %d" % (file_path, file_pos))
 
@@ -475,8 +475,9 @@ class AFCPLR:
             raise gcmd.error("virtual_sdcard not available")
 
         fname = os.path.basename(file_path)
-        run('SDCARD_PRINT_FILE FILENAME="%s"' % fname)
-        sd.file_position = file_pos
+        run('M23 %s' % fname)
+        run('M26 S%d' % file_pos)
+        run('M24')
 
         # 16. Clear saved state
         self._clear_state()
