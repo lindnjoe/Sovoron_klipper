@@ -265,8 +265,9 @@ class AFCPLR:
             state['base_position'] = list(gm.base_position)
             state['homing_position'] = list(gm.homing_position)
             state['speed'] = gm.speed
-            state['speed_factor'] = gm.speed_factor
-            state['extrude_factor'] = gm.extrude_factor
+            gm_status = gm.get_status(self.reactor.monotonic())
+            state['speed_factor'] = gm_status.get('speed_factor', 1.0)
+            state['extrude_factor'] = gm_status.get('extrude_factor', 1.0)
             state['absolute_coord'] = gm.absolute_coord
             state['absolute_extrude'] = gm.absolute_extrude
 
@@ -448,10 +449,8 @@ class AFCPLR:
         run("G1 Z%.4f F600" % layer_z)
 
         # 12. Restore speed/flow factors
-        if speed_factor != 1.0:
-            run("M220 S%d" % int(speed_factor * 100))
-        if extrude_factor != 1.0:
-            run("M221 S%d" % int(extrude_factor * 100))
+        run("M220 S%d" % int(speed_factor * 100))
+        run("M221 S%d" % int(extrude_factor * 100))
 
         # 13. Restore pressure advance
         for name, pa in pa_values.items():
