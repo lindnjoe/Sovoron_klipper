@@ -105,7 +105,7 @@
           "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 312.3076477050781,
+          "remaining_weight_g": 312.0816650390625,
           "spool_name": "Bambu Lab PLA - Bambu Green",
           "spoolman_id": 8,
           "total_weight_g": 1000.0
@@ -183,7 +183,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-30T18:11:57Z"
+          "timestamp": "2026-05-30T18:28:00Z"
         },
         "optional": []
       },
@@ -561,7 +561,8 @@
     }
   },
   "update": {
-    "channel": 1
+    "channel": 1,
+    "dismissed_version": "0.99.71"
   },
   "wifi_expected": false,
   "wizard_completed": true
