@@ -300,6 +300,11 @@ class AFCPLR:
         else:
             state['bed_temp'] = state['extruder_temps'].get('heater_bed', 0)
 
+        bed_mesh = self.printer.lookup_object('bed_mesh', None)
+        if bed_mesh is not None:
+            bm_status = bed_mesh.get_status(self.reactor.monotonic())
+            state['bed_mesh_profile'] = bm_status.get('profile_name', '')
+
         state['fan_speeds'] = {}
         fan = self.printer.lookup_object('fan', None)
         if fan is not None:
@@ -387,6 +392,13 @@ class AFCPLR:
         # 3. Home XY only
         gcmd.respond_info("AFC_PLR: Homing XY")
         run("G28 X Y")
+
+        # 3b. Restore bed mesh (before Z moves so compensation is active)
+        bed_mesh_profile = state.get('bed_mesh_profile', '')
+        if bed_mesh_profile:
+            gcmd.respond_info(
+                "AFC_PLR: Loading bed mesh '%s'" % bed_mesh_profile)
+            run('BED_MESH_PROFILE LOAD="%s"' % bed_mesh_profile)
 
         # 4. Set Z position without homing — use layer_z (safe: at or below actual)
         gcmd.respond_info("AFC_PLR: Setting Z position to %.3f (layer height)" % layer_z)
@@ -555,6 +567,7 @@ class AFCPLR:
         msg += "  Active extruder: %s\n" % state.get('active_extruder', '?')
         msg += "  Lane: %s\n" % state.get('current_lane', '?')
         msg += "  Bed temp: %.0f\n" % state.get('bed_temp', 0)
+        msg += "  Bed mesh: %s\n" % (state.get('bed_mesh_profile', '') or 'none')
         msg += "  Age: %.0f seconds" % age
         gcmd.respond_info(msg)
 
