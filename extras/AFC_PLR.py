@@ -88,6 +88,8 @@ class AFCPLR:
         self._print_stats = None
         self._heater_bed = None
         self.save_file = ''
+        self._pending_recovery = None
+        self._prompt_timer = None
 
         if not self.enabled:
             return
@@ -144,6 +146,10 @@ class AFCPLR:
                     "AFC_PLR: Saved print state found (%s, %.0fs ago). "
                     "Use AFC_PLR_RESUME to continue or AFC_PLR_CLEAR to discard."
                     % (fname, age))
+                self._pending_recovery = state
+                self._prompt_timer = self.reactor.register_timer(
+                    self._show_recovery_prompt,
+                    self.reactor.monotonic() + 10.0)
 
         self._timer = self.reactor.register_timer(
             self._timer_cb, self.reactor.NEVER)
@@ -155,6 +161,33 @@ class AFCPLR:
         if self._is_printing() and self._last_save_time == 0:
             self._start_tracking()
         return eventtime + 2.0
+
+    def _show_recovery_prompt(self, eventtime):
+        state = self._pending_recovery
+        if state is None:
+            return self.reactor.NEVER
+        self._pending_recovery = None
+        age = time.time() - state.get('timestamp', 0)
+        fname = state.get('file_name', '?')
+        layer_z = state.get('layer_z', 0)
+        ext = state.get('active_extruder', '?')
+        respond = self.gcode.respond_raw
+        respond("// action:prompt_begin Power Loss Recovery")
+        respond("// action:prompt_text A saved print state was found.")
+        respond("// action:prompt_text ")
+        respond("// action:prompt_text File: %s" % fname)
+        respond("// action:prompt_text Layer Z: %.2f mm" % layer_z)
+        respond("// action:prompt_text Extruder: %s" % ext)
+        respond("// action:prompt_text Age: %.0f seconds" % age)
+        respond("// action:prompt_text ")
+        respond("// action:prompt_text Resume this print?")
+        respond("// action:prompt_footer_button Resume|AFC_PLR_RESUME|primary")
+        respond("// action:prompt_footer_button Discard|AFC_PLR_CLEAR|error")
+        respond("// action:prompt_show")
+        return self.reactor.NEVER
+
+    def _close_prompt(self):
+        self.gcode.respond_raw("// action:prompt_end")
 
     def _handle_shutdown(self):
         if self._is_printing():
@@ -506,6 +539,7 @@ class AFCPLR:
         -----
         `AFC_PLR_RESUME`
         """
+        self._close_prompt()
         state = self._load_state()
         if state is None:
             raise gcmd.error("No saved PLR state found at %s" % self.save_file)
@@ -537,6 +571,7 @@ class AFCPLR:
         -----
         `AFC_PLR_CLEAR`
         """
+        self._close_prompt()
         self._clear_state()
         gcmd.respond_info("AFC_PLR: Saved state cleared")
 
