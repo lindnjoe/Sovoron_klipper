@@ -117,7 +117,8 @@ class OAMSMonitor:
     def __init__(self, fps_name, fps_obj, reactor, logger,
                  on_stuck_spool=None, on_clog=None, on_stuck_cleared=None,
                  clog_sensitivity='medium', is_printing_fn=None,
-                 is_lane_loaded_fn=None):
+                 is_lane_loaded_fn=None, stuck_pressure_low=None,
+                 stuck_load_grace=None):
         """
         :param fps_name: FPS buffer name (e.g. 'FPS_buffer1')
         :param fps_obj: AFC_FPS buffer object (for ADC readings)
@@ -150,10 +151,10 @@ class OAMSMonitor:
         self._oams = None  # Set when lane loads
 
         # Configurable thresholds (can be overridden)
-        self.stuck_pressure_low = STUCK_PRESSURE_LOW
+        self.stuck_pressure_low = stuck_pressure_low if stuck_pressure_low is not None else STUCK_PRESSURE_LOW
         self.stuck_pressure_clear = STUCK_PRESSURE_CLEAR
         self.stuck_dwell = STUCK_DWELL
-        self.stuck_load_grace = STUCK_LOAD_GRACE
+        self.stuck_load_grace = stuck_load_grace if stuck_load_grace is not None else STUCK_LOAD_GRACE
         self.stuck_min_encoder = STUCK_MIN_ENCODER
         self.clog_dwell = CLOG_DWELL * (self.clog_multiplier or 1.0)
         self.clog_extrusion_window = CLOG_EXTRUSION_WINDOW
