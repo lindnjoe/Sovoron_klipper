@@ -462,6 +462,7 @@ class afcAMS(afcUnit):
         # Engagement params — unit-level defaults, per-lane overrides from lane config
         self._engagement_length = config.getfloat("engagement_length", 20.0, minval=1.0)
         self._engagement_speed = config.getfloat("engagement_speed", 300.0, minval=10.0)
+        self._defer_engagement = config.getboolean("defer_engagement", False)
         self._engagement_params: dict[str, tuple[float, float]] = {}
 
         # Runtime state
@@ -1112,8 +1113,8 @@ class afcAMS(afcUnit):
                     self.logger.error(f"OAMS load attempt {attempt+1} failed: {msg}")
                     continue
 
-                # Verify engagement
-                engaged = self._verify_engagement(cur_lane)
+                # Verify engagement (skip if deferred to AFC's Phase 2)
+                engaged = True if self._defer_engagement else self._verify_engagement(cur_lane)
                 if engaged:
                     # Enable follower and start monitor
                     if self._follower:
