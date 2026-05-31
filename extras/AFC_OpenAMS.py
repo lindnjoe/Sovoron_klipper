@@ -1547,6 +1547,7 @@ class afcAMS(afcUnit):
 
     def on_filament_insert(self, lane):
         """OAMS insert: update lane state and publish event."""
+        lane.loaded_to_hub = True
         self.lane_loaded(lane)
         self.lane_illuminate_spool(lane)
         spool_index = self._spool_map.get(lane.name)
