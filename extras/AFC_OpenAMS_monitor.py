@@ -117,8 +117,8 @@ class OAMSMonitor:
     def __init__(self, fps_name, fps_obj, reactor, logger,
                  on_stuck_spool=None, on_clog=None, on_stuck_cleared=None,
                  clog_sensitivity='medium', is_printing_fn=None,
-                 is_lane_loaded_fn=None,
-                 stuck_pressure_low=None, stuck_load_grace=None):
+                 is_lane_loaded_fn=None, stuck_pressure_low=None,
+                 stuck_load_grace=None):
         """
         :param fps_name: FPS buffer name (e.g. 'FPS_buffer1')
         :param fps_obj: AFC_FPS buffer object (for ADC readings)
