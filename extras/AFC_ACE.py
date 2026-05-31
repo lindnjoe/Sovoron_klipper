@@ -437,7 +437,7 @@ class afcACE(afcUnit):
                 })
         if sync_rfid_to_spoolman is not None:
             self._sync_rfid_to_spoolman(lane, slot_info)
-        if saved_spool_id and not lane.spool_id:
+        if saved_spool_id and not lane.spool_id and lane.remember_spool:
             self.afc.spool.set_spoolID(lane, saved_spool_id)
         self.lane_illuminate_spool(lane)
         self._hub_load_suppressed.discard(lane.name)
