@@ -335,8 +335,13 @@ class AFCPLR:
 
         bed_mesh = self.printer.lookup_object('bed_mesh', None)
         if bed_mesh is not None:
-            bm_status = bed_mesh.get_status(self.reactor.monotonic())
-            state['bed_mesh_profile'] = bm_status.get('profile_name', '')
+            z_mesh = bed_mesh.get_mesh()
+            if z_mesh is not None:
+                state['bed_mesh_profile'] = z_mesh.get_profile_name()
+                state['bed_mesh_points'] = z_mesh.get_probed_matrix()
+                state['bed_mesh_params'] = dict(z_mesh.get_mesh_params())
+            else:
+                state['bed_mesh_profile'] = ''
 
         state['fan_speeds'] = {}
         fan = self.printer.lookup_object('fan', None)
@@ -427,11 +432,29 @@ class AFCPLR:
         run("G28 X Y")
 
         # 3b. Restore bed mesh (before Z moves so compensation is active)
+        bed_mesh_points = state.get('bed_mesh_points')
+        bed_mesh_params = state.get('bed_mesh_params')
         bed_mesh_profile = state.get('bed_mesh_profile', '')
-        if bed_mesh_profile:
+        if bed_mesh_points and bed_mesh_params:
+            bm = self.printer.lookup_object('bed_mesh', None)
+            if bm is not None:
+                gcmd.respond_info(
+                    "AFC_PLR: Restoring bed mesh from saved data")
+                from extras.bed_mesh import ZMesh
+                z_mesh = ZMesh(bed_mesh_params, 'plr_recovery')
+                z_mesh.build_mesh(bed_mesh_points)
+                bm.set_mesh(z_mesh)
+            else:
+                gcmd.respond_info("AFC_PLR: bed_mesh not available, skipping")
+        elif bed_mesh_profile:
             gcmd.respond_info(
                 "AFC_PLR: Loading bed mesh '%s'" % bed_mesh_profile)
-            run('BED_MESH_PROFILE LOAD="%s"' % bed_mesh_profile)
+            try:
+                run('BED_MESH_PROFILE LOAD="%s"' % bed_mesh_profile)
+            except Exception:
+                gcmd.respond_info(
+                    "AFC_PLR: Bed mesh profile '%s' not found, skipping"
+                    % bed_mesh_profile)
 
         # 4. Set Z position without homing — use layer_z (safe: at or below actual)
         gcmd.respond_info("AFC_PLR: Setting Z position to %.3f (layer height)" % layer_z)
@@ -599,7 +622,10 @@ class AFCPLR:
         msg += "  Active extruder: %s\n" % state.get('active_extruder', '?')
         msg += "  Lane: %s\n" % state.get('current_lane', '?')
         msg += "  Bed temp: %.0f\n" % state.get('bed_temp', 0)
-        msg += "  Bed mesh: %s\n" % (state.get('bed_mesh_profile', '') or 'none')
+        mesh_info = state.get('bed_mesh_profile', '') or 'none'
+        if state.get('bed_mesh_points'):
+            mesh_info += ' (mesh data saved)'
+        msg += "  Bed mesh: %s\n" % mesh_info
         msg += "  Age: %.0f seconds" % age
         gcmd.respond_info(msg)
 

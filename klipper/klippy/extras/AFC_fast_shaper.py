@@ -20,10 +20,10 @@ class AFCFastShaper:
         if afc_ext is None:
             return None
         params = getattr(afc_ext, 'params', {})
-        freq_x = params.get('input_shaper_freq_x')
-        freq_y = params.get('input_shaper_freq_y')
-        type_x = params.get('input_shaper_type_x', 'mzv')
-        type_y = params.get('input_shaper_type_y', 'mzv')
+        freq_x = params.get('params_input_shaper_freq_x')
+        freq_y = params.get('params_input_shaper_freq_y')
+        type_x = params.get('params_input_shaper_type_x', 'mzv')
+        type_y = params.get('params_input_shaper_type_y', 'mzv')
         if freq_x is None or freq_y is None:
             return None
         if isinstance(type_x, str):
