@@ -462,6 +462,7 @@ class afcAMS(afcUnit):
         # Engagement params — unit-level defaults, per-lane overrides from lane config
         self._engagement_length = config.getfloat("engagement_length", 20.0, minval=1.0)
         self._engagement_speed = config.getfloat("engagement_speed", 300.0, minval=10.0)
+        self._defer_engagement = config.getboolean("defer_engagement", False)
         self._engagement_params: dict[str, tuple[float, float]] = {}
 
         # Runtime state
@@ -552,6 +553,9 @@ class afcAMS(afcUnit):
             lane._load_state = False
             lane.loaded_to_hub = False
             lane.status = AFCLaneState.NONE
+
+            # Same-FPS runout tracking — blocks sensor noise during reload
+            lane._oams_runout_detected = False
 
     def _init_follower_and_monitor(self):
         """Set up follower motor controller and stuck/clog monitor."""
@@ -679,6 +683,9 @@ class afcAMS(afcUnit):
                     old_f1s = self._last_f1s[slot] if slot < len(self._last_f1s) else None
 
                     if old_f1s is not None and new_f1s != old_f1s:
+                        if self._should_block_sensor_for_runout(lane, new_f1s):
+                            self._last_f1s[slot] = new_f1s
+                            continue
                         if lane_name in self._hub_load_suppressed:
                             lane._load_suppressed = True
                             self._hub_load_suppressed.discard(lane_name)
@@ -862,7 +869,8 @@ class afcAMS(afcUnit):
         return None
 
     def on_lane_unset_loaded(self, lane, extruder_name):
-        """Cleanup after lane is unset — stop follower, update state."""
+        """Cleanup after lane is unset — stop follower, clear runout state."""
+        lane._oams_runout_detected = False
         if self._follower is not None:
             try:
                 fps_state = self._get_monitor_state()
@@ -1102,8 +1110,8 @@ class afcAMS(afcUnit):
                     self.logger.error(f"OAMS load attempt {attempt+1} failed: {msg}")
                     continue
 
-                # Verify engagement
-                engaged = self._verify_engagement(cur_lane)
+                # Verify engagement (skip if deferred to AFC's Phase 2)
+                engaged = True if self._defer_engagement else self._verify_engagement(cur_lane)
                 if engaged:
                     # Enable follower and start monitor
                     if self._follower:
@@ -1384,23 +1392,138 @@ class afcAMS(afcUnit):
 
         return True
 
-    # ── Runout handling ─────────────────────────────────────────────
+    # ── Same-FPS runout handling ───────────────────────────────────
+
+    def _should_block_sensor_for_runout(self, lane, new_val):
+        """Block sensor updates during active same-FPS runout reload.
+
+        Returns True if the update should be suppressed. Automatically
+        clears the flag once the runout handling window has passed.
+        """
+        if not getattr(lane, '_oams_runout_detected', False):
+            return False
+
+        try:
+            is_printing = self.afc.function.is_printing()
+            is_tool_loaded = getattr(lane, 'tool_loaded', False)
+            lane_status = getattr(lane, 'status', None)
+            active_runout = (is_printing and is_tool_loaded
+                             and lane_status in (AFCLaneState.INFINITE_RUNOUT,
+                                                 AFCLaneState.TOOL_UNLOADING))
+        except Exception:
+            active_runout = False
+
+        if not active_runout:
+            lane._oams_runout_detected = False
+            return False
+
+        if new_val:
+            self.logger.debug(
+                f"Blocked sensor True for {lane.name} — same-FPS runout active")
+            return True
+
+        lane._oams_runout_detected = False
+        return False
+
+    def _is_same_extruder(self, source_lane, target_lane):
+        """Check if two lanes share the same physical extruder."""
+        src_ext = getattr(source_lane, 'extruder_obj', None)
+        tgt_ext = getattr(target_lane, 'extruder_obj', None)
+        if src_ext is None or tgt_ext is None:
+            return False
+        src_name = getattr(src_ext, 'name', None)
+        tgt_name = getattr(tgt_ext, 'name', None)
+        if not src_name or not tgt_name:
+            return False
+        return src_name.strip().lower() == tgt_name.strip().lower()
+
+    def handle_same_fps_reload(self, source_lane, target_lane):
+        """Same-FPS infinite runout reload — no pause, no unload.
+
+        The old filament coasts through the shared PTFE. OAMS pushes
+        the new spool's filament forward to meet it at the extruder
+        gears seamlessly.
+        """
+        afc = self.afc
+        source_name = source_lane.name
+        target_name = target_lane.name
+
+        self.logger.info(
+            f"Same-FPS infinite runout: {source_name} -> {target_name}")
+
+        source_lane.status = AFCLaneState.NONE
+        self.lane_not_ready(source_lane)
+
+        try:
+            success = self._oams_load(target_lane)
+            if not success:
+                self.logger.error(f"Same-FPS reload failed for {target_name}")
+                afc.error.AFC_error(
+                    f"Same-FPS reload failed for {target_name}", pause=True)
+                return False
+        except Exception as e:
+            self.logger.error(f"Same-FPS reload exception: {e}")
+            afc.error.AFC_error(
+                f"Same-FPS reload failed for {target_name}: {e}", pause=True)
+            return False
+
+        source_map = getattr(source_lane, 'map', None)
+        if source_map:
+            self.gcode.run_script_from_command(
+                f'SET_MAP LANE={target_name} MAP={source_map}')
+            self.logger.info(
+                f"Remapped {source_map} from {source_name} to {target_name}")
+
+        target_lane.set_tool_loaded()
+        self.lane_tool_loaded(target_lane)
+        afc.current = target_name
+        afc.save_vars()
+
+        self.logger.info(
+            f"Same-FPS reload complete: {target_name} now active")
+        return True
 
     def handle_runout_detected(self, spool_index, monitor=None, lane_name=None):
-        """Handle runout event from OpenAMS hardware."""
+        """Handle runout from OpenAMS hardware.
+
+        Classifies the runout as same-extruder (seamless reload) or
+        other (defers to AFC's normal infinite spool / pause logic).
+        """
         lane = self._lane_for_spool_index(spool_index)
         if lane is None and lane_name:
             lane = self._resolve_lane_reference(lane_name)
         if lane is None:
-            self.logger.warning(f"Cannot resolve lane for runout spool {spool_index}")
+            self.logger.warning(
+                f"Cannot resolve lane for runout spool {spool_index}")
             return
 
-        runout_lane = getattr(lane, 'runout_lane', None)
-        if runout_lane:
+        runout_lane_name = getattr(lane, 'runout_lane', None)
+        if not runout_lane_name:
             self.logger.info(
-                f"OpenAMS runout on {lane.name}, switching to {runout_lane}")
-        self.afc.error.AFC_error(
-            f"Runout detected on {lane.name}", pause=True)
+                f"Runout on {lane.name} — no runout_lane configured, pausing")
+            self.afc.error.AFC_error(
+                f"Runout detected on {lane.name}", pause=True)
+            return
+
+        target_lane = self._resolve_lane_reference(runout_lane_name)
+        if target_lane is None:
+            self.logger.warning(
+                f"Runout lane '{runout_lane_name}' not found for {lane.name}")
+            self.afc.error.AFC_error(
+                f"Runout detected on {lane.name}", pause=True)
+            return
+
+        if self._is_same_extruder(lane, target_lane):
+            lane._oams_runout_detected = True
+            self.logger.info(
+                f"Same-extruder runout on {lane.name}, "
+                f"seamless reload to {target_lane.name}")
+            self.handle_same_fps_reload(lane, target_lane)
+        else:
+            lane._oams_runout_detected = False
+            self.logger.info(
+                f"Cross-extruder runout on {lane.name} -> {target_lane.name}, "
+                "deferring to AFC infinite spool handling")
 
     def check_runout(self, lane=None):
         """OAMS runout: only trigger when printing AND this lane is loaded to its extruder."""

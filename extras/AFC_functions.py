@@ -569,7 +569,6 @@ class afcFunction:
                 obj.unsync_to_extruder()
                 if obj.prep_state and obj.load_state:
                     if obj.tool_loaded:
-                        # If tool is loaded, set led to tool loaded color
                         obj.unit_obj.lane_tool_loaded_idle(obj)
                     else:
                         obj.unit_obj.lane_loaded(obj)
@@ -1351,7 +1350,7 @@ class afcFunction:
 
         if (lanes is not None
             and lanes != 'all'
-            and self.afc.lanes.get(lanes).extruder_obj.no_lanes):
+            and self.afc.lanes.get(lanes).extruder_obj.is_standalone()):
             self.afc.error.AFC_error(f"{lanes} is a standalone lane, cannot calibrate", pause=False)
             return
 
@@ -1379,13 +1378,15 @@ class afcFunction:
 
             # Setting tool start to buffer if only tool_end is set and user has buffer so calibration can run
             if cur_lane.extruder_obj.tool_start is None:
-                if getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None) is not None:
-                    self.logger.info("Using U1 filament sensor as tool_start for calibration")
+                has_u1_sensor = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None) is not None
+                if has_u1_sensor:
+                    self.logger.info("Using U1 motion sensor to calibrate bowden length")
                 elif cur_lane.extruder_obj.tool_end is not None and cur_lane.buffer_obj is not None:
                     self.logger.info("Cannot run calibration using post extruder sensor, using buffer to calibrate bowden length")
                     cur_lane.extruder_obj.tool_start = "buffer"
                     set_tool_start_back_to_none = True
                 else:
+                    # Cannot calibrate
                     self.afc.error.AFC_error("Cannot calibrate with only post extruder sensor and no turtleneck buffer defined in config", pause=False)
                     return
 

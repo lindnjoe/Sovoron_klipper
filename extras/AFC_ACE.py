@@ -137,7 +137,9 @@ class afcACE(afcUnit):
                 pass
 
         # Register temperature_ace sensor factory for [temperature_sensor]
-        # sections that use sensor_type: temperature_ace.
+        # sections that use sensor_type: temperature_ace.  This is a
+        # convenience — prefer [temperature_ace <name>] sections which
+        # bypass the factory mechanism and avoid config-ordering issues.
         try:
             from extras.temperature_ace import TemperatureACE
             pheaters = self.printer.load_object(config, "heaters")
@@ -357,7 +359,7 @@ class afcACE(afcUnit):
                     else:
                         self.lane_tool_loaded_idle(lane)
                     lane.enable_buffer()
-                    if self._use_feed_assist(lane):
+                    if self._use_feed_assist(lane) and self.afc.current == lane.name:
                         self._start_feed_assist(slot)
                 else:
                     if lane.name in self._hub_load_suppressed:
@@ -435,7 +437,7 @@ class afcACE(afcUnit):
                 })
         if sync_rfid_to_spoolman is not None:
             self._sync_rfid_to_spoolman(lane, slot_info)
-        if saved_spool_id and not lane.spool_id:
+        if saved_spool_id and not lane.spool_id and lane.remember_spool:
             self.afc.spool.set_spoolID(lane, saved_spool_id)
         self.lane_illuminate_spool(lane)
         self._hub_load_suppressed.discard(lane.name)
@@ -818,10 +820,8 @@ class afcACE(afcUnit):
                             self.lane_tool_loaded_idle(cur_lane)
                         cur_lane.enable_buffer()
 
-                        # Start feed assist for any lane confirmed in the
-                        # toolhead — don't gate on self.afc.current which
-                        # may be None on toolchangers during prep.
-                        if self._use_feed_assist(cur_lane):
+                        # Start feed assist only for the active lane
+                        if self._use_feed_assist(cur_lane) and self.afc.current == cur_lane.name:
                             self._start_feed_assist(slot)
 
         if assignTcmd:
@@ -1016,11 +1016,10 @@ class afcACE(afcUnit):
                 cur_lane, f"ACE not connected ({self.serial_port})")
             return False
 
-        # In combined mode, stop feed assist on other slots
-        if self.mode == MODE_COMBINED:
-            for other_name, other_slot in self._slot_map.items():
-                if other_slot != slot and other_slot in self._feed_assist_active:
-                    self._stop_feed_assist(other_slot)
+        # Stop feed assist on other slots before loading this one
+        for other_name, other_slot in self._slot_map.items():
+            if other_slot != slot and other_slot in self._feed_assist_active:
+                self._stop_feed_assist(other_slot)
 
         # Calculate feed distance
         if cur_lane.loaded_to_hub:
