@@ -177,6 +177,7 @@ class afcACE(afcUnit):
 
         # Defer serial connection until reactor is running (klippy:ready)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
+        self.printer.register_event_handler("afc:tool_loaded", self._handle_tool_loaded)
 
     _CONNECT_MAX_RETRIES = 5
     _CONNECT_RETRY_DELAYS = [2.0, 3.0, 5.0, 8.0, 10.0]
@@ -1284,6 +1285,18 @@ class afcACE(afcUnit):
                 self._feed_assist_active.discard(slot)
             except Exception as e:
                 self.logger.error(f"Failed to stop feed assist slot {slot}: {e}")
+
+    def _handle_tool_loaded(self, lane):
+        if self.mode != MODE_DIRECT:
+            return
+        if lane.name not in self._slot_map:
+            return
+        slot = self._slot_map[lane.name]
+        for other_name, other_slot in self._slot_map.items():
+            if other_slot != slot and other_slot in self._feed_assist_active:
+                self._stop_feed_assist(other_slot)
+        if self._use_feed_assist(lane) and slot not in self._feed_assist_active:
+            self._start_feed_assist(slot)
 
     def _wait_for_ace_ready(self, timeout=30.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
