@@ -359,12 +359,6 @@ class AFCPLR:
             fs = fobj.get_status(self.reactor.monotonic())
             state['fan_speeds'][fname] = fs.get('speed', 0)
 
-        exclude_obj = self.printer.lookup_object('exclude_object', None)
-        if exclude_obj is not None:
-            eo_status = exclude_obj.get_status(self.reactor.monotonic())
-            state['exclude_current_object'] = eo_status.get(
-                'current_object', None)
-
         return state
 
     def _save_state(self):
@@ -569,11 +563,8 @@ class AFCPLR:
         run("G90" if absolute_coord else "G91")
         run("M82" if absolute_extrude else "M83")
 
-        # 15. Restore exclude_object definitions and active object
+        # 15. Restore exclude_object definitions from gcode file header
         self._restore_exclude_objects(file_path, run)
-        current_object = state.get('exclude_current_object')
-        if current_object:
-            run("EXCLUDE_OBJECT_START NAME=%s" % current_object)
 
         # 16. Select file, seek to saved position, then start printing
         gcmd.respond_info(
