@@ -198,23 +198,25 @@ class AFCPLR:
             except Exception as e:
                 self.logger.error("Shutdown save failed: %s" % e)
 
-    def _handle_reset_file(self):
-        self._clear_state()
+    def _cleanup(self):
+        self._stop_tracking()
         self.layer_z = 0.0
         self._pending_layer_z = None
         self._z_up_ticks = 0
         self._last_save_time = 0.0
+        self._pending_recovery = None
+        self._clear_state()
+
+    def _handle_reset_file(self):
+        self._cleanup()
 
     # ── Timer ───────────────────────────────────────────────────────
 
     def _timer_cb(self, eventtime):
         if not self._is_printing():
-            if self._last_save_time > 0:
-                self._stop_tracking()
-                ps = self._print_stats.get_status(eventtime) if self._print_stats else {}
-                if ps.get('state') in ('complete', 'cancelled', 'standby'):
-                    self._clear_state()
-            return eventtime + self.z_check_interval
+            self.logger.info("Print ended, clearing PLR state")
+            self._cleanup()
+            return self.reactor.NEVER
 
         current_z = self._get_current_z()
         save_triggered = False
@@ -609,7 +611,7 @@ class AFCPLR:
         `AFC_PLR_CLEAR`
         """
         self._close_prompt()
-        self._clear_state()
+        self._cleanup()
         gcmd.respond_info("AFC_PLR: Saved state cleared")
 
     def cmd_PLR_STATUS(self, gcmd):
