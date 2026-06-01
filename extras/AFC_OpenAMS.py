@@ -871,12 +871,11 @@ class afcAMS(afcUnit):
     def on_lane_unset_loaded(self, lane, extruder_name):
         """Cleanup after lane is unset — stop follower, clear runout state."""
         lane._oams_runout_detected = False
-        if self._follower is not None:
+        if self._follower is not None and self.oams:
             try:
-                fps_state = self._get_monitor_state()
-                if fps_state and self.oams:
-                    self._follower.set_follower_state(
-                        fps_state, self.oams, 0, 0, "lane unset", force=True)
+                self._follower.set_follower_state(
+                    self._get_monitor_state(), self.oams, 0, 0,
+                    "lane unset", force=True)
             except Exception:
                 pass
 
@@ -1047,10 +1046,9 @@ class afcAMS(afcUnit):
     def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
         """Set OAMS follower to reverse before AFC runs cut/park/tip."""
         if self._follower:
-            fps_state = self._get_monitor_state()
-            if fps_state:
-                self._follower.set_follower_state(
-                    fps_state, self.oams, 1, 0, "before unload cut", force=True)
+            self._follower.set_follower_state(
+                self._get_monitor_state(), self.oams, 1, 0,
+                "before unload cut", force=True)
 
     def _oams_unload_inner(self, cur_lane, cur_extruder) -> bool:
         """OAMS custom unload — filament transport only.
@@ -1098,10 +1096,9 @@ class afcAMS(afcUnit):
 
         # Enable follower forward before load
         if self._follower:
-            fps_state = self._get_monitor_state()
-            if fps_state:
-                self._follower.enable_follower(
-                    fps_state, self.oams, 1, "before load", force=True)
+            self._follower.enable_follower(
+                self._get_monitor_state(), self.oams, 1, "before load",
+                force=True)
 
         for attempt in range(max_retries):
             try:
@@ -1115,10 +1112,9 @@ class afcAMS(afcUnit):
                 if engaged:
                     # Enable follower and start monitor
                     if self._follower:
-                        fps_state = self._get_monitor_state()
-                        if fps_state:
-                            self._follower.enable_follower(
-                                fps_state, self.oams, 1, "load complete", force=True)
+                        self._follower.enable_follower(
+                            self._get_monitor_state(), self.oams, 1,
+                            "load complete", force=True)
 
                     if self._monitor:
                         self._monitor.notify_load_complete(
@@ -1135,11 +1131,9 @@ class afcAMS(afcUnit):
                     f"Engagement failed attempt {attempt+1}, cleaning up")
 
                 if self._follower:
-                    fps_state = self._get_monitor_state()
-                    if fps_state:
-                        self._follower.set_follower_state(
-                            fps_state, self.oams, 1, 0,
-                            "engagement cleanup", force=True)
+                    self._follower.set_follower_state(
+                        self._get_monitor_state(), self.oams, 1, 0,
+                        "engagement cleanup", force=True)
 
                 # Retract from extruder
                 unload_length, _ = self.get_engagement_params(cur_lane.name)
