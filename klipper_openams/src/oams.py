@@ -116,6 +116,7 @@ class OAMS:
         self.action_status       = None
         self.action_status_code  = None
         self.action_status_value = None
+        self._last_action        = None
 
         # MCU communication
         self._register_mcu_response(self._oams_action_status, "oams_action_status")
@@ -673,14 +674,27 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         else:
             gcmd.error("Calibration of PTFE length failed")
 
+    def _send_mcu_cancel(self):
+        """Send load cancel command to MCU and wait for it to settle."""
+        if self.oams_load_spool_cancel_cmd is not None:
+            self.logger.info(f"OAMS[{self.oams_idx}]: Sending cancel to MCU")
+            self.oams_load_spool_cancel_cmd.send()
+            self.reactor.pause(self.reactor.monotonic() + 2.0)
+        else:
+            self.logger.warning(
+                f"OAMS[{self.oams_idx}]: No cancel command available, MCU may still be busy"
+            )
+
     def load_spool(self, spool_idx):
         self.action_status = OAMSStatus.LOADING
+        self._last_action  = OAMSStatus.LOADING
         self.oams_load_spool_cmd.send([spool_idx])
         timeout = self.reactor.monotonic() + 45.0
 
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
                 self.logger.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 45 seconds")
+                self._send_mcu_cancel()
                 self.action_status      = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return OAMSOpCode.ERROR_UNSPECIFIED, "OAMS load operation timed out (MCU unresponsive)"
@@ -717,6 +731,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
     def unload_spool(self):
         self.action_status = OAMSStatus.UNLOADING
+        self._last_action  = OAMSStatus.UNLOADING
         self.oams_unload_spool_cmd.send()
         timeout = self.reactor.monotonic() + 40.0
 
@@ -725,7 +740,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 self.logger.error(f"OAMS[{self.oams_idx}]: Unload operation timed out after 40 seconds")
                 self.action_status      = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
-                return False, "OAMS unload operation timed out (MCU unresponsive)"
+                return False, "OAMS unload operation timed out (MCU unresponsive). No unload cancel available — MCU may still be busy."
             self.reactor.pause(self.reactor.monotonic() + 0.2)
 
         if self.action_status_code == OAMSOpCode.SUCCESS:
@@ -765,31 +780,36 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.oams_follower_cmd.send([enable, direction])
 
     def abort_current_action(self, code=OAMSOpCode.ERROR_KLIPPER_CALL, wait=True):
-        if self.action_status is None:
-            return
+        is_load = (self.action_status == OAMSStatus.LOADING
+                   or (self.action_status is None
+                       and self._last_action == OAMSStatus.LOADING))
 
-        if wait:
-            self.logger.debug(
-                f"OAMS[{self.oams_idx}]: Aborting current action {self.action_status} with code {code}"
-            )
-            timeout     = self.reactor.monotonic() + 5.0
-            pause_delay = 0.5
-            while self.action_status is not None:
-                if self.reactor.monotonic() > timeout:
-                    self.logger.debug(f"OAMS[{self.oams_idx}]: Abort timeout - forcing clear")
-                    break
-                self.reactor.pause(self.reactor.monotonic() + pause_delay)
-                pause_delay = min(pause_delay + 0.25, 1.5)
-
+        if self.action_status is not None:
+            if wait:
+                self.logger.debug(
+                    f"OAMS[{self.oams_idx}]: Aborting current action {self.action_status} with code {code}"
+                )
+                if is_load:
+                    self._send_mcu_cancel()
+                timeout     = self.reactor.monotonic() + 5.0
+                pause_delay = 0.5
+                while self.action_status is not None:
+                    if self.reactor.monotonic() > timeout:
+                        self.logger.debug(f"OAMS[{self.oams_idx}]: Abort timeout - forcing clear")
+                        break
+                    self.reactor.pause(self.reactor.monotonic() + pause_delay)
+                    pause_delay = min(pause_delay + 0.25, 1.5)
             self.action_status_code  = code
             self.action_status_value = None
             self.action_status       = None
-            self.logger.info(f"OAMS[{self.oams_idx}]: Abort complete")
+            self.logger.info(f"OAMS[{self.oams_idx}]: Abort complete (waited={wait})")
+        elif is_load:
+            self._send_mcu_cancel()
+            self.logger.info(f"OAMS[{self.oams_idx}]: Abort - local state was clear, sent MCU cancel")
         else:
-            self.action_status_code  = code
-            self.action_status_value = None
-            self.action_status       = None
-            self.logger.debug(f"OAMS[{self.oams_idx}]: Abort without waiting - status cleared")
+            self.logger.info(
+                f"OAMS[{self.oams_idx}]: Abort - no action in progress, last action was unload (no cancel available)"
+            )
 
     cmd_OAMS_FOLLOWER_help = "Enable or disable follower and set its direction"
     def cmd_OAMS_FOLLOWER(self, gcmd):
