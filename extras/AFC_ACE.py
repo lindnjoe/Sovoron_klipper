@@ -912,72 +912,16 @@ class afcACE(afcUnit):
 
         old_bowden = getattr(cur_hub, 'afc_bowden_length', 0)
         max_distance = 6000
-        fine_step = 5.0
-        backoff = self.calibration_step
 
         self.logger.raw(
             f'Calibrating afc_bowden_length for {cur_lane.name} '
-            f'(max {max_distance}mm in {self.calibration_step}mm steps, '
-            f'fine pass {fine_step}mm)')
+            f'(max {max_distance}mm in {self.calibration_step}mm steps)')
 
-        # Coarse pass
-        coarse_distance, triggered = self._feed_until_sensor(
+        distance, triggered = self._feed_until_sensor(
             slot, cur_lane, max_distance)
 
-        if not triggered:
-            retract_dist = coarse_distance
-            self.logger.info(f"ACE calibrate: retracting {retract_dist:.0f}mm")
-            try:
-                self._wait_for_ace_ready()
-                self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
-                self._wait_for_feed_complete(slot, retract_dist, self.retract_speed)
-                self._wait_for_ace_ready(timeout=15.0)
-            except Exception as e:
-                self.logger.error(f"ACE calibrate: retract failed: {e}")
-            self._clear_stale_sensor_state(cur_lane)
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
-            return False, (
-                f"Toolhead sensor did not trigger after {coarse_distance:.0f}mm. "
-                "Check filament path and sensor wiring."), coarse_distance
-
-        # Back off for fine pass
-        self.logger.info(
-            f"ACE calibrate: coarse trigger at {coarse_distance:.1f}mm, "
-            f"backing off {backoff:.0f}mm for fine pass")
-        try:
-            self._wait_for_ace_ready()
-            self._ace.unwind_filament(slot, backoff, self.retract_speed)
-            self._wait_for_feed_complete(slot, backoff, self.retract_speed)
-            self._wait_for_ace_ready(timeout=15.0)
-        except Exception as e:
-            self.logger.error(f"ACE calibrate: backoff retract failed: {e}")
-
-        self._clear_stale_sensor_state(cur_lane)
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
-
-        if self._toolhead_sensor_triggered(cur_lane):
-            self.logger.info(
-                "ACE calibrate: sensor still triggered after backoff, "
-                "using coarse distance")
-            distance = coarse_distance
-        else:
-            # Fine pass
-            fine_distance, fine_triggered = self._feed_until_sensor(
-                slot, cur_lane, backoff + fine_step * 5, step_size=fine_step)
-
-            if fine_triggered:
-                distance = (coarse_distance - backoff) + fine_distance
-                self.logger.info(
-                    f"ACE calibrate: fine trigger at {fine_distance:.1f}mm "
-                    f"after backoff, total {distance:.1f}mm")
-            else:
-                distance = coarse_distance
-                self.logger.info(
-                    f"ACE calibrate: fine pass did not re-trigger, "
-                    f"using coarse distance {distance:.1f}mm")
-
         # Retract
-        retract_dist = distance + 5
+        retract_dist = distance + 5 if triggered else distance
         self.logger.info(f"ACE calibrate: retracting {retract_dist:.0f}mm")
         try:
             self._wait_for_ace_ready()
@@ -990,6 +934,11 @@ class afcACE(afcUnit):
         # Clear sensor state after retract
         self._clear_stale_sensor_state(cur_lane)
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
+
+        if not triggered:
+            return False, (
+                f"Toolhead sensor did not trigger after {distance:.0f}mm. "
+                "Check filament path and sensor wiring."), distance
 
         # Account for filament already at hub
         if cur_lane.loaded_to_hub:
@@ -1453,8 +1402,7 @@ class afcACE(afcUnit):
         return False
 
     def _calibrate_hub_inner(self, cur_lane) -> tuple:
-        """Calibrate dist_hub by incrementally feeding until hub sensor triggers.
-        Uses coarse pass then fine pass for precision."""
+        """Calibrate dist_hub by incrementally feeding until hub sensor triggers."""
         slot = self._get_slot(cur_lane.name)
         if not self._ace or not self._ace.connected:
             return False, "ACE not connected", 0
@@ -1468,18 +1416,14 @@ class afcACE(afcUnit):
 
         max_distance = 4000
         step = self.calibration_step
-        fine_step = 5.0
-        backoff = step
+        total_fed = 0.0
 
         self.logger.raw(
             f'Calibrating dist_hub for {cur_lane.name} '
-            f'(max {max_distance}mm in {step}mm steps, fine pass {fine_step}mm)')
+            f'(max {max_distance}mm in {step}mm steps)')
 
-        # Coarse pass
-        coarse_fed = 0.0
-        triggered = False
-        while coarse_fed < max_distance:
-            feed_step = min(step, max_distance - coarse_fed)
+        while total_fed < max_distance:
+            feed_step = min(step, max_distance - total_fed)
             try:
                 self._wait_for_ace_ready()
                 self._ace.feed_filament(slot, feed_step, self.feed_speed)
@@ -1487,78 +1431,16 @@ class afcACE(afcUnit):
             except Exception as e:
                 self.logger.error(f"ACE hub calibrate: feed failed: {e}")
                 break
-            coarse_fed += feed_step
+            total_fed += feed_step
 
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
             if hub.state:
                 self.logger.info(
-                    f"ACE hub calibrate: coarse trigger at {coarse_fed:.1f}mm")
-                triggered = True
+                    f"ACE hub calibrate: hub sensor triggered at {total_fed:.1f}mm")
                 break
 
-        if not triggered:
-            if coarse_fed > 0:
-                try:
-                    self._wait_for_ace_ready()
-                    self._ace.unwind_filament(slot, coarse_fed, self.retract_speed)
-                    self._wait_for_feed_complete(slot, coarse_fed, self.retract_speed)
-                except Exception as e:
-                    self.logger.error(f"ACE hub calibrate: retract failed: {e}")
-            return False, (
-                f"Hub sensor did not trigger after {coarse_fed:.0f}mm. "
-                "Check filament path and hub sensor wiring."), coarse_fed
-
-        # Back off for fine pass
-        self.logger.info(
-            f"ACE hub calibrate: backing off {backoff:.0f}mm for fine pass")
-        try:
-            self._wait_for_ace_ready()
-            self._ace.unwind_filament(slot, backoff, self.retract_speed)
-            self._wait_for_feed_complete(slot, backoff, self.retract_speed)
-            self._wait_for_ace_ready(timeout=15.0)
-        except Exception as e:
-            self.logger.error(f"ACE hub calibrate: backoff retract failed: {e}")
-
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
-
-        if hub.state:
-            self.logger.info(
-                "ACE hub calibrate: sensor still triggered after backoff, "
-                "using coarse distance")
-            distance = coarse_fed
-        else:
-            # Fine pass
-            fine_fed = 0.0
-            fine_triggered = False
-            fine_max = backoff + fine_step * 5
-            while fine_fed < fine_max:
-                fs = min(fine_step, fine_max - fine_fed)
-                try:
-                    self._wait_for_ace_ready()
-                    self._ace.feed_filament(slot, fs, self.feed_speed)
-                    self._wait_for_feed_complete(slot, fs, self.feed_speed)
-                except Exception as e:
-                    self.logger.error(f"ACE hub calibrate: fine feed failed: {e}")
-                    break
-                fine_fed += fs
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
-                if hub.state:
-                    fine_triggered = True
-                    break
-
-            if fine_triggered:
-                distance = (coarse_fed - backoff) + fine_fed
-                self.logger.info(
-                    f"ACE hub calibrate: fine trigger at {fine_fed:.1f}mm "
-                    f"after backoff, total {distance:.1f}mm")
-            else:
-                distance = coarse_fed
-                self.logger.info(
-                    f"ACE hub calibrate: fine pass did not re-trigger, "
-                    f"using coarse distance {distance:.1f}mm")
-
         # Retract
-        retract_dist = max(distance - 50, 0)
+        retract_dist = total_fed - 50 if hub.state else total_fed
         if retract_dist > 0:
             try:
                 self._wait_for_ace_ready()
@@ -1567,8 +1449,13 @@ class afcACE(afcUnit):
             except Exception as e:
                 self.logger.error(f"ACE hub calibrate: retract failed: {e}")
 
+        if not hub.state and total_fed >= max_distance:
+            return False, (
+                f"Hub sensor did not trigger after {total_fed:.0f}mm. "
+                "Check filament path and hub sensor wiring."), total_fed
+
         old_dist = cur_lane.dist_hub
-        new_dist = round(distance, 2)
+        new_dist = round(total_fed, 2)
         cal_msg = f'\n dist_hub: New: {new_dist} Old: {old_dist}'
         cur_lane.dist_hub = new_dist
         self.afc.function.ConfigRewrite(cur_lane.fullname, "dist_hub", new_dist, cal_msg)
