@@ -1488,6 +1488,10 @@ class afc:
         if self.park_pre_load:
             self.gcode.run_script_from_command(self.park_pre_load_cmd)
 
+        # Clear stale error state so retries aren't blocked by a prior failure
+        if self.error_state:
+            self.error.set_error_state(False)
+
         # ── Phase 1: Filament transport (custom or stepper) ──
 
         if cur_lane.custom_load_cmd:
@@ -1898,6 +1902,10 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
+        # Clear stale error state so retries aren't blocked by a prior failure
+        if self.error_state:
+            self.error.set_error_state(False)
+
         # ── Phase 1: Toolhead operations (shared by ALL unit types) ──
 
         # Let the unit set up hardware (e.g. OAMS follower reverse) before
