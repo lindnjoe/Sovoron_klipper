@@ -1191,7 +1191,8 @@ class afcACE(afcUnit):
 
         AFC's unload_sequence handles the shared toolhead operations
         (LED, heat, quick pull, buffer disable, sync, cut/park/tip)
-        and unsync_to_extruder before calling this via custom_unload_cmd.
+        then calls this via custom_unload_cmd.  The lane is still
+        synced to the extruder on entry so we can do extruder moves.
         """
         afc = self.afc
         slot = self._get_slot(cur_lane.name)
@@ -1201,8 +1202,18 @@ class afcACE(afcUnit):
                 cur_lane, f"ACE not connected ({self.serial_port})")
             return False
 
-        # Feed assist already stopped by prepare_unload() before cut/park/tip.
-        # Extruder retract and unsync handled by AFC.py before custom_unload_cmd.
+        # Retract filament out of the toolhead/extruder gears before
+        # the ACE serial unwind.  The lane is still synced to the
+        # extruder at this point.
+        if cur_extruder.tool_stn_unload > 0:
+            afc.afcDeltaTime.log_with_time(
+                'ACE unload: retracting tool_stn_unload from toolhead')
+            afc.move_e_pos(
+                cur_extruder.tool_stn_unload * -1,
+                cur_extruder.tool_unload_speed, "ACE STN unload")
+            afc.function.log_toolhead_pos("ACE STN unload after ")
+
+        cur_lane.unsync_to_extruder()
 
         # ACE serial unwind — retract to hub staging point
         hub = cur_lane.hub_obj
