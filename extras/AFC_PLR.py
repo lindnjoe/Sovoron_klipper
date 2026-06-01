@@ -72,6 +72,7 @@ class AFCPLR:
         self.resume_z_hop = config.getfloat('resume_z_hop', 5.0, minval=0.0)
         self.purge_length = config.getfloat('pre_resume_purge_length', 30.0, minval=0.0)
         self.purge_speed = config.getfloat('pre_resume_purge_speed', 3.0, minval=0.1)
+        self.double_home = config.getboolean('double_home', False)
         save_file = config.get('save_file', '')
         self._config_save_file = save_file
 
@@ -430,6 +431,19 @@ class AFCPLR:
         # 3. Home XY only
         gcmd.respond_info("AFC_PLR: Homing XY")
         run("G28 X Y")
+
+        if self.double_home:
+            toolhead = self.printer.lookup_object('toolhead')
+            kin = toolhead.get_kinematics()
+            axes_max = kin.axes_max
+            mid_x = axes_max[0] / 2.0
+            mid_y = axes_max[1] / 2.0
+            gcmd.respond_info(
+                "AFC_PLR: Double home — moving to center (%.0f, %.0f) and re-homing"
+                % (mid_x, mid_y))
+            run("G90")
+            run("G1 X%.1f Y%.1f F6000" % (mid_x, mid_y))
+            run("G28 X Y")
 
         # 3b. Restore bed mesh (before Z moves so compensation is active)
         bed_mesh_points = state.get('bed_mesh_points')
