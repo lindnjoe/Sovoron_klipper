@@ -398,6 +398,23 @@ class AFCPLR:
 
     # ── Resume ──────────────────────────────────────────────────────
 
+    def _restore_exclude_objects(self, file_path, run):
+        exclude_obj = self.printer.lookup_object('exclude_object', None)
+        if exclude_obj is None:
+            return
+        try:
+            sd_path = self._sd.sdcard_dirname
+            full_path = os.path.join(sd_path, file_path)
+            with open(full_path, 'r') as f:
+                for i, line in enumerate(f):
+                    if i >= 1000:
+                        break
+                    if line.startswith('EXCLUDE_OBJECT_DEFINE'):
+                        run(line.strip())
+        except Exception as e:
+            self.logger.info(
+                "Could not restore exclude_object definitions: %s" % e)
+
     def _resume_from_state(self, gcmd, state):
         file_path = state.get('file_path', '')
         file_pos = state.get('file_position', 0)
@@ -546,7 +563,10 @@ class AFCPLR:
         run("G90" if absolute_coord else "G91")
         run("M82" if absolute_extrude else "M83")
 
-        # 15. Select file, seek to saved position, then start printing
+        # 15. Restore exclude_object definitions from gcode file header
+        self._restore_exclude_objects(file_path, run)
+
+        # 16. Select file, seek to saved position, then start printing
         gcmd.respond_info(
             "AFC_PLR: Resuming %s from position %d" % (file_path, file_pos))
 
@@ -559,7 +579,7 @@ class AFCPLR:
         run('M26 S%d' % file_pos)
         run('M24')
 
-        # 16. Clear saved state
+        # 17. Clear saved state
         self._clear_state()
 
         gcmd.respond_info("AFC_PLR: Resume complete — printing")

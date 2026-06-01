@@ -105,7 +105,7 @@
           "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 731.331787109375,
+          "remaining_weight_g": 725.8565063476563,
           "spool_name": "Bambu Lab PLA - Cyan",
           "spoolman_id": 47,
           "total_weight_g": 1000.0
@@ -182,7 +182,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-01T04:45:11Z"
+          "timestamp": "2026-06-01T05:02:02Z"
         },
         "optional": []
       },
