@@ -359,7 +359,7 @@ class afcACE(afcUnit):
                     else:
                         self.lane_tool_loaded_idle(lane)
                     lane.enable_buffer()
-                    if self._use_feed_assist(lane):
+                    if self._use_feed_assist(lane) and self.afc.current == lane.name:
                         self._start_feed_assist(slot)
                 else:
                     if lane.name in self._hub_load_suppressed:
@@ -820,10 +820,8 @@ class afcACE(afcUnit):
                             self.lane_tool_loaded_idle(cur_lane)
                         cur_lane.enable_buffer()
 
-                        # Start feed assist for any lane confirmed in the
-                        # toolhead — don't gate on self.afc.current which
-                        # may be None on toolchangers during prep.
-                        if self._use_feed_assist(cur_lane):
+                        # Start feed assist only for the active lane
+                        if self._use_feed_assist(cur_lane) and self.afc.current == cur_lane.name:
                             self._start_feed_assist(slot)
 
         if assignTcmd:
