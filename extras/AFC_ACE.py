@@ -357,9 +357,9 @@ class afcACE(afcUnit):
                         self.afc.spool.set_active_spool(lane.spool_id)
                         self.lane_tool_loaded(lane)
                         lane.status = AFCLaneState.TOOLED
+                        lane.enable_buffer()
                     else:
                         self.lane_tool_loaded_idle(lane)
-                    lane.enable_buffer()
                     if self._use_feed_assist(lane) and self.afc.current == lane.name:
                         self._start_feed_assist(slot)
                 else:
@@ -816,10 +816,10 @@ class afcACE(afcUnit):
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             self.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
+                            cur_lane.enable_buffer()
                             self.printer.send_event("afc:tool_loaded", cur_lane)
                         else:
                             self.lane_tool_loaded_idle(cur_lane)
-                        cur_lane.enable_buffer()
 
                         # Start feed assist only for the active lane
                         if self._use_feed_assist(cur_lane) and self.afc.current == cur_lane.name:

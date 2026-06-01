@@ -772,10 +772,10 @@ class AfcToolchanger(afcUnit):
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             self.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
+                            cur_lane.enable_buffer()
                         else:
                             self.lane_tool_loaded_idle(cur_lane)
 
-                        cur_lane.enable_buffer()
                         self.printer.send_event("afc:tool_loaded", cur_lane)
                     else:
                         self.afc.error.fix('toolhead', cur_lane)
