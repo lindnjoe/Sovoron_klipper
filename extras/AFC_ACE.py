@@ -1422,10 +1422,6 @@ class afcACE(afcUnit):
             if lane is not None and self._toolhead_sensor_triggered(lane):
                 self.logger.debug(
                     f"ACE wait: toolhead sensor triggered for slot {slot_index}")
-                try:
-                    ace.stop_feed_filament(slot_index)
-                except Exception:
-                    pass
                 return True
 
             try:
