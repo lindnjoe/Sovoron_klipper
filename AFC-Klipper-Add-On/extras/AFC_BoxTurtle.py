@@ -132,10 +132,10 @@ class afcBoxTurtle(afcUnit):
                                 self.afc.spool.set_active_spool(cur_lane.spool_id)
                                 self.lane_tool_loaded(cur_lane)
                                 cur_lane.status = AFCLaneState.TOOLED
+                                cur_lane.enable_buffer()
                             else:
                                 self.lane_tool_loaded_idle(cur_lane)
 
-                            cur_lane.enable_buffer()
                             self.printer.send_event("afc:tool_loaded", cur_lane)
                         else:
                             if cur_lane.get_toolhead_pre_sensor_state() == True or cur_lane.extruder_obj.tool_end_state:
