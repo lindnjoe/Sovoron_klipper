@@ -91,7 +91,6 @@ class AFCPLR:
         self.save_file = ''
         self._pending_recovery = None
         self._prompt_timer = None
-        self._awaiting_user = False
 
         if not self.enabled:
             return
@@ -149,7 +148,6 @@ class AFCPLR:
                     "Use AFC_PLR_RESUME to continue or AFC_PLR_CLEAR to discard."
                     % (fname, age))
                 self._pending_recovery = state
-                self._awaiting_user = True
                 self._prompt_timer = self.reactor.register_timer(
                     self._show_recovery_prompt,
                     self.reactor.monotonic() + 10.0)
@@ -161,16 +159,8 @@ class AFCPLR:
             self.reactor.monotonic() + 5.0)
 
     def _idle_check_cb(self, eventtime):
-        if self._is_printing():
-            if self._last_save_time == 0:
-                self._start_tracking()
-        elif self._has_saved_state and not self._awaiting_user:
-            ps = self._print_stats.get_status(eventtime) if self._print_stats else {}
-            state = ps.get('state', '')
-            if state in ('complete', 'cancelled', 'standby', 'error'):
-                self.logger.info(
-                    "Print ended (%s), clearing PLR state" % state)
-                self._cleanup()
+        if self._is_printing() and self._last_save_time == 0:
+            self._start_tracking()
         return eventtime + 2.0
 
     def _show_recovery_prompt(self, eventtime):
@@ -215,7 +205,6 @@ class AFCPLR:
         self._z_up_ticks = 0
         self._last_save_time = 0.0
         self._pending_recovery = None
-        self._awaiting_user = False
         self._clear_state()
 
     def _handle_reset_file(self):
@@ -225,7 +214,8 @@ class AFCPLR:
 
     def _timer_cb(self, eventtime):
         if not self._is_printing():
-            self._stop_tracking()
+            self.logger.info("Print ended, clearing PLR state")
+            self._cleanup()
             return self.reactor.NEVER
 
         current_z = self._get_current_z()
@@ -589,7 +579,6 @@ class AFCPLR:
         `AFC_PLR_RESUME`
         """
         self._close_prompt()
-        self._awaiting_user = False
         state = self._load_state()
         if state is None:
             raise gcmd.error("No saved PLR state found at %s" % self.save_file)
