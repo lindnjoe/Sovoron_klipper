@@ -708,10 +708,10 @@ class ACEConnection:
             "stop_unwind_filament", params={"index": slot_index}
         )
 
-    def start_feed_assist(self, slot_index):
-        """Enable continuous motorized feed assist for a slot."""
-        self.send_command_async(
-            "start_feed_assist", params={"index": slot_index}
+    def start_feed_assist(self, slot_index, timeout=2.0):
+        """Enable continuous motorized feed assist for a slot and wait for ACK."""
+        return self.send_command(
+            "start_feed_assist", params={"index": slot_index}, timeout=timeout
         )
 
     def stop_feed_assist(self, slot_index):
