@@ -694,14 +694,17 @@ class afcAMS(afcUnit):
                     self._last_f1s[slot] = new_f1s
 
             # Hub HES sensor (filament at hub)
-            # Match _sync_lanes_from_hardware: loaded_to_hub is True when
-            # either hub or F1S detects filament (OAMS feeds on demand).
+            # Latch loaded_to_hub: set True when hub detects filament,
+            # only clear when both hub AND F1S are False (spool removed).
             if slot < len(hub_values):
                 new_hub = bool(hub_values[slot])
                 old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
                 new_f1s_val = bool(getattr(lane, '_load_state', False))
 
-                lane.loaded_to_hub = new_hub or new_f1s_val
+                if new_hub:
+                    lane.loaded_to_hub = True
+                elif not new_f1s_val:
+                    lane.loaded_to_hub = False
 
                 if resync_prev or (old_hub is not None and new_hub != old_hub):
                     hub = getattr(lane, 'hub_obj', None)
@@ -938,6 +941,8 @@ class afcAMS(afcUnit):
 
                     self.printer.send_event("afc:tool_loaded", cur_lane)
             else:
+                if not cur_lane.remember_spool:
+                    self.afc.spool.clear_values(cur_lane)
                 self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
                 msg += 'EMPTY READY FOR SPOOL'
 
