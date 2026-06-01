@@ -922,6 +922,20 @@ class afcAMS(afcUnit):
                         cur_lane.enable_buffer()
                     else:
                         self.lane_tool_loaded_idle(cur_lane)
+
+                    # Enable follower forward so OAMS maintains buffer
+                    # tension for filament already in the toolhead.
+                    if self._follower and self.oams:
+                        self._follower.enable_follower(
+                            self._get_monitor_state(), self.oams, 1,
+                            "prep tool-loaded", force=True)
+
+                    if self._monitor:
+                        spool_index = self._spool_map.get(cur_lane.name, 0)
+                        self._monitor.notify_load_complete(
+                            cur_lane.name, self.oams_name, spool_index)
+                        self._monitor.start(self.oams)
+
                     self.printer.send_event("afc:tool_loaded", cur_lane)
             else:
                 self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
