@@ -1018,11 +1018,10 @@ class afcACE(afcUnit):
                 cur_lane, f"ACE not connected ({self.serial_port})")
             return False
 
-        # In combined mode, stop feed assist on other slots
-        if self.mode == MODE_COMBINED:
-            for other_name, other_slot in self._slot_map.items():
-                if other_slot != slot and other_slot in self._feed_assist_active:
-                    self._stop_feed_assist(other_slot)
+        # Stop feed assist on other slots before loading this one
+        for other_name, other_slot in self._slot_map.items():
+            if other_slot != slot and other_slot in self._feed_assist_active:
+                self._stop_feed_assist(other_slot)
 
         # Calculate feed distance
         if cur_lane.loaded_to_hub:
