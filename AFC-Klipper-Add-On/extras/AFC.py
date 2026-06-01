@@ -1957,16 +1957,6 @@ class afc:
         if cur_lane.custom_unload_cmd:
             self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
-
-            if cur_extruder.tool_stn_unload > 0:
-                self.afcDeltaTime.log_with_time(
-                    'TOOL_UNLOAD: Retracting from toolhead(tool_stn_unload) before custom unload'
-                )
-                with cur_lane.assist_move(cur_extruder.tool_unload_speed, True, cur_lane.assisted_unload):
-                    self.move_e_pos(cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "STN unload")
-                self.function.log_toolhead_pos("STN unload after ")
-
-            cur_lane.unsync_to_extruder()
             self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
             if self.error_state:
                 return False
