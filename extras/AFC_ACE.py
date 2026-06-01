@@ -1333,6 +1333,7 @@ class afcACE(afcUnit):
             return
         if self._ace and self._ace.connected:
             try:
+                self._wait_for_ace_ready()
                 self._ace.start_feed_assist(slot)
                 self._feed_assist_active.add(slot)
             except Exception as e:
