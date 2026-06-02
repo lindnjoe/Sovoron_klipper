@@ -738,6 +738,17 @@ body{background:#1a1a1a;color:#eee;font-family:system-ui,sans-serif;
 <div id="touch-indicator"></div>
 <script>
 (function(){
+  var inIframe = false;
+  try { inIframe = window.self !== window.top; } catch(e) { inIframe = true; }
+  if (inIframe || window.location.search.indexOf('embed') !== -1) document.body.classList.add('iframe');
+
+  var base = '';
+  var loc = window.location.pathname;
+  if (loc && loc.length > 1) {
+    base = loc.replace(/\/[^\/]*$/, '') + '/';
+    if (base === '/') base = '';
+  }
+
   const img = document.getElementById('screen');
   const status = document.getElementById('status');
   const indicator = document.getElementById('touch-indicator');
