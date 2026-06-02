@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Remote Display Setup Guide</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  background:#0d1117;color:#c9d1d9;line-height:1.6;padding:24px;max-width:900px;margin:0 auto}
+h1{color:#58a6ff;font-size:28px;margin-bottom:8px;border-bottom:1px solid #21262d;padding-bottom:12px}
+h2{color:#58a6ff;font-size:22px;margin:32px 0 12px;border-bottom:1px solid #21262d;padding-bottom:8px}
+h3{color:#79c0ff;font-size:17px;margin:20px 0 8px}
+h4{color:#d2a8ff;font-size:15px;margin:16px 0 6px}
+p{margin:8px 0}
+a{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+code{background:#161b22;border:1px solid #30363d;border-radius:4px;padding:2px 6px;
+  font-family:'SF Mono',Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;color:#e6edf3}
+pre{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;
+  overflow-x:auto;margin:10px 0;line-height:1.5}
+pre code{background:none;border:none;padding:0;font-size:13px}
+table{width:100%;border-collapse:collapse;margin:12px 0}
+th,td{border:1px solid #30363d;padding:8px 12px;text-align:left;font-size:14px}
+th{background:#161b22;color:#58a6ff;font-weight:600}
+td{background:#0d1117}
+td code{font-size:12px}
+.step{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin:16px 0}
+.step-num{display:inline-block;background:#1f6feb;color:#fff;width:28px;height:28px;
+  border-radius:50%;text-align:center;line-height:28px;font-weight:700;font-size:14px;margin-right:8px}
+.note{background:#0c2d6b33;border:1px solid #1f6feb;border-radius:6px;padding:12px 16px;
+  margin:12px 0;font-size:14px}
+.note::before{content:"Note: ";font-weight:600;color:#58a6ff}
+.warn{background:#4d2d0033;border:1px solid #d29922;border-radius:6px;padding:12px 16px;
+  margin:12px 0;font-size:14px}
+.warn::before{content:"Important: ";font-weight:600;color:#d29922}
+.tag{display:inline-block;background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;
+  border-radius:12px;padding:2px 10px;font-size:12px;margin:2px 4px 2px 0}
+ul,ol{margin:8px 0 8px 24px}
+li{margin:4px 0}
+.subtitle{color:#8b949e;font-size:15px;margin-bottom:20px}
+</style>
+</head>
+<body>
+
+<h1>Remote Display Setup Guide</h1>
+<p class="subtitle">Serve your printer's physical display over HTTP with touch support. Appears as a camera in Mainsail/Fluidd.</p>
+
+<!-- ─── Prerequisites ─────────────────────────────────── -->
+
+<h2>Prerequisites</h2>
+
+<div class="step">
+<p><strong>Pillow</strong> (required for image conversion):</p>
+<pre><code>pip install Pillow</code></pre>
+
+<p style="margin-top:12px"><strong>libdrm</strong> (only needed for HelixScreen / DRM backend):</p>
+<pre><code>sudo apt install libdrm2</code></pre>
+</div>
+
+<!-- ─── Step 1 ────────────────────────────────────────── -->
+
+<h2><span class="step-num">1</span> Add to Klipper Config</h2>
+
+<div class="step">
+<p>Add this to your <code>printer.cfg</code> (or an included cfg file):</p>
+<pre><code>[remote_display]
+port: 8092
+touch_device: /dev/input/event0
+#display_backend: auto
+#drm_device:
+#framebuffer_device: /dev/fb0
+#stream_fps: 5
+#bind: 0.0.0.0</code></pre>
+<p class="note">Commented-out lines show defaults. Only <code>touch_device</code> typically needs to be changed.</p>
+</div>
+
+<!-- ─── Step 2 ────────────────────────────────────────── -->
+
+<h2><span class="step-num">2</span> Find Your Touch Device</h2>
+
+<div class="step">
+<p>List all input devices:</p>
+<pre><code>cat /proc/bus/input/devices</code></pre>
+
+<p>Look for your touchscreen &mdash; it will have <code>ABS</code> in its handlers. Example:</p>
+<pre><code>I: Bus=0003 Vendor=222a Product=0001 Name="ILITEK ILITEK-TP"
+H: Handlers=event3</code></pre>
+
+<p>The <code>eventN</code> number is your touch device. Set it in config:</p>
+<pre><code>touch_device: /dev/input/event3</code></pre>
+
+<h4>Quick shortcut</h4>
+<p>Find touch devices automatically:</p>
+<pre><code>grep -B5 'ABS' /proc/bus/input/devices | grep -E 'Name|Handlers'</code></pre>
+</div>
+
+<!-- ─── Step 3 ────────────────────────────────────────── -->
+
+<h2><span class="step-num">3</span> Find Your Display Device</h2>
+
+<div class="step">
+<p><strong>Auto mode</strong> (the default) works for most setups:</p>
+<ul>
+<li>If HelixScreen is running &rarr; uses DRM automatically</li>
+<li>Otherwise &rarr; uses <code>/dev/fb0</code> (fbdev)</li>
+</ul>
+
+<p class="note">If auto mode works for you, skip to Step 4.</p>
+</div>
+
+<h3>Option A: Standard Framebuffer (fbdev)</h3>
+
+<div class="step">
+<p>For displays that use <code>/dev/fb0</code> (most SPI/DSI displays without HelixScreen):</p>
+<pre><code># List framebuffer devices
+ls /dev/fb*
+
+# Check resolution
+cat /sys/class/graphics/fb0/virtual_size</code></pre>
+
+<p>Set in config:</p>
+<pre><code>display_backend: fbdev
+framebuffer_device: /dev/fb0</code></pre>
+</div>
+
+<h3>Option B: HelixScreen / DRM Displays</h3>
+
+<div class="step">
+<p>For displays driven by HelixScreen or other DRM/KMS applications:</p>
+<pre><code># List DRM cards
+ls /dev/dri/</code></pre>
+
+<h4>Find the active DRM card</h4>
+<p>Run this to test each card and find which one has an active display:</p>
+<pre><code>for card in /dev/dri/card*; do
+  python3 -c "
+import os, ctypes
+drm = ctypes.CDLL('libdrm.so.2')
+class Res(ctypes.Structure):
+    _fields_ = [('count_fbs',ctypes.c_int),
+      ('fbs',ctypes.POINTER(ctypes.c_uint32)),
+      ('count_crtcs',ctypes.c_int),
+      ('crtcs',ctypes.POINTER(ctypes.c_uint32)),
+      ('count_connectors',ctypes.c_int),
+      ('connectors',ctypes.POINTER(ctypes.c_uint32)),
+      ('count_encoders',ctypes.c_int),
+      ('encoders',ctypes.POINTER(ctypes.c_uint32)),
+      ('min_w',ctypes.c_uint32),('max_w',ctypes.c_uint32),
+      ('min_h',ctypes.c_uint32),('max_h',ctypes.c_uint32)]
+class Crtc(ctypes.Structure):
+    _fields_ = [('crtc_id',ctypes.c_uint32),
+      ('buffer_id',ctypes.c_uint32),
+      ('x',ctypes.c_uint32),('y',ctypes.c_uint32),
+      ('width',ctypes.c_uint32),('height',ctypes.c_uint32),
+      ('mode_valid',ctypes.c_int)]
+drm.drmModeGetResources.restype = ctypes.POINTER(Res)
+drm.drmModeGetCrtc.restype = ctypes.POINTER(Crtc)
+drm.drmModeGetCrtc.argtypes = [ctypes.c_int, ctypes.c_uint32]
+drm.drmModeFreeResources.argtypes = [ctypes.c_void_p]
+drm.drmModeFreeCrtc.argtypes = [ctypes.c_void_p]
+fd = os.open('$card', os.O_RDWR)
+res = drm.drmModeGetResources(fd)
+if res:
+    for i in range(res.contents.count_crtcs):
+        c = drm.drmModeGetCrtc(fd, res.contents.crtcs[i])
+        if c and c.contents.buffer_id and c.contents.mode_valid:
+            print(f'$card: ACTIVE {c.contents.width}x{c.contents.height}')
+            drm.drmModeFreeCrtc(c)
+            break
+        if c: drm.drmModeFreeCrtc(c)
+    drm.drmModeFreeResources(res)
+os.close(fd)
+" 2>/dev/null
+done</code></pre>
+
+<p>Example output:</p>
+<pre><code>/dev/dri/card1: ACTIVE 800x480</code></pre>
+
+<p>Set in config:</p>
+<pre><code>display_backend: drm
+drm_device: /dev/dri/card1</code></pre>
+
+<h4>DRM Permission Requirements</h4>
+<p class="warn">Klipper needs <code>CAP_SYS_ADMIN</code> to read DRM buffers. Without this, you'll get a "buffer handle not accessible" error.</p>
+
+<pre><code>sudo systemctl edit klipper</code></pre>
+<p>Add these lines:</p>
+<pre><code>[Service]
+AmbientCapabilities=CAP_SYS_ADMIN</code></pre>
+<p>Then restart:</p>
+<pre><code>sudo systemctl daemon-reload
+sudo systemctl restart klipper</code></pre>
+</div>
+
+<!-- ─── Step 4 ────────────────────────────────────────── -->
+
+<h2><span class="step-num">4</span> Configure Mainsail / Fluidd Camera</h2>
+
+<div class="step">
+<p>First, find your Pi's IP address:</p>
+<pre><code>hostname -I | awk '{print $1}'</code></pre>
+
+<p>Add to <code>moonraker.conf</code>:</p>
+<pre><code>[webcam display]
+enabled: true
+service: iframe
+stream_url: http://&lt;YOUR-PI-IP&gt;:8092/?embed
+snapshot_url: http://&lt;YOUR-PI-IP&gt;:8092/snapshot.jpg
+aspect_ratio: 800:480</code></pre>
+
+<p class="warn">Replace <code>&lt;YOUR-PI-IP&gt;</code> with your actual IP address (e.g. <code>192.168.1.100</code>). Do <strong>not</strong> use <code>localhost</code> &mdash; it resolves to the browser's machine, not the Pi.</p>
+
+<p>Set <code>aspect_ratio</code> to match your display resolution (e.g. <code>480:320</code>, <code>800:480</code>, <code>1024:600</code>).</p>
+
+<p>The <code>?embed</code> parameter hides the title bar so the display fills the camera panel.</p>
+</div>
+
+<!-- ─── Step 5 ────────────────────────────────────────── -->
+
+<h2><span class="step-num">5</span> Verify It Works</h2>
+
+<div class="step">
+<p>Restart Klipper, then open in a browser:</p>
+<pre><code>http://&lt;YOUR-PI-IP&gt;:8092/</code></pre>
+<p>You should see your display with touch support. Check the Klipper log if something goes wrong:</p>
+<pre><code>grep remote_display ~/printer_data/logs/klippy.log | tail -20</code></pre>
+</div>
+
+<!-- ─── Endpoints ─────────────────────────────────────── -->
+
+<h2>Available Endpoints</h2>
+
+<table>
+<tr><th>URL</th><th>Description</th></tr>
+<tr><td><code>/</code></td><td>Interactive viewer with touch support</td></tr>
+<tr><td><code>/?embed</code></td><td>Viewer without title bar (for iframes)</td></tr>
+<tr><td><code>/snapshot</code></td><td>PNG snapshot (supports ETag caching)</td></tr>
+<tr><td><code>/snapshot.jpg</code></td><td>JPEG snapshot</td></tr>
+<tr><td><code>/stream.mjpg</code></td><td>MJPEG live stream</td></tr>
+<tr><td><code>/touch?x=N&amp;y=N</code></td><td>Send touch event (POST)</td></tr>
+</table>
+
+<!-- ─── Config Reference ──────────────────────────────── -->
+
+<h2>Config Reference</h2>
+
+<table>
+<tr><th>Option</th><th>Default</th><th>Description</th></tr>
+<tr><td><code>port</code></td><td><code>8092</code></td><td>HTTP server port</td></tr>
+<tr><td><code>bind</code></td><td><code>0.0.0.0</code></td><td>Bind address (<code>0.0.0.0</code> = all interfaces)</td></tr>
+<tr><td><code>display_backend</code></td><td><code>auto</code></td><td><code>auto</code>, <code>drm</code>, or <code>fbdev</code></td></tr>
+<tr><td><code>drm_device</code></td><td><em>(auto-detect)</em></td><td>DRM card path, e.g. <code>/dev/dri/card1</code></td></tr>
+<tr><td><code>framebuffer_device</code></td><td><code>/dev/fb0</code></td><td>Framebuffer device (fbdev mode only)</td></tr>
+<tr><td><code>touch_device</code></td><td><code>/dev/input/event0</code></td><td>Touch input device path</td></tr>
+<tr><td><code>stream_fps</code></td><td><code>5</code></td><td>MJPEG stream frame rate</td></tr>
+</table>
+
+<!-- ─── Troubleshooting ───────────────────────────────── -->
+
+<h2>Troubleshooting</h2>
+
+<div class="step">
+<h3>Display shows stale/frozen image</h3>
+<p>If you see the boot splash instead of the live display, HelixScreen is likely using DRM while remote_display is reading from fbdev. Set <code>display_backend: drm</code> and specify your <code>drm_device</code>.</p>
+
+<h3>"buffer handle not accessible" error</h3>
+<p>DRM mode requires <code>CAP_SYS_ADMIN</code>. See the DRM permission instructions in Step 3.</p>
+
+<h3>Mainsail shows broken image icon</h3>
+<ul>
+<li>Make sure you're using your Pi's actual IP in <code>stream_url</code>, not <code>localhost</code></li>
+<li>Verify the module is running: <code>curl http://&lt;ip&gt;:8092/snapshot.jpg -o /dev/null -w '%{http_code}'</code></li>
+</ul>
+
+<h3>Title bar showing in Mainsail camera panel</h3>
+<p>Add <code>?embed</code> to your <code>stream_url</code>: <code>http://&lt;ip&gt;:8092/?embed</code></p>
+
+<h3>Touch not working</h3>
+<ul>
+<li>Verify the device exists: <code>ls -la /dev/input/event*</code></li>
+<li>Klipper needs write access to the touch device. Check permissions or add the klipper user to the <code>input</code> group: <code>sudo usermod -aG input klipper</code></li>
+</ul>
+
+<h3>Port already in use</h3>
+<p>Another process is using port 8092. Find it with <code>ss -tlnp | grep 8092</code> and either stop it or change the <code>port</code> in your config.</p>
+</div>
+
+</body>
+</html>
