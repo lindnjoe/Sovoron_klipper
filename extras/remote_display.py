@@ -933,7 +933,7 @@ class RemoteDisplay:
         import subprocess
         for attempt in range(15):
             try:
-                result = subprocess.run(['pgrep', '-x', 'helixscreen'],
+                result = subprocess.run(['pgrep', 'helix-screen'],
                                         capture_output=True, timeout=2)
                 if result.returncode == 0:
                     try:
