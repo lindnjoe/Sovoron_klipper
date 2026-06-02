@@ -650,6 +650,7 @@ class afcAMS(afcUnit):
 
             lane._load_state = f1s_present
             lane.prep_state = f1s_present
+            lane.loaded_to_hub = f1s_present
 
             # Seed hub virtual switch from hardware
             hub = getattr(lane, 'hub_obj', None)
