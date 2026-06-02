@@ -929,17 +929,33 @@ class RemoteDisplay:
                 "Framebuffer: %dx%d @ %dbpp (%s)",
                 fb.width, fb.height, fb.bpp, self.fb_device)
             return fb
-        # auto: try DRM first (works with helixscreen/KMS), fall back to fbdev
-        try:
-            drm_dev = self.drm_device or None
-            fb = DRMFramebuffer(drm_dev)
-            fb.open()
-            self.logger.info(
-                "DRM display (auto): %dx%d @ %dbpp (%s)",
-                fb.width, fb.height, fb.bpp, fb.device)
-            return fb
-        except Exception as e:
-            self.logger.info("DRM not available (%s), trying fbdev", e)
+        # auto: wait for helixscreen (it may start after Klipper)
+        import subprocess
+        for attempt in range(15):
+            try:
+                result = subprocess.run(['pgrep', '-x', 'helixscreen'],
+                                        capture_output=True, timeout=2)
+                if result.returncode == 0:
+                    try:
+                        drm_dev = self.drm_device or None
+                        fb = DRMFramebuffer(drm_dev)
+                        fb.open()
+                        self.logger.info(
+                            "DRM display (auto): %dx%d @ %dbpp (%s)",
+                            fb.width, fb.height, fb.bpp, fb.device)
+                        return fb
+                    except Exception as e:
+                        self.logger.info(
+                            "DRM not available (%s), trying fbdev", e)
+                        break
+            except Exception:
+                pass
+            if attempt < 14:
+                self.logger.info(
+                    "Waiting for helixscreen (%d/15)...", attempt + 1)
+                time.sleep(2)
+        self.logger.info(
+            "helixscreen not detected after 30s, using fbdev")
         fb = Framebuffer(self.fb_device)
         fb.open()
         self.logger.info(
