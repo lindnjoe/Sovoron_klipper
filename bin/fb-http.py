@@ -17,6 +17,71 @@ from PIL import Image
 FBIOGET_VSCREENINFO = 0x4600
 FBIOGET_FSCREENINFO = 0x4602
 
+# ── DRM/KMS constants ──────────────────────────────────────────────
+
+def _iowr(type_val, nr, size):
+    return (3 << 30) | (size << 16) | (type_val << 8) | nr
+
+def _iow(type_val, nr, size):
+    return (1 << 30) | (size << 16) | (type_val << 8) | nr
+
+_DRM_IOCTL_MAP_DUMB = _iowr(0x64, 0xB3, 16)
+_DRM_IOCTL_GEM_CLOSE = _iow(0x64, 0x09, 8)
+
+
+class _DrmMapDumb(ctypes.Structure):
+    _fields_ = [('handle', ctypes.c_uint32), ('pad', ctypes.c_uint32),
+                ('offset', ctypes.c_uint64)]
+
+
+class _DrmGemClose(ctypes.Structure):
+    _fields_ = [('handle', ctypes.c_uint32), ('pad', ctypes.c_uint32)]
+
+
+class _DrmModeModeInfo(ctypes.Structure):
+    _fields_ = [
+        ('clock', ctypes.c_uint32),
+        ('hdisplay', ctypes.c_uint16), ('hsync_start', ctypes.c_uint16),
+        ('hsync_end', ctypes.c_uint16), ('htotal', ctypes.c_uint16),
+        ('hskew', ctypes.c_uint16), ('vdisplay', ctypes.c_uint16),
+        ('vsync_start', ctypes.c_uint16), ('vsync_end', ctypes.c_uint16),
+        ('vtotal', ctypes.c_uint16), ('vscan', ctypes.c_uint16),
+        ('vrefresh', ctypes.c_uint32), ('flags', ctypes.c_uint32),
+        ('type', ctypes.c_uint32), ('name', ctypes.c_char * 32)]
+
+
+class _DrmModeRes(ctypes.Structure):
+    _fields_ = [
+        ('count_fbs', ctypes.c_int),
+        ('fbs', ctypes.POINTER(ctypes.c_uint32)),
+        ('count_crtcs', ctypes.c_int),
+        ('crtcs', ctypes.POINTER(ctypes.c_uint32)),
+        ('count_connectors', ctypes.c_int),
+        ('connectors', ctypes.POINTER(ctypes.c_uint32)),
+        ('count_encoders', ctypes.c_int),
+        ('encoders', ctypes.POINTER(ctypes.c_uint32)),
+        ('min_width', ctypes.c_uint32), ('max_width', ctypes.c_uint32),
+        ('min_height', ctypes.c_uint32), ('max_height', ctypes.c_uint32)]
+
+
+class _DrmModeCrtc(ctypes.Structure):
+    _fields_ = [
+        ('crtc_id', ctypes.c_uint32), ('buffer_id', ctypes.c_uint32),
+        ('x', ctypes.c_uint32), ('y', ctypes.c_uint32),
+        ('width', ctypes.c_uint32), ('height', ctypes.c_uint32),
+        ('mode_valid', ctypes.c_int), ('mode', _DrmModeModeInfo),
+        ('gamma_size', ctypes.c_int)]
+
+
+class _DrmModeFB(ctypes.Structure):
+    _fields_ = [
+        ('fb_id', ctypes.c_uint32),
+        ('width', ctypes.c_uint32), ('height', ctypes.c_uint32),
+        ('pitch', ctypes.c_uint32), ('bpp', ctypes.c_uint32),
+        ('depth', ctypes.c_uint32), ('handle', ctypes.c_uint32)]
+
+# ── fbdev structures ───────────────────────────────────────────────
+
 class FbVarScreeninfo(ctypes.Structure):
     _fields_ = [
         ("xres", ctypes.c_uint32),
@@ -69,6 +134,8 @@ class FbFixScreeninfo(ctypes.Structure):
         ("reserved", ctypes.c_uint16 * 2),
     ]
 
+# ── Input constants ────────────────────────────────────────────────
+
 EV_SYN = 0x00
 EV_KEY = 0x01
 EV_ABS = 0x03
@@ -85,6 +152,8 @@ def log(msg):
     ts = time.strftime('%H:%M:%S')
     print(f"[{ts}] {msg}", flush=True)
 
+# ── Display backends ───────────────────────────────────────────────
+
 class Framebuffer:
     def __init__(self, device='/dev/fb0'):
         self.device = device
@@ -97,9 +166,7 @@ class Framebuffer:
         self.bpp = 0
         self.line_length = 0
         self._cache_hash = None
-        self._cache_raw = None
         self._cache_png = None
-        self._cache_time = 0
         self._open()
 
     def _open(self):
@@ -118,39 +185,235 @@ class Framebuffer:
 
         size = self.line_length * self.virtual_height
         self.mm = mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_READ)
-        log(f"Framebuffer: {self.width}x{self.height} ({self.virtual_width}x{self.virtual_height} virtual) @ {self.bpp}bpp, line_length={self.line_length}")
+        log(f"fbdev: {self.width}x{self.height} @ {self.bpp}bpp ({self.device})")
 
-    def get_snapshot(self, client_etag=None):
+    def _read_raw(self):
         vinfo = FbVarScreeninfo()
         fcntl.ioctl(self.fd, FBIOGET_VSCREENINFO, vinfo)
         offset = vinfo.yoffset * self.line_length
-
         self.mm.seek(offset)
-        raw = self.mm.read(self.line_length * self.height)
+        return self.mm.read(self.line_length * self.height)
+
+    def _raw_to_image(self, raw):
+        if self.bpp == 32:
+            img = Image.frombytes('RGBA', (self.width, self.height), raw,
+                                  'raw', 'BGRA', self.line_length)
+            return img.convert('RGB')
+        elif self.bpp == 16:
+            return Image.frombytes('RGB', (self.width, self.height), raw,
+                                   'raw', 'BGR;16', self.line_length)
+        return Image.frombytes('RGB', (self.width, self.height), raw,
+                               'raw', 'BGR', self.line_length)
+
+    def get_snapshot(self, client_etag=None):
+        raw = self._read_raw()
         raw_hash = hashlib.md5(raw).hexdigest()[:16]
         if client_etag and client_etag == raw_hash:
             return raw_hash, None
         if raw_hash == self._cache_hash and self._cache_png:
             return raw_hash, self._cache_png
-        if self.bpp == 32:
-            img = Image.frombytes('RGBA', (self.width, self.height), raw, 'raw', 'BGRA', self.line_length)
-            img = img.convert('RGB')
-        elif self.bpp == 16:
-            img = Image.frombytes('RGB', (self.width, self.height), raw, 'raw', 'BGR;16', self.line_length)
-        else:
-            img = Image.frombytes('RGB', (self.width, self.height), raw, 'raw', 'BGR', self.line_length)
+        img = self._raw_to_image(raw)
         buf = BytesIO()
         img.save(buf, 'PNG', compress_level=6)
-        png_data = buf.getvalue()
         self._cache_hash = raw_hash
-        self._cache_png = png_data
-        return raw_hash, png_data
+        self._cache_png = buf.getvalue()
+        return raw_hash, self._cache_png
 
     def close(self):
         if self.mm:
             self.mm.close()
         if self.fd:
             os.close(self.fd)
+
+
+class DRMFramebuffer:
+    def __init__(self, device=None):
+        self.device = device
+        self.fd = None
+        self.width = 0
+        self.height = 0
+        self.bpp = 0
+        self.line_length = 0
+        self._crtc_id = None
+        self._fb_cache = {}
+        self._drm = None
+        self._cache_hash = None
+        self._cache_png = None
+        self._open()
+
+    def _open(self):
+        try:
+            self._drm = ctypes.CDLL('libdrm.so.2')
+        except OSError:
+            raise RuntimeError(
+                "libdrm not found — install with: sudo apt install libdrm2")
+        self._setup_libdrm()
+        if self.device:
+            self._try_open(self.device)
+        else:
+            for i in range(8):
+                path = f'/dev/dri/card{i}'
+                if not os.path.exists(path):
+                    continue
+                try:
+                    self._try_open(path)
+                    self.device = path
+                    log(f"DRM: {self.width}x{self.height} @ {self.bpp}bpp ({path})")
+                    return
+                except Exception:
+                    if self.fd is not None:
+                        os.close(self.fd)
+                        self.fd = None
+            raise RuntimeError("No active DRM display found")
+        log(f"DRM: {self.width}x{self.height} @ {self.bpp}bpp ({self.device})")
+
+    def _setup_libdrm(self):
+        d = self._drm
+        d.drmModeGetResources.restype = ctypes.POINTER(_DrmModeRes)
+        d.drmModeGetResources.argtypes = [ctypes.c_int]
+        d.drmModeFreeResources.argtypes = [ctypes.c_void_p]
+        d.drmModeGetCrtc.restype = ctypes.POINTER(_DrmModeCrtc)
+        d.drmModeGetCrtc.argtypes = [ctypes.c_int, ctypes.c_uint32]
+        d.drmModeFreeCrtc.argtypes = [ctypes.c_void_p]
+        d.drmModeGetFB.restype = ctypes.POINTER(_DrmModeFB)
+        d.drmModeGetFB.argtypes = [ctypes.c_int, ctypes.c_uint32]
+        d.drmModeFreeFB.argtypes = [ctypes.c_void_p]
+
+    def _try_open(self, path):
+        self.fd = os.open(path, os.O_RDWR)
+        res = self._drm.drmModeGetResources(self.fd)
+        if not res:
+            raise RuntimeError(f"drmModeGetResources failed on {path}")
+        try:
+            for i in range(res.contents.count_crtcs):
+                crtc_id = res.contents.crtcs[i]
+                crtc = self._drm.drmModeGetCrtc(self.fd, crtc_id)
+                if not crtc:
+                    continue
+                try:
+                    if crtc.contents.buffer_id and crtc.contents.mode_valid:
+                        self._crtc_id = crtc_id
+                        self.width = crtc.contents.width
+                        self.height = crtc.contents.height
+                        fb = self._drm.drmModeGetFB(
+                            self.fd, crtc.contents.buffer_id)
+                        if fb:
+                            self.bpp = fb.contents.bpp
+                            self.line_length = fb.contents.pitch
+                            if not fb.contents.handle:
+                                self._drm.drmModeFreeFB(fb)
+                                raise RuntimeError(
+                                    "DRM buffer handle not accessible. "
+                                    "Run with CAP_SYS_ADMIN or as root.")
+                            self._close_gem(fb.contents.handle)
+                            self._drm.drmModeFreeFB(fb)
+                        return
+                finally:
+                    self._drm.drmModeFreeCrtc(crtc)
+        finally:
+            self._drm.drmModeFreeResources(res)
+        raise RuntimeError(f"No active CRTC on {path}")
+
+    def _get_fb_buffer(self):
+        crtc = self._drm.drmModeGetCrtc(self.fd, self._crtc_id)
+        if not crtc:
+            raise RuntimeError("Failed to get CRTC")
+        try:
+            fb_id = crtc.contents.buffer_id
+        finally:
+            self._drm.drmModeFreeCrtc(crtc)
+        if not fb_id:
+            raise RuntimeError("No framebuffer on CRTC")
+        if fb_id in self._fb_cache:
+            entry = self._fb_cache[fb_id]
+            self.line_length = entry[1]
+            self.bpp = entry[2]
+            return entry[0], entry[3]
+        fb = self._drm.drmModeGetFB(self.fd, fb_id)
+        if not fb:
+            raise RuntimeError("Failed to get FB")
+        try:
+            handle = fb.contents.handle
+            pitch = fb.contents.pitch
+            h = fb.contents.height
+            bpp = fb.contents.bpp
+            size = pitch * h
+            if not handle:
+                raise RuntimeError("DRM buffer handle=0 (no permission)")
+            req = _DrmMapDumb()
+            req.handle = handle
+            req.pad = 0
+            req.offset = 0
+            fcntl.ioctl(self.fd, _DRM_IOCTL_MAP_DUMB, req)
+            mm = mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_READ,
+                           offset=req.offset)
+            self._fb_cache[fb_id] = (mm, pitch, bpp, size, handle)
+            self.line_length = pitch
+            self.bpp = bpp
+            if len(self._fb_cache) > 4:
+                old_id = next(iter(self._fb_cache))
+                old = self._fb_cache.pop(old_id)
+                try:
+                    old[0].close()
+                except Exception:
+                    pass
+                self._close_gem(old[4])
+            return mm, size
+        finally:
+            self._drm.drmModeFreeFB(fb)
+
+    def _close_gem(self, handle):
+        try:
+            req = _DrmGemClose()
+            req.handle = handle
+            req.pad = 0
+            fcntl.ioctl(self.fd, _DRM_IOCTL_GEM_CLOSE, req)
+        except Exception:
+            pass
+
+    def _read_raw(self):
+        mm, size = self._get_fb_buffer()
+        mm.seek(0)
+        return mm.read(size)
+
+    def _raw_to_image(self, raw):
+        if self.bpp == 32:
+            img = Image.frombytes('RGBA', (self.width, self.height), raw,
+                                  'raw', 'BGRA', self.line_length)
+            return img.convert('RGB')
+        elif self.bpp == 16:
+            return Image.frombytes('RGB', (self.width, self.height), raw,
+                                   'raw', 'BGR;16', self.line_length)
+        return Image.frombytes('RGB', (self.width, self.height), raw,
+                               'raw', 'BGR', self.line_length)
+
+    def get_snapshot(self, client_etag=None):
+        raw = self._read_raw()
+        raw_hash = hashlib.md5(raw).hexdigest()[:16]
+        if client_etag and client_etag == raw_hash:
+            return raw_hash, None
+        if raw_hash == self._cache_hash and self._cache_png:
+            return raw_hash, self._cache_png
+        img = self._raw_to_image(raw)
+        buf = BytesIO()
+        img.save(buf, 'PNG', compress_level=6)
+        self._cache_hash = raw_hash
+        self._cache_png = buf.getvalue()
+        return raw_hash, self._cache_png
+
+    def close(self):
+        for entry in self._fb_cache.values():
+            try:
+                entry[0].close()
+            except Exception:
+                pass
+            self._close_gem(entry[4])
+        self._fb_cache.clear()
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+# ── Touch input ────────────────────────────────────────────────────
 
 class TouchInput:
     def __init__(self, device='/dev/input/event0', fb_width=1024, fb_height=600):
@@ -250,6 +513,8 @@ class TouchInput:
         if self.fd:
             os.close(self.fd)
 
+# ── HTTP handler ───────────────────────────────────────────────────
+
 class ScreenHandler(SimpleHTTPRequestHandler):
     framebuffer = None
     touch_input = None
@@ -325,6 +590,8 @@ class ScreenHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(response)
 
+# ── Main ───────────────────────────────────────────────────────────
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     local_html_dir = os.path.join(script_dir, 'html')
@@ -338,12 +605,29 @@ def main():
     parser = argparse.ArgumentParser(description='Framebuffer HTTP Server')
     parser.add_argument('-p', '--port', type=int, default=8092, help='HTTP port')
     parser.add_argument('--bind', default='0.0.0.0', help='Bind address')
-    parser.add_argument('--fb', default='/dev/fb0', help='Framebuffer device')
+    parser.add_argument('--backend', default='auto', choices=['auto', 'drm', 'fbdev'],
+                        help='Display backend (default: auto)')
+    parser.add_argument('--drm-device', default=None,
+                        help='DRM device path (e.g. /dev/dri/card1)')
+    parser.add_argument('--fb', default='/dev/fb0', help='Framebuffer device (fbdev mode)')
     parser.add_argument('--touch', default='/dev/input/event0', help='Touch input device')
     parser.add_argument('--html-dir', default=default_html_dir, help='Path to HTML directory')
     args = parser.parse_args()
 
-    fb = Framebuffer(args.fb)
+    fb = None
+    backend = args.backend
+
+    if backend == 'auto' or backend == 'drm':
+        try:
+            fb = DRMFramebuffer(args.drm_device)
+        except Exception as e:
+            if backend == 'drm':
+                raise
+            log(f"DRM not available ({e}), falling back to fbdev")
+
+    if fb is None:
+        fb = Framebuffer(args.fb)
+
     touch = TouchInput(args.touch, fb.width, fb.height)
 
     ScreenHandler.framebuffer = fb
