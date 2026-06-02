@@ -1232,6 +1232,13 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.warning(f"Extruder retract before OAMS unload failed: {e}")
 
+        # Check if this is a runout-empty lane — spool ran out so
+        # OAMS hardware can't rewind. Skip hardware unload but keep
+        # the extruder retract and follower/monitor cleanup.
+        runout_empty = getattr(cur_lane, '_oams_runout_empty', False)
+        if runout_empty:
+            cur_lane._oams_runout_empty = False
+
         try:
             # Queue a 20mm extruder retract WITHOUT waiting — it runs
             # concurrently with the OAMS hardware unload so the extruder
@@ -1242,7 +1249,13 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.warning(f"Concurrent retract failed: {e}")
 
-            success, msg = self.oams.unload_spool_with_retry()
+            if runout_empty:
+                self.logger.info(
+                    f"Skipping OAMS hardware unload for {cur_lane.name} "
+                    f"— spool empty from runout")
+                success = True
+            else:
+                success, msg = self.oams.unload_spool_with_retry()
             self._wait_for_idle()
 
             # Stop follower after unload so MCU is idle for the next
@@ -1589,6 +1602,52 @@ class afcAMS(afcUnit):
         if ext is not None and getattr(ext, 'lane_loaded', None) != lane.name:
             return False
         return True
+
+    def handle_runout(self, lane):
+        """OAMS-specific runout — OAMS cannot retract once F1S goes empty.
+
+        Called by handle_load_runout before the generic _perform_infinite_runout.
+        Returns True if handled, False to fall through to generic behavior.
+        """
+        runout_lane_name = getattr(lane, 'runout_lane', None)
+
+        if not runout_lane_name:
+            lane.status = AFCLaneState.NONE
+            self.lane_not_ready(lane)
+            self.afc.error.AFC_error(
+                f"Runout detected on OAMS {lane.name}. "
+                f"No runout lane configured.\n"
+                f"OAMS cannot retract filament past the point of no return. "
+                f"Please manually clear filament and load a new spool.",
+                pause=True)
+            return True
+
+        target_lane = self._resolve_lane_reference(runout_lane_name)
+        if target_lane is None:
+            lane.status = AFCLaneState.NONE
+            self.lane_not_ready(lane)
+            self.afc.error.AFC_error(
+                f"Runout on OAMS {lane.name}: "
+                f"runout lane '{runout_lane_name}' not found",
+                pause=True)
+            return True
+
+        if self._is_same_extruder(lane, target_lane):
+            lane._oams_runout_detected = True
+            self.logger.info(
+                f"OAMS same-FPS runout: {lane.name} -> {target_lane.name}, "
+                f"seamless reload")
+            self.handle_same_fps_reload(lane, target_lane)
+            return True
+
+        # Cross-extruder: mark lane so _oams_unload skips hardware
+        # unload (empty spool can't be rewound), then let AFC's
+        # generic infinite runout handle the tool swap.
+        lane._oams_runout_empty = True
+        self.logger.info(
+            f"OAMS cross-extruder runout: {lane.name} -> {target_lane.name}, "
+            f"deferring to AFC infinite spool (hardware unload will be skipped)")
+        return False
 
     def on_filament_insert(self, lane):
         """OAMS insert: update lane state and publish event."""
