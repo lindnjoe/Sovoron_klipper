@@ -266,8 +266,7 @@ class DRMFramebuffer:
         self.bpp = 0
         self.line_length = 0
         self._crtc_id = None
-        self._buffers = {}
-        self._handles = set()
+        self._fb_cache = {}
         self._drm = None
         self._cache_hash = None
         self._cache_jpeg = None
@@ -359,6 +358,11 @@ class DRMFramebuffer:
             self._drm.drmModeFreeCrtc(crtc)
         if not fb_id:
             raise RuntimeError("No framebuffer on CRTC")
+        if fb_id in self._fb_cache:
+            entry = self._fb_cache[fb_id]
+            self.line_length = entry[1]
+            self.bpp = entry[2]
+            return entry[0], entry[3]
         fb = self._drm.drmModeGetFB(self.fd, fb_id)
         if not fb:
             raise RuntimeError("Failed to get FB")
@@ -368,26 +372,38 @@ class DRMFramebuffer:
             h = fb.contents.height
             bpp = fb.contents.bpp
             size = pitch * h
-            self.line_length = pitch
-            self.bpp = bpp
             if not handle:
                 raise RuntimeError("DRM buffer handle=0 (no permission)")
-            if handle not in self._buffers:
-                self._map_dumb(handle, size)
-                self._handles.add(handle)
-            return self._buffers[handle], size
+            req = _DrmMapDumb()
+            req.handle = handle
+            req.pad = 0
+            req.offset = 0
+            fcntl.ioctl(self.fd, _DRM_IOCTL_MAP_DUMB, req)
+            mm = mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_READ,
+                           offset=req.offset)
+            self._fb_cache[fb_id] = (mm, pitch, bpp, size, handle)
+            self.line_length = pitch
+            self.bpp = bpp
+            if len(self._fb_cache) > 4:
+                old_id = next(iter(self._fb_cache))
+                old = self._fb_cache.pop(old_id)
+                try:
+                    old[0].close()
+                except Exception:
+                    pass
+                self._close_gem(old[4])
+            return mm, size
         finally:
             self._drm.drmModeFreeFB(fb)
 
-    def _map_dumb(self, handle, size):
-        req = _DrmMapDumb()
-        req.handle = handle
-        req.pad = 0
-        req.offset = 0
-        fcntl.ioctl(self.fd, _DRM_IOCTL_MAP_DUMB, req)
-        mm = mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_READ,
-                       offset=req.offset)
-        self._buffers[handle] = mm
+    def _close_gem(self, handle):
+        try:
+            req = _DrmGemClose()
+            req.handle = handle
+            req.pad = 0
+            fcntl.ioctl(self.fd, _DRM_IOCTL_GEM_CLOSE, req)
+        except Exception:
+            pass
 
     def _read_raw(self):
         mm, size = self._get_fb_buffer()
@@ -445,21 +461,13 @@ class DRMFramebuffer:
             return raw_hash, self._cache_jpeg
 
     def close(self):
-        for mm in self._buffers.values():
+        for entry in self._fb_cache.values():
             try:
-                mm.close()
+                entry[0].close()
             except Exception:
                 pass
-        self._buffers.clear()
-        for handle in self._handles:
-            try:
-                req = _DrmGemClose()
-                req.handle = handle
-                req.pad = 0
-                fcntl.ioctl(self.fd, _DRM_IOCTL_GEM_CLOSE, req)
-            except Exception:
-                pass
-        self._handles.clear()
+            self._close_gem(entry[4])
+        self._fb_cache.clear()
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
