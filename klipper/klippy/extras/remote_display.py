@@ -716,7 +716,6 @@ body{background:#1a1a1a;color:#eee;font-family:system-ui,sans-serif;
 #bar .title{font-weight:600;font-size:15px}
 #bar .status{color:#888}
 #bar .status.connected{color:#4caf50}
-#bar .status.error{color:#f44336}
 #wrap{flex:1;display:flex;align-items:center;justify-content:center;
   width:100%;padding:8px;overflow:hidden}
 #screen{cursor:crosshair;max-width:100%;max-height:100%;
@@ -738,6 +737,17 @@ body{background:#1a1a1a;color:#eee;font-family:system-ui,sans-serif;
 <div id="touch-indicator"></div>
 <script>
 (function(){
+  var inIframe = false;
+  try { inIframe = window.self !== window.top; } catch(e) { inIframe = true; }
+  if (inIframe || window.location.search.indexOf('embed') !== -1) document.body.classList.add('iframe');
+
+  var base = '';
+  var loc = window.location.pathname;
+  if (loc && loc.length > 1) {
+    base = loc.replace(/\/[^\/]*$/, '') + '/';
+    if (base === '/') base = '';
+  }
+
   const img = document.getElementById('screen');
   const status = document.getElementById('status');
   const indicator = document.getElementById('touch-indicator');
@@ -782,7 +792,6 @@ body{background:#1a1a1a;color:#eee;font-family:system-ui,sans-serif;
       })
       .catch(e => {
         errorCount++;
-        setStatus('disconnected', 'error');
         setTimeout(poll, Math.min(errorCount * 500, 5000));
       });
   }
