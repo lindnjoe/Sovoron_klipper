@@ -626,7 +626,13 @@ class afcAMS(afcUnit):
                 and hub.is_virtual_pin())
 
     def _sync_lanes_from_hardware(self):
-        """Read current OAMS sensor values and update all lane states."""
+        """Read current OAMS sensor values and seed tracking arrays.
+
+        loaded_to_hub is a logical state managed by load/unload
+        operations and restored from the vars file — it is NOT derived
+        from hub HES here.  We only seed the hub object's virtual
+        switch so AFC sees the physical sensor at startup.
+        """
         if self.oams is None:
             return
 
@@ -644,7 +650,14 @@ class afcAMS(afcUnit):
 
             lane._load_state = f1s_present
             lane.prep_state = f1s_present
-            lane.loaded_to_hub = hub_present or f1s_present
+
+            # Seed hub virtual switch from hardware
+            hub = getattr(lane, 'hub_obj', None)
+            if hub is not None and hasattr(hub, 'switch_pin_callback'):
+                try:
+                    hub.switch_pin_callback(eventtime, hub_present)
+                except Exception:
+                    pass
 
             if slot < len(f1s_values):
                 self._last_f1s[slot] = f1s_present
@@ -693,18 +706,12 @@ class afcAMS(afcUnit):
 
                     self._last_f1s[slot] = new_f1s
 
-            # Hub HES sensor (filament at hub)
-            # Latch loaded_to_hub: set True when hub detects filament,
-            # only clear when both hub AND F1S are False (spool removed).
+            # Hub HES sensor — update the hub object's virtual switch so
+            # AFC sees the physical sensor state.  loaded_to_hub is a
+            # separate logical state managed by load/unload operations.
             if slot < len(hub_values):
                 new_hub = bool(hub_values[slot])
                 old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
-                new_f1s_val = bool(getattr(lane, '_load_state', False))
-
-                if new_hub:
-                    lane.loaded_to_hub = True
-                elif not new_f1s_val:
-                    lane.loaded_to_hub = False
 
                 if resync_prev or (old_hub is not None and new_hub != old_hub):
                     hub = getattr(lane, 'hub_obj', None)
@@ -901,11 +908,21 @@ class afcAMS(afcUnit):
             hub_present = bool(hub_values[slot]) if 0 <= slot < len(hub_values) else False
 
             # Update lane state from hardware.
-            # During PREP, set loaded_to_hub from F1S or hub HES — if a spool
-            # is present the lane is ready (OAMS feeds to hub on demand).
+            # loaded_to_hub = True when a spool is present (F1S) — OAMS
+            # feeds to hub on demand so a loaded bay is "at the hub."
+            # Hub HES is a transit sensor, not an idle-state indicator.
             cur_lane._load_state = f1s_present
             cur_lane.prep_state = f1s_present
-            cur_lane.loaded_to_hub = hub_present or f1s_present
+            cur_lane.loaded_to_hub = f1s_present
+
+            # Seed hub virtual switch from hardware sensor
+            hub = getattr(cur_lane, 'hub_obj', None)
+            if hub is not None and hasattr(hub, 'switch_pin_callback'):
+                try:
+                    hub.switch_pin_callback(
+                        self.afc.reactor.monotonic(), hub_present)
+                except Exception:
+                    pass
 
             if f1s_present:
                 self.lane_loaded(cur_lane)
