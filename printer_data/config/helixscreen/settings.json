@@ -105,7 +105,7 @@
           "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 998.9483642578125,
+          "remaining_weight_g": 998.7694091796875,
           "spool_name": "Bambu PLA - PLA",
           "spoolman_id": 64,
           "total_weight_g": 1000.0
@@ -182,7 +182,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-01T23:46:13Z"
+          "timestamp": "2026-06-02T00:07:59Z"
         },
         "optional": []
       },
