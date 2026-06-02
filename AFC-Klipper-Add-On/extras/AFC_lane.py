@@ -1035,7 +1035,9 @@ class AFCLane:
         if self.afc.error_state or not self.afc.function.is_printing():
             return
 
-        if self.runout_lane is not None:
+        if hasattr(self.unit_obj, 'handle_runout') and self.unit_obj.handle_runout(self):
+            pass
+        elif self.runout_lane is not None:
             self._perform_infinite_runout()
         else:
             self._perform_pause_runout()
@@ -1155,8 +1157,11 @@ class AFCLane:
                 if fila_load and not fila_load.runout_helper.sensor_enabled and self.afc.function.is_printing():
                     self.logger.warning("Load runout has been detected, but pause and runout detection has been disabled")
                 elif self.unit_obj.check_runout(self):
-                    # Checking to make sure runout_lane is set
-                    if self.runout_lane is not None:
+                    # Let unit handle runout if it provides custom logic
+                    # (e.g. OAMS cannot unload once F1S is empty)
+                    if hasattr(self.unit_obj, 'handle_runout') and self.unit_obj.handle_runout(self):
+                        pass
+                    elif self.runout_lane is not None:
                         self._perform_infinite_runout()
                     else:
                         self._perform_pause_runout()

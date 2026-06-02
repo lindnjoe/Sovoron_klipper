@@ -286,34 +286,22 @@ def _make_handler(fb, touch, stream_fps, logger):
         def log_message(self, fmt, *args):
             pass
 
-        def _send_cors(self):
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods',
-                             'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers',
-                             'If-None-Match')
-
-        def do_OPTIONS(self):
-            self.send_response(204)
-            self._send_cors()
-            self.end_headers()
-
         def do_GET(self):
-            path = urlparse(self.path).path.rstrip('/')
-            if path in ('/snapshot', '/snapshot.png'):
+            path = urlparse(self.path).path
+            if path == '/snapshot' or path == '/snapshot.png':
                 self._handle_snapshot_png()
             elif path == '/snapshot.jpg':
                 self._handle_snapshot_jpg()
-            elif path in ('/stream', '/stream.mjpg'):
+            elif path == '/stream' or path == '/stream.mjpg':
                 self._handle_mjpeg_stream()
-            elif path == '' or path == '/index.html':
+            elif path == '/' or path == '/viewer':
                 self._handle_viewer()
             else:
                 self.send_error(404)
 
         def do_POST(self):
             parsed = urlparse(self.path)
-            if parsed.path.rstrip('/') == '/touch':
+            if parsed.path == '/touch':
                 self._handle_touch(parsed.query)
             else:
                 self.send_error(404)
@@ -325,7 +313,6 @@ def _make_handler(fb, touch, stream_fps, logger):
                 if data is None:
                     self.send_response(304)
                     self.send_header('ETag', f'"{etag}"')
-                    self._send_cors()
                     self.end_headers()
                     return
                 self.send_response(200)
@@ -333,7 +320,6 @@ def _make_handler(fb, touch, stream_fps, logger):
                 self.send_header('Content-Length', len(data))
                 self.send_header('ETag', f'"{etag}"')
                 self.send_header('Cache-Control', 'no-cache')
-                self._send_cors()
                 self.end_headers()
                 self.wfile.write(data)
             except Exception as e:
@@ -348,7 +334,6 @@ def _make_handler(fb, touch, stream_fps, logger):
                 self.send_header('Content-Length', len(data))
                 self.send_header('Cache-Control',
                                  'no-cache, no-store, must-revalidate')
-                self._send_cors()
                 self.end_headers()
                 self.wfile.write(data)
             except Exception as e:
@@ -363,7 +348,6 @@ def _make_handler(fb, touch, stream_fps, logger):
                 MJPEG_BOUNDARY.decode())
             self.send_header('Cache-Control',
                              'no-cache, no-store, must-revalidate')
-            self._send_cors()
             self.end_headers()
             interval = 1.0 / max(stream_fps, 1)
             last_hash = None
@@ -394,7 +378,6 @@ def _make_handler(fb, touch, stream_fps, logger):
                 self.send_response(503)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', len(resp))
-                self._send_cors()
                 self.end_headers()
                 self.wfile.write(resp)
                 return
@@ -416,7 +399,7 @@ def _make_handler(fb, touch, stream_fps, logger):
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', len(resp))
-                self._send_cors()
+                self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(resp)
             except Exception as e:
@@ -430,8 +413,7 @@ def _make_handler(fb, touch, stream_fps, logger):
         def _handle_viewer(self):
             html = VIEWER_HTML.replace(
                 '{{WIDTH}}', str(fb.width)).replace(
-                '{{HEIGHT}}', str(fb.height)).replace(
-                '{{TOUCH}}', 'true' if touch and touch.fd else 'false')
+                '{{HEIGHT}}', str(fb.height))
             data = html.encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -450,9 +432,9 @@ VIEWER_HTML = r"""<!DOCTYPE html>
 <title>Remote Display</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;overflow:hidden;background:#1a1a1a;
-  color:#eee;font-family:system-ui,sans-serif}
-body{display:flex;flex-direction:column;align-items:center}
+body{background:#1a1a1a;color:#eee;font-family:system-ui,sans-serif;
+  display:flex;flex-direction:column;align-items:center;height:100vh;
+  overflow:hidden}
 #bar{width:100%;padding:6px 16px;background:#222;display:flex;
   align-items:center;justify-content:space-between;font-size:13px;
   border-bottom:1px solid #333;flex-shrink:0}
@@ -460,14 +442,10 @@ body{display:flex;flex-direction:column;align-items:center}
 #bar .status{color:#888}
 #bar .status.connected{color:#4caf50}
 #bar .status.error{color:#f44336}
-body.iframe #bar{display:none}
 #wrap{flex:1;display:flex;align-items:center;justify-content:center;
   width:100%;padding:8px;overflow:hidden}
-body.iframe #wrap{padding:0}
 #screen{cursor:crosshair;max-width:100%;max-height:100%;
   image-rendering:auto;border:1px solid #333;display:block}
-body.iframe #screen{border:none;width:100%;height:100%;
-  object-fit:contain}
 #touch-indicator{position:fixed;width:24px;height:24px;border-radius:50%;
   background:rgba(255,100,100,0.6);border:2px solid rgba(255,100,100,0.9);
   pointer-events:none;transform:translate(-50%,-50%);display:none;z-index:99}
@@ -485,28 +463,15 @@ body.iframe #screen{border:none;width:100%;height:100%;
 <div id="touch-indicator"></div>
 <script>
 (function(){
-  var inIframe = false;
-  try { inIframe = window.self !== window.top; } catch(e) { inIframe = true; }
-  if (inIframe) document.body.classList.add('iframe');
-
-  var base = '';
-  var loc = window.location.pathname;
-  if (loc && loc.length > 1) {
-    base = loc.replace(/\/[^\/]*$/, '') + '/';
-    if (base === '/') base = '';
-  }
-
   const img = document.getElementById('screen');
   const status = document.getElementById('status');
   const indicator = document.getElementById('touch-indicator');
-  const TOUCH = {{TOUCH}};
   const FB_W = parseInt('{{WIDTH}}') || 1024;
   const FB_H = parseInt('{{HEIGHT}}') || 600;
   let etag = '';
+  let polling = true;
   let errorCount = 0;
   let dragging = false;
-
-  if (!TOUCH) img.style.cursor = 'default';
 
   function setStatus(text, cls) {
     status.textContent = text;
@@ -514,9 +479,10 @@ body.iframe #screen{border:none;width:100%;height:100%;
   }
 
   function poll() {
+    if (!polling) return;
     const headers = {};
     if (etag) headers['If-None-Match'] = '"' + etag + '"';
-    fetch(base + 'snapshot', { headers })
+    fetch('/snapshot', { headers })
       .then(resp => {
         if (resp.status === 304) {
           errorCount = 0;
@@ -557,9 +523,8 @@ body.iframe #screen{border:none;width:100%;height:100%;
   }
 
   function sendTouch(action, x, y) {
-    if (!TOUCH) return;
-    fetch(base + 'touch?a=' + action + '&x=' + x + '&y=' + y,
-      { method: 'POST' }).catch(() => {});
+    fetch('/touch?a=' + action + '&x=' + x + '&y=' + y, { method: 'POST' })
+      .catch(() => {});
   }
 
   function showIndicator(clientX, clientY) {
@@ -573,7 +538,6 @@ body.iframe #screen{border:none;width:100%;height:100%;
   }
 
   img.addEventListener('mousedown', function(e) {
-    if (!TOUCH) return;
     e.preventDefault();
     const c = imgCoords(e);
     dragging = true;
@@ -596,7 +560,6 @@ body.iframe #screen{border:none;width:100%;height:100%;
   });
 
   img.addEventListener('touchstart', function(e) {
-    if (!TOUCH) return;
     e.preventDefault();
     const t = e.touches[0];
     const c = imgCoords(t);
@@ -690,14 +653,10 @@ class RemoteDisplay:
                 "Remote display server on http://%s:%d",
                 self.bind, self.port)
             self.logger.info(
-                "  MJPEG camera: http://<host>:%d/stream.mjpg",
-                self.port)
+                "  Mainsail/Fluidd camera URL: "
+                "http://<host>:%d/stream.mjpg", self.port)
             self.logger.info(
-                "  Iframe camera (with touch): "
-                "http://<host>:%d/", self.port)
-            self.logger.info(
-                "  Snapshot: http://<host>:%d/snapshot",
-                self.port)
+                "  Viewer with touch: http://<host>:%d/", self.port)
         except Exception as e:
             self.logger.error("Failed to start HTTP server: %s", e)
 
