@@ -619,15 +619,21 @@ def main():
     backend = args.backend
 
     if backend == 'auto':
-        try:
-            result = subprocess.run(['pgrep', 'helix-screen'],
-                                    capture_output=True, timeout=2)
-            if result.returncode == 0:
-                log("helixscreen detected, using DRM backend")
-                backend = 'drm'
-            else:
-                backend = 'fbdev'
-        except Exception:
+        for attempt in range(15):
+            try:
+                result = subprocess.run(['pgrep', 'helix-screen'],
+                                        capture_output=True, timeout=2)
+                if result.returncode == 0:
+                    log("helix-screen detected, using DRM backend")
+                    backend = 'drm'
+                    break
+            except Exception:
+                pass
+            if attempt < 14:
+                log(f"Waiting for helix-screen ({attempt + 1}/15)...")
+                time.sleep(2)
+        if backend == 'auto':
+            log("helix-screen not detected after 30s, using fbdev")
             backend = 'fbdev'
 
     if backend == 'drm':
