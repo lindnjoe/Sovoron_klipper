@@ -132,7 +132,12 @@ class Framebuffer:
         return self.mm.read(self.line_length * self.height)
 
     def _raw_to_image(self, raw):
-        from PIL import Image
+        try:
+            from PIL import Image
+        except ImportError:
+            raise RuntimeError(
+                "remote_display requires Pillow. "
+                "Install with: pip install Pillow")
         if self.bpp == 32:
             img = Image.frombytes(
                 'RGBA', (self.width, self.height), raw,
