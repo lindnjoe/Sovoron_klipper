@@ -716,10 +716,13 @@ body{background:#1a1a1a;color:#eee;font-family:system-ui,sans-serif;
 #bar .title{font-weight:600;font-size:15px}
 #bar .status{color:#888}
 #bar .status.connected{color:#4caf50}
+body.iframe #bar{display:none}
 #wrap{flex:1;display:flex;align-items:center;justify-content:center;
   width:100%;padding:8px;overflow:hidden}
+body.iframe #wrap{padding:0}
 #screen{cursor:crosshair;max-width:100%;max-height:100%;
   image-rendering:auto;border:1px solid #333;display:block}
+body.iframe #screen{border:none;width:100%;height:100%;object-fit:contain}
 #touch-indicator{position:fixed;width:24px;height:24px;border-radius:50%;
   background:rgba(255,100,100,0.6);border:2px solid rgba(255,100,100,0.9);
   pointer-events:none;transform:translate(-50%,-50%);display:none;z-index:99}
