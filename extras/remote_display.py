@@ -734,7 +734,6 @@ body{display:flex;flex-direction:column;align-items:center}
 #bar .title{font-weight:600;font-size:15px}
 #bar .status{color:#888}
 #bar .status.connected{color:#4caf50}
-#bar .status.error{color:#f44336}
 body.iframe #bar{display:none}
 #wrap{flex:1;display:flex;align-items:center;justify-content:center;
   width:100%;padding:8px;overflow:hidden}
@@ -816,7 +815,6 @@ body.iframe #screen{border:none;width:100%;height:100%;
       })
       .catch(e => {
         errorCount++;
-        setStatus('disconnected', 'error');
         setTimeout(poll, Math.min(errorCount * 500, 5000));
       });
   }
