@@ -1083,8 +1083,12 @@ class afcAMS(afcUnit):
         """Set OAMS follower to reverse before AFC runs cut/park/tip."""
         if self._follower:
             self._follower.set_follower_state(
+                self._get_monitor_state(), self.oams, 0, 0,
+                "stop before unload", force=True)
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+            self._follower.set_follower_state(
                 self._get_monitor_state(), self.oams, 1, 0,
-                "before unload cut", force=True)
+                "reverse for unload", force=True)
 
     def _oams_unload_inner(self, cur_lane, cur_extruder) -> bool:
         """OAMS custom unload — filament transport only.
@@ -1117,7 +1121,7 @@ class afcAMS(afcUnit):
 
         spool_index = self._spool_map.get(cur_lane.name, 0)
 
-        # Wait for OAMS idle
+        # Wait for OAMS MCU to finish any in-flight action
         self._wait_for_idle()
 
         # Stop monitor during load to prevent false positives
@@ -1130,11 +1134,20 @@ class afcAMS(afcUnit):
         if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
             buffer_obj.enable_advance_latch()
 
+        # Stop follower before switching direction — the MCU considers
+        # an active follower as "busy" and will reject load commands.
+        if self._follower:
+            self._follower.set_follower_state(
+                self._get_monitor_state(), self.oams, 0, 0,
+                "stop before load", force=True)
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+
         # Enable follower forward before load
         if self._follower:
             self._follower.enable_follower(
                 self._get_monitor_state(), self.oams, 1, "before load",
                 force=True)
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
         for attempt in range(max_retries):
             try:
@@ -1176,13 +1189,29 @@ class afcAMS(afcUnit):
                 self._oams_extrude(
                     -(unload_length + 10.0), 1500, "engagement_cleanup_retract")
 
+                # Stop follower before hardware cleanup — MCU rejects
+                # commands while follower is active.
+                if self._follower:
+                    self._follower.set_follower_state(
+                        self._get_monitor_state(), self.oams, 0, 0,
+                        "stop before cleanup", force=True)
+                    self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+
                 # Hardware cleanup
                 self.oams.abort_current_action(wait=True)
+                self._wait_for_idle()
                 self.oams.unload_spool_with_retry()
                 self._wait_for_idle()
 
                 if attempt < max_retries - 1:
                     self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
+                    # Re-enable follower forward for next attempt
+                    if self._follower:
+                        self._follower.enable_follower(
+                            self._get_monitor_state(), self.oams, 1,
+                            "before retry", force=True)
+                        self.afc.reactor.pause(
+                            self.afc.reactor.monotonic() + 0.5)
 
             except Exception as e:
                 self.logger.error(f"OAMS load error attempt {attempt+1}: {e}")
@@ -1234,6 +1263,14 @@ class afcAMS(afcUnit):
 
             success, msg = self.oams.unload_spool_with_retry()
             self._wait_for_idle()
+
+            # Stop follower after unload so MCU is idle for the next
+            # operation (e.g. load on a different lane).
+            if self._follower:
+                self._follower.set_follower_state(
+                    self._get_monitor_state(), self.oams, 0, 0,
+                    "stop after unload", force=True)
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
             if self._monitor:
                 self._monitor.notify_unload_complete()
