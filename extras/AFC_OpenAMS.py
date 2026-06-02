@@ -1184,10 +1184,14 @@ class afcAMS(afcUnit):
                         self._get_monitor_state(), self.oams, 1, 0,
                         "engagement cleanup", force=True)
 
-                # Retract from extruder
-                unload_length, _ = self.get_engagement_params(cur_lane.name)
-                self._oams_extrude(
-                    -(unload_length + 10.0), 1500, "engagement_cleanup_retract")
+                # Retract from extruder using tool_stn distance so
+                # filament clears the extruder gears before AMS unload.
+                retract_dist = getattr(cur_lane.extruder_obj, 'tool_stn_unload', 0)
+                if retract_dist and retract_dist > 0:
+                    unload_length = retract_dist + 10.0
+                    retract_speed = getattr(cur_lane.extruder_obj, 'tool_unload_speed', 25.0) * 60.0
+                    self._oams_extrude(
+                        -unload_length, retract_speed, "engagement_cleanup_retract")
 
                 # Stop follower before hardware cleanup — MCU rejects
                 # commands while follower is active.
@@ -1197,7 +1201,8 @@ class afcAMS(afcUnit):
                         "stop before cleanup", force=True)
                     self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
-                # Hardware cleanup
+                # Hardware cleanup — gate each command with idle wait
+                self._wait_for_idle()
                 self.oams.abort_current_action(wait=True)
                 self._wait_for_idle()
                 self.oams.unload_spool_with_retry()
