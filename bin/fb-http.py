@@ -7,6 +7,7 @@ import hashlib
 import mmap
 import os
 import struct
+import subprocess
 import time
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from io import BytesIO
@@ -617,13 +618,20 @@ def main():
     fb = None
     backend = args.backend
 
-    if backend == 'auto' or backend == 'drm':
+    if backend == 'auto':
         try:
-            fb = DRMFramebuffer(args.drm_device)
-        except Exception as e:
-            if backend == 'drm':
-                raise
-            log(f"DRM not available ({e}), falling back to fbdev")
+            result = subprocess.run(['pgrep', '-x', 'helixscreen'],
+                                    capture_output=True, timeout=2)
+            if result.returncode == 0:
+                log("helixscreen detected, using DRM backend")
+                backend = 'drm'
+            else:
+                backend = 'fbdev'
+        except Exception:
+            backend = 'fbdev'
+
+    if backend == 'drm':
+        fb = DRMFramebuffer(args.drm_device)
 
     if fb is None:
         fb = Framebuffer(args.fb)
