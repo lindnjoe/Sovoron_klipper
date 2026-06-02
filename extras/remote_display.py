@@ -762,7 +762,7 @@ body.iframe #screen{border:none;width:100%;height:100%;
 (function(){
   var inIframe = false;
   try { inIframe = window.self !== window.top; } catch(e) { inIframe = true; }
-  if (inIframe) document.body.classList.add('iframe');
+  if (inIframe || window.location.search.indexOf('embed') !== -1) document.body.classList.add('iframe');
 
   var base = '';
   var loc = window.location.pathname;
