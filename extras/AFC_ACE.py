@@ -352,6 +352,7 @@ class afcACE(afcUnit):
                     self.logger.info(
                         f"ACE: {lane.name} restoring TOOLED state from saved vars")
                     lane.loaded_to_hub = True
+                    self._set_hub_state(lane, True)
                     lane.sync_to_extruder()
                     if self.afc.current == lane.name:
                         self.afc.spool.set_active_spool(lane.spool_id)
@@ -757,10 +758,7 @@ class afcACE(afcUnit):
                         cur_lane.prep_state = slot_ready
                         if not slot_ready:
                             cur_lane.loaded_to_hub = False
-                        elif self._is_virtual_hub(cur_lane):
-                            # For virtual hub pins, load_state returns loaded_to_hub,
-                            # so we must set it for load_state to report correctly
-                            cur_lane.loaded_to_hub = True
+                            self._set_hub_state(cur_lane, False)
             except Exception as e:
                 self.logger.debug(f"ACE get_status failed during PREP: {e}")
         else:
@@ -769,7 +767,7 @@ class afcACE(afcUnit):
 
         if succeeded:
             if not cur_lane.prep_state:
-                if not cur_lane.load_state:
+                if not cur_lane.raw_load_state:
                     self.lane_not_ready(cur_lane)
                     msg += '<span class=success--text>EMPTY READY FOR SPOOL</span>'
                 else:
@@ -779,7 +777,7 @@ class afcACE(afcUnit):
             else:
                 self.lane_loaded(cur_lane)
                 msg += "<span class=success--text>LOCKED</span>"
-                if not cur_lane.load_state:
+                if not cur_lane.raw_load_state:
                     msg += "<span class=error--text> NOT LOADED</span>"
                     self.lane_not_ready(cur_lane)
                     succeeded = False
@@ -809,6 +807,7 @@ class afcACE(afcUnit):
                     if (cur_lane.tool_loaded
                         and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
                         cur_lane.loaded_to_hub = True
+                        self._set_hub_state(cur_lane, True)
                         cur_lane.sync_to_extruder()
                         msg += "<span class=primary--text> in ToolHead</span>"
 
