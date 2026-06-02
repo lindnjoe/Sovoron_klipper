@@ -956,7 +956,7 @@ class RemoteDisplay:
         use_drm = False
         try:
             import subprocess
-            result = subprocess.run(['pgrep', '-x', 'helixscreen'],
+            result = subprocess.run(['pgrep', 'helix-screen'],
                                     capture_output=True, timeout=2)
             use_drm = result.returncode == 0
         except Exception:

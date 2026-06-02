@@ -620,7 +620,7 @@ def main():
 
     if backend == 'auto':
         try:
-            result = subprocess.run(['pgrep', '-x', 'helixscreen'],
+            result = subprocess.run(['pgrep', 'helix-screen'],
                                     capture_output=True, timeout=2)
             if result.returncode == 0:
                 log("helixscreen detected, using DRM backend")
