@@ -929,28 +929,17 @@ class RemoteDisplay:
                 "Framebuffer: %dx%d @ %dbpp (%s)",
                 fb.width, fb.height, fb.bpp, self.fb_device)
             return fb
-        # auto: use DRM only if helixscreen is running (bypasses fbdev)
-        use_drm = False
+        # auto: try DRM first (works with helixscreen/KMS), fall back to fbdev
         try:
-            import subprocess
-            result = subprocess.run(['pgrep', '-x', 'helixscreen'],
-                                    capture_output=True, timeout=2)
-            use_drm = result.returncode == 0
-        except Exception:
-            pass
-        if use_drm:
-            try:
-                drm_dev = self.drm_device or None
-                fb = DRMFramebuffer(drm_dev)
-                fb.open()
-                self.logger.info(
-                    "DRM display (auto): %dx%d @ %dbpp (%s)",
-                    fb.width, fb.height, fb.bpp, fb.device)
-                return fb
-            except Exception as e:
-                self.logger.info("DRM not available (%s), trying fbdev", e)
-        else:
-            self.logger.info("helixscreen not detected, using fbdev")
+            drm_dev = self.drm_device or None
+            fb = DRMFramebuffer(drm_dev)
+            fb.open()
+            self.logger.info(
+                "DRM display (auto): %dx%d @ %dbpp (%s)",
+                fb.width, fb.height, fb.bpp, fb.device)
+            return fb
+        except Exception as e:
+            self.logger.info("DRM not available (%s), trying fbdev", e)
         fb = Framebuffer(self.fb_device)
         fb.open()
         self.logger.info(
