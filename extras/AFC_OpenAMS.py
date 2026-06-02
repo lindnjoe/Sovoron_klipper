@@ -690,6 +690,7 @@ class afcAMS(afcUnit):
 
                 lane._load_state = new_f1s
                 lane.prep_state = new_f1s
+                lane.loaded_to_hub = new_f1s
 
                 if resync_prev:
                     self._last_f1s[slot] = new_f1s
