@@ -1300,6 +1300,12 @@ class afcACE(afcUnit):
         if self.mode != MODE_DIRECT:
             return
         if lane.name not in self._slot_map:
+            # A lane on a different unit became the active tool. None of our
+            # slots are printing anymore, so stop any feed assist we left
+            # running — otherwise an idle ACE slot keeps feeding (e.g. lane1
+            # assist stays on while lane0 on another unit is printing).
+            for active_slot in list(self._feed_assist_active):
+                self._stop_feed_assist(active_slot)
             return
         slot = self._slot_map[lane.name]
         for other_name, other_slot in self._slot_map.items():
