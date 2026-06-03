@@ -1326,9 +1326,16 @@ class AfcToolchanger(afcUnit):
             # SELECT_TOOL already restored the gcode state and applied the new
             # tool's offset transform, so these values are now correct for the
             # new tool's coordinate system.
-            self.afc.base_position    = list(self.afc.gcode_move.base_position)
-            self.afc.homing_position  = list(self.afc.gcode_move.homing_position)
-            self.afc.last_gcode_position = list(self.afc.gcode_move.last_position)
+            #
+            # Skip while paused: AFC_PAUSE has already snapshotted the print
+            # position into these same variables for resume. A manual tool
+            # swap during a pause must not overwrite that snapshot, or
+            # restore_pos() resumes to the parked/z-hopped swap position
+            # instead of the real print Z (printing above the bed).
+            if not self.afc.function.is_paused():
+                self.afc.base_position    = list(self.afc.gcode_move.base_position)
+                self.afc.homing_position  = list(self.afc.gcode_move.homing_position)
+                self.afc.last_gcode_position = list(self.afc.gcode_move.last_position)
 
             self.afc.function.log_toolhead_pos("After toolswap: ")
             lane.extruder_obj.estats.tool_selected.increase_count()

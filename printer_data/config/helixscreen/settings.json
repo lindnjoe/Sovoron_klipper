@@ -13,7 +13,7 @@
     "dim_brightness": 30,
     "dim_sec": 300,
     "drm_device": "",
-    "frame_counter": 1,
+    "frame_counter": 7,
     "gcode_render_mode": 1,
     "screensaver_type": 0,
     "sleep_sec": 0,
@@ -168,7 +168,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-03T03:48:15Z"
+          "timestamp": "2026-06-03T13:27:26Z"
         },
         "optional": []
       },
