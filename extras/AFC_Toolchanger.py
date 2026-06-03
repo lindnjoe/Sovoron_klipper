@@ -200,9 +200,16 @@ class AfcToolchanger(afcUnit):
         self.afc.current_state = State.TOOL_SWAP
         self._increase_unselect()
         self.afc.function.log_toolhead_pos("Before toolswap: ")
+        # Skip the position-snapshot bookkeeping while paused: AFC_PAUSE has
+        # already snapshotted the print position into base/homing/last_gcode
+        # for resume. A manual tool swap during a pause must not transform or
+        # overwrite that snapshot, or restore_pos() resumes to the parked
+        # swap position instead of the real print Z (printing above the bed).
+        paused = self.afc.function.is_paused()
         # Save the current position before switching tools and subtract offsets
-        for i in range(0, 3):
-            self.afc.last_gcode_position[i] -= self.afc.gcode_move.base_position[i]
+        if not paused:
+            for i in range(0, 3):
+                self.afc.last_gcode_position[i] -= self.afc.gcode_move.base_position[i]
         # Perform a tool swap by selecting the appropriate extruder based on the lane's extruder object.
         self.afc.afcDeltaTime.log_with_time("Performing tool swap")
         name = lane.extruder_obj.name
@@ -225,12 +232,14 @@ class AfcToolchanger(afcUnit):
         if self.afc.afc_stats.average_tool_swap_time:
             self.afc.afc_stats.average_tool_swap_time.average_time(self.afc.afcDeltaTime.delta_time)
         self.afc.current_state = State.IDLE
-        # Update the base position and homing position after the tool swap.
-        self.afc.base_position   = list(self.afc.gcode_move.base_position)
-        self.afc.homing_position = list(self.afc.gcode_move.homing_position)
-        # Update the last_gcode_position to reflect the new base position after the tool swap.
-        for i in range(0, 3):
-            self.afc.last_gcode_position[i] += self.afc.gcode_move.base_position[i]
+        # Update the base position and homing position after the tool swap
+        # (skipped while paused to preserve the resume snapshot, see above).
+        if not paused:
+            self.afc.base_position   = list(self.afc.gcode_move.base_position)
+            self.afc.homing_position = list(self.afc.gcode_move.homing_position)
+            # Update the last_gcode_position to reflect the new base position after the tool swap.
+            for i in range(0, 3):
+                self.afc.last_gcode_position[i] += self.afc.gcode_move.base_position[i]
 
         self.afc.function.log_toolhead_pos("After toolswap: ")
         lane.extruder_obj.estats.tool_selected.increase_count()
