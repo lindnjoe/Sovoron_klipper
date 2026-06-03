@@ -747,6 +747,16 @@ class afcAMS(afcUnit):
             self._monitor.notify_engagement_start()
 
         try:
+            # Keep the follower enabled FORWARD during engagement — it must
+            # always run forward to feed filament through the buffer so the
+            # encoder registers movement. Without this the follower may be
+            # idle and the encoder won't move, producing a false engagement
+            # failure even after a physically successful load.
+            if self._follower and self.oams:
+                self._follower.enable_follower(
+                    self._get_monitor_state(), self.oams, 1,
+                    "engagement verification", force=True)
+
             # Record encoder before
             encoder_before = 0
             if self.oams and hasattr(self.oams, 'encoder_clicks'):
@@ -1181,10 +1191,17 @@ class afcAMS(afcUnit):
                 self.logger.info(
                     f"Engagement failed attempt {attempt+1}, cleaning up")
 
+                # Disable the follower (enable=0) — do NOT run it in reverse.
+                # The extruder still grips the loaded filament; driving the
+                # follower backward here makes the two motors fight and grinds
+                # the gears (constant tension). The original oams_manager used
+                # set_oams_follower(0, 0) here. The extruder retract below and
+                # the hardware unload_spool_with_retry() handle backing the
+                # filament out, not the follower.
                 if self._follower:
                     self._follower.set_follower_state(
-                        self._get_monitor_state(), self.oams, 1, 0,
-                        "engagement cleanup", force=True)
+                        self._get_monitor_state(), self.oams, 0, 0,
+                        "engagement cleanup — stop follower", force=True)
 
                 # Retract from extruder using tool_stn distance so
                 # filament clears the extruder gears before AMS unload.
