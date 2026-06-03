@@ -1299,20 +1299,26 @@ class afcACE(afcUnit):
     def _handle_tool_loaded(self, lane):
         if self.mode != MODE_DIRECT:
             return
-        if lane.name not in self._slot_map:
-            # A lane on a different unit became the active tool. None of our
-            # slots are printing anymore, so stop any feed assist we left
-            # running — otherwise an idle ACE slot keeps feeding (e.g. lane1
-            # assist stays on while lane0 on another unit is printing).
-            for active_slot in list(self._feed_assist_active):
-                self._stop_feed_assist(active_slot)
-            return
-        slot = self._slot_map[lane.name]
-        for other_name, other_slot in self._slot_map.items():
-            if other_slot != slot and other_slot in self._feed_assist_active:
-                self._stop_feed_assist(other_slot)
-        if self._use_feed_assist(lane) and slot not in self._feed_assist_active:
-            self._start_feed_assist(slot)
+        # The event payload is not reliable for identifying the active lane:
+        # on a toolchanger the T0 load fires with the extruder object (name
+        # "extruder"), which is not in _slot_map. Trust AFC's current lane
+        # instead, falling back to the payload only when current is unset.
+        name = getattr(lane, 'name', None)
+        if name not in self._slot_map:
+            name = getattr(self.afc, 'current', None)
+        active_slot = self._slot_map.get(name)
+        # Reconcile hardware: stop feed assist on every slot that isn't the
+        # active one (active_slot is None when the active tool is on another
+        # unit — then all of this ACE's assists are stopped).
+        for slot in list(self._feed_assist_active):
+            if slot != active_slot:
+                self._stop_feed_assist(slot)
+        # Start feed assist on the active slot if it lives on this ACE.
+        if active_slot is not None:
+            active_lane = self.afc.lanes.get(name)
+            if (active_lane is not None and self._use_feed_assist(active_lane)
+                    and active_slot not in self._feed_assist_active):
+                self._start_feed_assist(active_slot)
 
     def _wait_for_ace_ready(self, timeout=30.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
