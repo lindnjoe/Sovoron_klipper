@@ -204,22 +204,23 @@ class afcACE(afcUnit):
     def _reconcile_feed_assist(self, name):
         """Switch ACE feed assist to the active lane (background callback).
 
-        The ACE switches assist over internally, so we only send the START
-        for the new slot — no blocking STOP of the previous slot. Local
-        tracking is pruned to match once the start is acked. Runs off the
-        toolhead's greenlet so the single start-ack never holds position.
+        Stop assist on the previously-active slot(s) and wait for the ACE to
+        ack, THEN start assist on the new slot. Both run in this background
+        reactor callback — off the toolhead's gcode greenlet — so the acks
+        never hold the toolhead over the wipe tower.
         """
         active_slot = self._slot_map.get(name)
         if active_slot is not None:
-            # The active tool is one of our lanes: start its assist. The ACE
-            # moves the assist off the previously-active slot on its own.
+            # Stop the previously-active slot(s) first (stop_feed_assist_sync
+            # waits for the ACE ack), then start the new slot, so the ACE is
+            # never asked to feed two slots at once.
+            for slot in list(self._feed_assist_active):
+                if slot != active_slot:
+                    self._stop_feed_assist(slot)
             active_lane = self.afc.lanes.get(name)
-            if (active_lane is not None and self._use_feed_assist(active_lane)):
+            if (active_lane is not None and self._use_feed_assist(active_lane)
+                    and active_slot not in self._feed_assist_active):
                 self._start_feed_assist(active_slot)
-                # Drop stale tracking for the previous slot(s) without
-                # sending a (blocking) stop — the ACE already switched over.
-                if active_slot in self._feed_assist_active:
-                    self._feed_assist_active.intersection_update({active_slot})
         elif name is not None and name in self.afc.lanes:
             # The active tool is a real lane on ANOTHER unit — stop ours.
             for slot in list(self._feed_assist_active):
