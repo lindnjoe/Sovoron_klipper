@@ -539,7 +539,11 @@ class AfcToolchanger(afcUnit):
                 if inferred:
                     self._run_gcode('after_change_gcode',
                                    inferred.after_change_gcode, extra_context)
-                    self.gcode_transform.tool = inferred
+                # Keep the offset transform synced to active_tool. Setting it
+                # only when 'inferred' is truthy would leave a stale tool
+                # offset applied on a re-initialize that detects no tool
+                # (active_tool=None but transform still offsetting moves).
+                self.gcode_transform.tool = inferred
 
             if should_run_init:
                 if self.status == STATUS_INITIALIZING:
