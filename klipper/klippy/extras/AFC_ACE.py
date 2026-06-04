@@ -361,6 +361,10 @@ class afcACE(afcUnit):
                         lane.enable_buffer()
                     else:
                         self.lane_tool_loaded_idle(lane)
+                        # Mark idle tool-loaded lanes TOOLED too, otherwise
+                        # status stays NONE and this restore block re-fires on
+                        # every hardware poll (log spam / wasted work).
+                        lane.status = AFCLaneState.TOOLED
                     if self._use_feed_assist(lane) and self.afc.current == lane.name:
                         self._start_feed_assist(slot)
                 else:
@@ -1299,26 +1303,35 @@ class afcACE(afcUnit):
     def _handle_tool_loaded(self, lane):
         if self.mode != MODE_DIRECT:
             return
-        # The event payload is not reliable for identifying the active lane:
-        # on a toolchanger the T0 load fires with the extruder object (name
-        # "extruder"), which is not in _slot_map. Trust AFC's current lane
-        # instead, falling back to the payload only when current is unset.
+        # Resolve the active lane name. The payload is usually the loaded
+        # lane, but at print start / with a tool already on the shuttle the
+        # toolchanger fires this with the extruder object (name "extruder"):
+        # use the lane loaded on that extruder, then fall back to AFC's
+        # current lane.
         name = getattr(lane, 'name', None)
         if name not in self._slot_map:
-            name = getattr(self.afc, 'current', None)
+            loaded = getattr(lane, 'lane_loaded', None)  # extruder payload
+            if loaded in self._slot_map:
+                name = loaded
+            else:
+                name = getattr(self.afc, 'current', None)
         active_slot = self._slot_map.get(name)
-        # Reconcile hardware: stop feed assist on every slot that isn't the
-        # active one (active_slot is None when the active tool is on another
-        # unit — then all of this ACE's assists are stopped).
-        for slot in list(self._feed_assist_active):
-            if slot != active_slot:
-                self._stop_feed_assist(slot)
-        # Start feed assist on the active slot if it lives on this ACE.
+
         if active_slot is not None:
+            # The active tool is one of our lanes: run only its assist.
+            for slot in list(self._feed_assist_active):
+                if slot != active_slot:
+                    self._stop_feed_assist(slot)
             active_lane = self.afc.lanes.get(name)
             if (active_lane is not None and self._use_feed_assist(active_lane)
                     and active_slot not in self._feed_assist_active):
                 self._start_feed_assist(active_slot)
+        elif name is not None and name in self.afc.lanes:
+            # The active tool is a real lane on ANOTHER unit — stop ours.
+            for slot in list(self._feed_assist_active):
+                self._stop_feed_assist(slot)
+        # else: couldn't resolve the active tool — leave assist untouched
+        # rather than risk stopping a valid one.
 
     def _wait_for_ace_ready(self, timeout=30.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
