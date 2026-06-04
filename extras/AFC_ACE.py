@@ -1315,23 +1315,38 @@ class afcACE(afcUnit):
                 name = loaded
             else:
                 name = getattr(self.afc, 'current', None)
-        active_slot = self._slot_map.get(name)
+        # Defer the ACE handshake off the toolhead's gcode greenlet so it
+        # does not hold position over the wipe tower (and ooze) while the
+        # ACE acks the feed-assist start.
+        self.afc.reactor.register_callback(
+            lambda et, n=name: self._reconcile_feed_assist(n))
 
+    def _reconcile_feed_assist(self, name):
+        """Switch ACE feed assist to the active lane (background callback).
+
+        The ACE switches assist over internally, so we only send the START
+        for the new slot — no blocking STOP of the previous slot. Local
+        tracking is pruned to match once the start is acked. Runs off the
+        toolhead's greenlet so the single start-ack never holds position.
+        """
+        active_slot = self._slot_map.get(name)
         if active_slot is not None:
-            # The active tool is one of our lanes: run only its assist.
-            for slot in list(self._feed_assist_active):
-                if slot != active_slot:
-                    self._stop_feed_assist(slot)
+            # The active tool is one of our lanes: start its assist. The ACE
+            # moves the assist off the previously-active slot on its own.
             active_lane = self.afc.lanes.get(name)
-            if (active_lane is not None and self._use_feed_assist(active_lane)
-                    and active_slot not in self._feed_assist_active):
+            if (active_lane is not None and self._use_feed_assist(active_lane)):
                 self._start_feed_assist(active_slot)
+                # Drop stale tracking for the previous slot(s) without
+                # sending a (blocking) stop — the ACE already switched over.
+                if active_slot in self._feed_assist_active:
+                    self._feed_assist_active.intersection_update({active_slot})
         elif name is not None and name in self.afc.lanes:
             # The active tool is a real lane on ANOTHER unit — stop ours.
             for slot in list(self._feed_assist_active):
                 self._stop_feed_assist(slot)
         # else: couldn't resolve the active tool — leave assist untouched
         # rather than risk stopping a valid one.
+
 
     def _wait_for_ace_ready(self, timeout=30.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
