@@ -539,7 +539,11 @@ class AfcToolchanger(afcUnit):
                 if inferred:
                     self._run_gcode('after_change_gcode',
                                    inferred.after_change_gcode, extra_context)
-                    self.gcode_transform.tool = inferred
+                # Keep the offset transform synced to active_tool. Setting it
+                # only when 'inferred' is truthy would leave a stale tool
+                # offset applied on a re-initialize that detects no tool
+                # (active_tool=None but transform still offsetting moves).
+                self.gcode_transform.tool = inferred
 
             if should_run_init:
                 if self.status == STATUS_INITIALIZING:
@@ -1333,9 +1337,20 @@ class AfcToolchanger(afcUnit):
             # restore_pos() resumes to the parked/z-hopped swap position
             # instead of the real print Z (printing above the bed).
             if not self.afc.function.is_paused():
+                # Preserve the true print Z that save_pos() captured before
+                # the swap. gcode_move.last_position still carries the
+                # tool-change z-hop (e.g. print Z 2.4 -> 7.4 from the unload
+                # quick-pull), so letting it overwrite the saved Z makes
+                # restore_pos() (a) hop an extra z_hop above the already-
+                # hopped head and (b) lower the nozzle to the hopped height
+                # instead of the real layer. The base_position/E refresh is
+                # still needed for filament advanced during the swap; the new
+                # tool's gcode_z_offset is applied by the move transform.
+                saved_print_z = self.afc.last_gcode_position[2]
                 self.afc.base_position    = list(self.afc.gcode_move.base_position)
                 self.afc.homing_position  = list(self.afc.gcode_move.homing_position)
                 self.afc.last_gcode_position = list(self.afc.gcode_move.last_position)
+                self.afc.last_gcode_position[2] = saved_print_z
 
             self.afc.function.log_toolhead_pos("After toolswap: ")
             lane.extruder_obj.estats.tool_selected.increase_count()
