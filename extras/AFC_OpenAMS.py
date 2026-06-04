@@ -1136,6 +1136,37 @@ class afcAMS(afcUnit):
         # Wait for OAMS idle
         self._wait_for_idle()
 
+        # Guard against a firmware/Klipper state desync (e.g. after a
+        # Klipper or OAMS restart): if the firmware already has this spool
+        # loaded, sending another load_spool() produces NO action_status —
+        # the firmware has nothing to do — so load_spool() blocks the full
+        # 45s and returns "MCU unresponsive", which then cascades into
+        # auto-unload "OAMS is busy". Query the hardware directly (the spool
+        # query IS answered even when load is not) and treat an
+        # already-loaded spool as a successful load.
+        hw_spool = None
+        try:
+            hw_spool = self.oams.determine_current_spool()
+        except Exception as e:
+            self.logger.debug(f"Could not query OAMS current spool: {e}")
+        if hw_spool is not None and hw_spool == spool_index:
+            self.logger.info(
+                f"OAMS spool {spool_index} already loaded in hardware "
+                f"(firmware current_spool={hw_spool}); skipping redundant "
+                f"load for {cur_lane.name}")
+            self.oams.current_spool = spool_index
+            # Re-establish follower + monitor exactly as a successful load
+            if self._follower:
+                self._follower.enable_follower(
+                    self._get_monitor_state(), self.oams, 1,
+                    "already loaded", force=True)
+            if self._monitor:
+                self._monitor.notify_load_complete(
+                    cur_lane.name, self.oams_name, spool_index)
+                self._monitor.start(self.oams)
+            cur_lane.loaded_to_hub = True
+            return True
+
         # Stop monitor during load to prevent false positives
         if self._monitor:
             self._monitor.stop()
@@ -1298,7 +1329,24 @@ class afcAMS(afcUnit):
                     f"— spool empty from runout")
                 success = True
             else:
-                success, msg = self.oams.unload_spool_with_retry()
+                # State-desync guard (mirror of the load guard): if the
+                # firmware reports nothing loaded, an unload_spool() may
+                # never be acked and would block 40s ("MCU unresponsive").
+                # Query the hardware directly and skip the redundant unload.
+                hw_spool = None
+                try:
+                    hw_spool = self.oams.determine_current_spool()
+                except Exception as e:
+                    self.logger.debug(
+                        f"Could not query OAMS current spool: {e}")
+                if hw_spool is None:
+                    self.logger.info(
+                        f"OAMS reports no spool loaded; skipping redundant "
+                        f"hardware unload for {cur_lane.name}")
+                    self.oams.current_spool = None
+                    success = True
+                else:
+                    success, msg = self.oams.unload_spool_with_retry()
             self._wait_for_idle()
 
             # Stop follower after unload so MCU is idle for the next
