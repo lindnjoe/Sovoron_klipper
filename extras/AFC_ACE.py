@@ -361,6 +361,10 @@ class afcACE(afcUnit):
                         lane.enable_buffer()
                     else:
                         self.lane_tool_loaded_idle(lane)
+                        # Mark idle tool-loaded lanes TOOLED too, otherwise
+                        # status stays NONE and this restore block re-fires on
+                        # every hardware poll (log spam / wasted work).
+                        lane.status = AFCLaneState.TOOLED
                     if self._use_feed_assist(lane) and self.afc.current == lane.name:
                         self._start_feed_assist(slot)
                 else:
