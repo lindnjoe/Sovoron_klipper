@@ -91,6 +91,7 @@ class AFCPLR:
         self.save_file = ''
         self._pending_recovery = None
         self._prompt_timer = None
+        self._in_shutdown = False
 
         if not self.enabled:
             return
@@ -191,7 +192,18 @@ class AFCPLR:
         self.gcode.respond_raw("// action:prompt_end")
 
     def _handle_shutdown(self):
-        if self._is_printing():
+        # A shutdown (e.g. verify_heater tripping) drops virtual_sdcard /
+        # print_stats out of the 'printing' state *before* this handler
+        # runs, so gating the save on _is_printing() loses the checkpoint
+        # exactly when we need it. _last_save_time > 0 means we were mid
+        # print and actively tracking, so save a final checkpoint for PLR
+        # to retry after the restart.
+        self._in_shutdown = True
+        # Halt the periodic timer so it can't fire after the shutdown, see
+        # 'not printing', and wipe the checkpoint we're about to write.
+        if self._timer is not None:
+            self.reactor.update_timer(self._timer, self.reactor.NEVER)
+        if self._is_printing() or self._last_save_time > 0:
             try:
                 self._save_state()
                 self.logger.info("Shutdown save completed")
@@ -208,11 +220,17 @@ class AFCPLR:
         self._clear_state()
 
     def _handle_reset_file(self):
+        # Don't wipe the checkpoint if a reset_file event arrives during a
+        # shutdown — that state is being preserved for PLR retry.
+        if self._in_shutdown:
+            return
         self._cleanup()
 
     # ── Timer ───────────────────────────────────────────────────────
 
     def _timer_cb(self, eventtime):
+        if self._in_shutdown:
+            return self.reactor.NEVER
         if not self._is_printing():
             self.logger.info("Print ended, clearing PLR state")
             self._cleanup()
@@ -371,7 +389,21 @@ class AFCPLR:
         try:
             with os.fdopen(fd, 'w') as f:
                 json.dump(state, f, indent=2)
+                # Flush the file's contents all the way to disk before the
+                # rename — without this the write can sit in the OS/SD-card
+                # cache and be lost on a hard power cut, leaving no usable
+                # checkpoint (or no file at all if it was the first save).
+                f.flush()
+                os.fsync(f.fileno())
             os.rename(tmp_path, self.save_file)
+            # fsync the directory so the rename itself is durable across a
+            # power loss, not just the file contents.
+            if dir_path:
+                dir_fd = os.open(dir_path, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
             self._has_saved_state = True
         except Exception:
             try:
