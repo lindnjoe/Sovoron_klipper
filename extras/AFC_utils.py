@@ -531,7 +531,15 @@ class AFC_moonraker:
         url = urljoin(self.host, 'server/spoolman/proxy')
         data = urlencode(payload).encode()
         req = Request(url, data)
-        return self._get_results(req, print_error)
+        result = self._get_results(req, print_error)
+        # Moonraker's proxy strips Spoolman's field-level 422 detail, so when a
+        # write fails surface the exact request that Spoolman rejected — that
+        # body (method/path + payload) is what's needed to find the bad field.
+        if result is None and method != "GET":
+            self.logger.error(
+                f"Spoolman {method} {path} failed; request body: "
+                f"{body if body is not None else '(none)'}")
+        return result
 
     def search_filaments(self, article_number=None, vendor_name=None, material=None):
         """
@@ -682,4 +690,8 @@ class AFC_moonraker:
         url = urljoin(self.host, 'server/spoolman/proxy')
         req = Request(url, payload.encode(),
                       headers={"Content-Type": "application/json"})
-        return self._get_results(req)
+        result = self._get_results(req)
+        if result is None and method != "GET":
+            self.logger.error(
+                f"Spoolman {method} {path} failed; request body: {body_dict}")
+        return result
