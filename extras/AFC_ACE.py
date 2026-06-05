@@ -181,20 +181,25 @@ class afcACE(afcUnit):
         self.printer.register_event_handler("afc:tool_loaded", self._handle_tool_loaded)
 
     def _handle_tool_loaded(self, lane):
-        if self.mode != MODE_DIRECT:
-            return
         # Resolve the active lane name. The payload is usually the loaded
         # lane, but at print start / with a tool already on the shuttle the
         # toolchanger fires this with the extruder object (name "extruder"):
         # use the lane loaded on that extruder, then fall back to AFC's
         # current lane.
         name = getattr(lane, 'name', None)
-        if name not in self._slot_map:
-            loaded = getattr(lane, 'lane_loaded', None)  # extruder payload
-            if loaded in self._slot_map:
-                name = loaded
-            else:
-                name = getattr(self.afc, 'current', None)
+        if self.mode == MODE_DIRECT:
+            if name not in self._slot_map:
+                loaded = getattr(lane, 'lane_loaded', None)  # extruder payload
+                if loaded in self._slot_map:
+                    name = loaded
+                else:
+                    name = getattr(self.afc, 'current', None)
+        else:
+            # Combined mode: one shared toolhead, so only act when the event
+            # is directly for one of our lanes (a lane load or a manual
+            # SET_LANE_LOADED recovery). Don't fall back to afc.current.
+            if name not in self._slot_map:
+                return
         # Defer the ACE handshake off the toolhead's gcode greenlet so it
         # does not hold position over the wipe tower (and ooze) while the
         # ACE acks the feed-assist start.
