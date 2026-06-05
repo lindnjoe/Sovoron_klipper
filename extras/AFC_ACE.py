@@ -1230,17 +1230,14 @@ class afcACE(afcUnit):
         return True
 
     def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
-        """Keep ACE feed assist running through cut/park/tip.
+        """Stop ACE feed assist during filament tip forming.
 
-        Assist only needs to stop when the ACE motor itself reverses (the
-        serial unwind), so it is left enabled here and stopped just before
-        the unwind in _ace_unload_inner. Stopping it this early used to
-        leave a loaded lane with assist OFF if an error during cut/park/tip
-        paused the print and the operator resumed — the assist was never
-        commanded back on. Assist now stays on until the lane is genuinely
-        unloaded (unwind / eject / lane_unload) or another lane is selected.
+        Assist should stop before cut/park/tip since it only conflicts with
+        the serial unwind. This prevents inadvertent assist state on resume
+        if an error during tip-forming pauses the print.
         """
-        pass
+        slot = self._get_slot(cur_lane.name)
+        self._stop_feed_assist(slot)
 
     def _ace_unload_sequence(self, cur_lane, cur_extruder) -> bool:
         """ACE unload transport — ACE serial unwind back to hub."""
@@ -1284,10 +1281,6 @@ class afcACE(afcUnit):
         hub = cur_lane.hub_obj
         bowden = getattr(hub, 'afc_unload_bowden_length', getattr(hub, 'afc_bowden_length', 0)) if hub else 0
         retract_dist = bowden - cur_lane.dist_hub
-        # Stop feed assist now — the unwind reverses the same ACE slot motor,
-        # so assist (forward feed) would fight the retract. This is the point
-        # of genuine unload, so the lane no longer needs assist.
-        self._stop_feed_assist(slot)
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
