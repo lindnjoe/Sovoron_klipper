@@ -220,6 +220,19 @@ class AFC_moonraker:
             else:
                 logger(self.ERROR_STRING)
                 logger(f"Response: {resp.status} Reason: {resp.reason}")
+        except HTTPError as e:
+            # Moonraker proxies Spoolman's validation detail in the response
+            # body. For a 422 (Unprocessable Entity) this body names the exact
+            # field Spoolman rejected, so surface it instead of swallowing it.
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            logger(self.ERROR_STRING)
+            logger(f"HTTP Error {e.code} ({e.reason})"
+                   + (f": {body}" if body else ""))
+            data = None
         except:
             logger(self.ERROR_STRING, traceback=traceback.format_exc())
             data = None
