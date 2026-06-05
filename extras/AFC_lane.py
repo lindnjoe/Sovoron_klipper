@@ -1908,6 +1908,10 @@ class AFCLane:
         self.sync_to_extruder()
         self.afc.save_vars()
         self.unit_obj.select_lane(self)
+        # Fire the same event a normal load emits so the owning unit
+        # reconciles to this lane — e.g. ACE direct mode starts feed assist
+        # on the manually-recovered lane instead of leaving it off.
+        self.printer.send_event("afc:tool_loaded", self)
         self.logger.info("Manually set {} loaded to toolhead".format(self.name))
 
     cmd_SET_LONG_MOVE_SPEED_help = "Gives ability to set long_moves_speed or rev_long_moves_speed_factor values without having to update config and restart"
