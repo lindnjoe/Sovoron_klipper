@@ -389,7 +389,21 @@ class AFCPLR:
         try:
             with os.fdopen(fd, 'w') as f:
                 json.dump(state, f, indent=2)
+                # Flush the file's contents all the way to disk before the
+                # rename — without this the write can sit in the OS/SD-card
+                # cache and be lost on a hard power cut, leaving no usable
+                # checkpoint (or no file at all if it was the first save).
+                f.flush()
+                os.fsync(f.fileno())
             os.rename(tmp_path, self.save_file)
+            # fsync the directory so the rename itself is durable across a
+            # power loss, not just the file contents.
+            if dir_path:
+                dir_fd = os.open(dir_path, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
             self._has_saved_state = True
         except Exception:
             try:
