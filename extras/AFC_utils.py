@@ -392,7 +392,15 @@ class AFC_moonraker:
             json.dumps(payload).encode('utf-8'),
             headers={"Content-Type": "application/json"},
         )
-        return self._get_results(req, print_error=print_error)
+        result = self._get_results(req, print_error=print_error)
+        # Moonraker's proxy strips Spoolman's field-level 422 detail, so when a
+        # write fails surface the exact request that Spoolman rejected — that
+        # body (method/path + payload) is what's needed to find the bad field.
+        if result is None and method != "GET":
+            self.logger.error(
+                f"Spoolman {method} {path} failed; request body: "
+                f"{json.dumps(body) if body is not None else '(none)'}")
+        return result
 
     def search_filaments(self, vendor_name=None, material=None, article_number=None):
         """Search Spoolman for filaments matching the given criteria."""
