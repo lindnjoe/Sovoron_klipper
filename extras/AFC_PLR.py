@@ -1111,6 +1111,13 @@ class AFCPLR:
         run("G90" if absolute_coord else "G91")
         run("M82" if absolute_extrude else "M83")
 
+        # 14a. Restore the extruder's E position to what the slicer expects at
+        # this point in the file. The purge left E somewhere else, so without
+        # this an absolute-E file's first move (G1 ... E<big>) extrudes from the
+        # wrong origin — a huge blob that trips max_extrude_cross_section and
+        # aborts the resume. Harmless for relative-E files.
+        run("G92 E%.5f" % gcode_pos[3])
+
         # 14b. Restore the print feedrate. The recovery Z move left F at 600
         # (10mm/s); on a mid-file resume every slicer move that omits F (an
         # entire feature, e.g. the wipe tower) would inherit that crawl —
