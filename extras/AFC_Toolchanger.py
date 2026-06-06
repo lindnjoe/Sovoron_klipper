@@ -1254,19 +1254,6 @@ class AfcToolchanger(afcUnit):
         AFC_UNSELECT_TOOL
         ```
         """
-        # If active_tool is unset but a tool is physically on the shuttle
-        # (e.g. a print-start probe routine picked it up without going through
-        # select_tool), recover it from the detection pin first — mirroring
-        # INITIALIZE_TOOLCHANGER. Otherwise UNSELECT silently no-ops and the
-        # tool never docks until a manual G28.
-        if (not self.active_tool and self.has_detection
-                and self.status not in (STATUS_CHANGING, STATUS_INITIALIZING)):
-            detected = self._require_detected_tool()
-            if detected is not None and detected.detect_state == DETECT_PRESENT:
-                self.logger.info(
-                    "AFC_UNSELECT_TOOL: active_tool unset but %s detected on "
-                    "shuttle — initializing before docking" % detected.name)
-                self.initialize(detected)
         self._increase_unselect()
         current_extruder = self.afc.function.get_current_extruder_obj()
         if (current_extruder
