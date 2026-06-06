@@ -41,6 +41,7 @@
 #   pre_resume_purge_length: 30      # mm of filament to purge on resume
 #   pre_resume_purge_speed: 3        # mm/s purge extrusion speed
 #   save_file: <auto>                # Path to state file (auto = next to AFC vars)
+#                                    # a '.static' companion holds the bed mesh
 
 from __future__ import annotations
 
@@ -175,6 +176,10 @@ class AFCPLR:
         # mesh actually changes.
         self._mesh_cache_obj = None
         self._mesh_cache_data = None
+        # The static (bed mesh) data is written to a companion file only when
+        # it changes, not every cycle.
+        self.static_file = None
+        self._static_dirty = False
 
         self._sd = None
         self._gcode_move = None
@@ -271,6 +276,22 @@ class AFCPLR:
         else:
             self.save_file = os.path.expanduser(
                 '~/printer_data/config/AFC/AFC_PLR_state.json')
+
+        # Companion file holding the static, write-once data (bed mesh). The
+        # frequent dynamic checkpoint omits it so periodic saves stay tiny.
+        base, ext = os.path.splitext(self.save_file)
+        self.static_file = base + '.static' + ext
+
+        # The dynamic + static files are a pair (static now holds file_path).
+        # If only one survives the checkpoint is incomplete/unresumable, so
+        # discard the orphan rather than offer a broken recovery or leave junk.
+        if os.path.exists(self.save_file) != os.path.exists(self.static_file):
+            for p in (self.save_file, self.static_file):
+                try:
+                    if os.path.exists(p):
+                        os.unlink(p)
+                except OSError:
+                    pass
 
         self._has_saved_state = os.path.exists(self.save_file)
         if self._has_saved_state:
@@ -418,6 +439,7 @@ class AFCPLR:
         self._z_up_ticks = 0
         self._mesh_cache_obj = None     # re-capture the mesh for the new print
         self._mesh_cache_data = None
+        self._static_dirty = True       # write the static file once for this print
         self._last_save_time = self.reactor.monotonic()
         self.reactor.update_timer(
             self._timer, self.reactor.monotonic() + self.z_check_interval)
@@ -552,12 +574,8 @@ class AFCPLR:
                         if st is not None:
                             state['pa_smooth_time'][name] = st
 
-        # Input shaper: a restart reverts it to config defaults. Prefer the
-        # active tool's per-tool params (a toolchanger stores shaper per
-        # extruder as params_input_shaper_*); fall back to live [input_shaper].
-        is_data = self._gather_input_shaper(state.get('active_extruder'))
-        if is_data:
-            state['input_shaper'] = is_data
+        # Input shaper is NOT saved — it's a config constant (per-tool
+        # params_input_shaper_*), re-derived at resume from active_extruder.
 
         if self._heater_bed is not None:
             state['bed_temp'] = self._heater_bed.get_status(
@@ -568,11 +586,14 @@ class AFCPLR:
         bed_mesh = self.printer.lookup_object('bed_mesh', None)
         if bed_mesh is not None:
             z_mesh = bed_mesh.get_mesh()
+            prev = self._mesh_cache_obj
             if z_mesh is None:
                 state['bed_mesh_profile'] = ''
+                if prev is not None:
+                    self._static_dirty = True   # mesh was cleared
                 self._mesh_cache_obj = None
                 self._mesh_cache_data = None
-            elif z_mesh is self._mesh_cache_obj and self._mesh_cache_data:
+            elif z_mesh is prev and self._mesh_cache_data:
                 # Unchanged since the last checkpoint — reuse the serialization
                 # instead of re-reading the probe matrix every save.
                 state.update(self._mesh_cache_data)
@@ -585,6 +606,7 @@ class AFCPLR:
                 state.update(data)
                 self._mesh_cache_obj = z_mesh
                 self._mesh_cache_data = data
+                self._static_dirty = True       # mesh appeared / changed
 
         state['fan_speeds'] = {}
         fan = self.printer.lookup_object('fan', None)
@@ -601,18 +623,35 @@ class AFCPLR:
 
         return state
 
+    # Static, write-once-per-print fields split into the companion file so the
+    # frequent dynamic checkpoint stays tiny. None of these change once a print
+    # starts (the file being printed, and the bed mesh ~900 points).
+    _STATIC_KEYS = ('file_path', 'file_name',
+                    'bed_mesh_profile', 'bed_mesh_points', 'bed_mesh_params')
+
     def _save_state(self, sync=False):
         # Gather must run on the reactor thread (it reads live, non-thread-safe
         # Klipper objects). The slow disk write is then either done inline
         # (sync=True, used at shutdown / manual save where we want the result
         # to land before returning) or handed to the background writer.
         state = self._gather_state()
+        static = {k: state.pop(k) for k in self._STATIC_KEYS if k in state}
+        # Write the static file (bed mesh) only when it changed — once per
+        # print in practice. Done inline (it's rare) and BEFORE the dynamic
+        # write so the mesh is durable before anything references it.
+        if self._static_dirty and self.static_file:
+            try:
+                self._write_state_to_disk(static, self.static_file,
+                                          is_primary=False)
+                self._static_dirty = False
+            except Exception as e:
+                self.logger.error("PLR static save failed: %s" % e)
         if sync:
             self._write_state_to_disk(state, self.save_file)
         else:
             self._queue_save(state)
 
-    def _write_state_to_disk(self, state, path):
+    def _write_state_to_disk(self, state, path, is_primary=True):
         dir_path = os.path.dirname(path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
@@ -636,7 +675,8 @@ class AFCPLR:
                     os.fsync(dir_fd)
                 finally:
                     os.close(dir_fd)
-            self._has_saved_state = True
+            if is_primary:
+                self._has_saved_state = True
         except Exception:
             try:
                 os.unlink(tmp_path)
@@ -714,20 +754,32 @@ class AFCPLR:
     def _load_state(self):
         try:
             with open(self.save_file, 'r') as f:
-                return json.load(f)
+                state = json.load(f)
         except (IOError, json.JSONDecodeError) as e:
             self.logger.error("Failed to load PLR state: %s" % e)
             return None
+        # Merge the static companion (bed mesh) if present; its absence just
+        # means the resume runs without a restored mesh.
+        if self.static_file:
+            try:
+                with open(self.static_file, 'r') as f:
+                    for k, v in json.load(f).items():
+                        state.setdefault(k, v)
+            except (IOError, json.JSONDecodeError):
+                pass
+        return state
 
     def _clear_state(self):
         # Drop any queued write and wait for an in-flight one so the file
         # we're deleting doesn't get rewritten right after by the writer.
         self._flush_writer(clear_pending=True)
-        try:
-            if os.path.exists(self.save_file):
-                os.unlink(self.save_file)
-        except OSError as e:
-            self.logger.error("Failed to clear PLR state: %s" % e)
+        for path in (self.save_file, self.static_file):
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except OSError as e:
+                self.logger.error("Failed to clear PLR state (%s): %s"
+                                  % (path, e))
         self._has_saved_state = False
 
     # ── Resume ──────────────────────────────────────────────────────
@@ -788,13 +840,15 @@ class AFCPLR:
             mesh_desc = "profile '%s'" % state.get('bed_mesh_profile')
         else:
             mesh_desc = "none saved"
-        isd = state.get('input_shaper') or {}
+        # Input shaper isn't saved — derive what resume would re-apply from the
+        # active tool's config params.
+        isd = self._gather_input_shaper(state.get('active_extruder')) or {}
         if isd.get('shaper_type_x') is not None:
             is_desc = "x=%s@%.1f y=%s@%.1f" % (
                 isd.get('shaper_type_x'), isd.get('shaper_freq_x', 0),
                 isd.get('shaper_type_y'), isd.get('shaper_freq_y', 0))
         else:
-            is_desc = "not saved"
+            is_desc = "config default"
         feed_rate = state.get('feed_rate', 0) or (state.get('speed', 0) * 60)
         return (
             "  File:            %s @ pos %d\n"
@@ -1010,9 +1064,11 @@ class AFCPLR:
                 cmd += " SMOOTH_TIME=%.4f" % st
             run(cmd)
 
-        # 13b. Restore input shaper (a restart reverts it to config defaults;
-        # a toolchanger may have set per-tool values that need re-applying).
-        is_data = state.get('input_shaper')
+        # 13b. Restore input shaper — re-derived from the active tool's config
+        # params (params_input_shaper_*), not saved, since it's a config
+        # constant. A restart reverts the shaper to config defaults, so a
+        # toolchanger needs the active tool's values re-applied.
+        is_data = self._gather_input_shaper(active_ext)
         if is_data and self.printer.lookup_object('input_shaper', None) is not None:
             parts = []
             for axis in ('x', 'y'):
