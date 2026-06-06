@@ -77,17 +77,34 @@ class AFCPLR:
         self.double_home = config.getboolean('double_home', False)
         # "Resume - Z Home" recovery: instead of trusting the saved Z
         # (SET_KINEMATIC_POSITION), physically re-home Z at a safe spot so we
-        # never drive a fixed G28 Z into the existing print.
+        # never drive a fixed G28 Z into the existing print. Pick ONE backend:
         #
-        # Built-in mode: set z_home_x / z_home_y to the safe touch corner.
-        # During a Z-home resume AFC_PLR raises a flag (exposed via get_status
-        # as z_home_active) and runs a plain `G28 Z`; your homing_override
-        # reads printer['AFC_PLR'] to touch at that corner instead of center.
-        # No extra macros needed.
+        #   probe that homes in/at a point (cartographer/beacon eddy, BLTouch,
+        #     inductive): set z_home_x / z_home_y to a safe corner clear of the
+        #     print. During a Z-home resume AFC_PLR sets get_status z_home_active
+        #     True and runs `G28 Z`; your homing_override reads printer['AFC_PLR']
+        #     to home at that corner instead of center. Not eddy-specific — any
+        #     probe that can measure at the corner works. Override snippet:
         #
-        # Custom mode: set z_home_gcode to a macro name that does the whole
-        # safe re-home itself (used when the built-in flag approach doesn't
-        # fit the machine). Takes precedence over z_home_x/y when set.
+        #       [homing_override]
+        #       gcode:
+        #           ... (your X/Y homing) ...
+        #           {% if 'Z' in params or (... home_all ...) %}
+        #             {% set plr = printer['AFC_PLR'] %}
+        #             {% if plr.z_home_active %}
+        #               G0 X{plr.z_home_x} Y{plr.z_home_y} F6000   ; safe corner
+        #             {% else %}
+        #               G0 X150 Y150 F6000                         ; normal center
+        #             {% endif %}
+        #             G28.1 Z          ; the real Z homing (probe / BLTouch)
+        #             G0 Z10 F600
+        #           {% endif %}
+        #
+        #   plain Z endstop, no probe: set z_home_standard: True (below). Used
+        #     only when Z homes away from the bed; checked automatically.
+        #
+        #   fully custom: set z_home_gcode to a macro that does the whole safe
+        #     re-home itself (escape hatch). Takes precedence over the others.
         self.z_home_gcode = config.get('z_home_gcode', '').strip()
         self.z_home_x = config.getfloat('z_home_x', None)
         self.z_home_y = config.getfloat('z_home_y', None)
@@ -112,6 +129,15 @@ class AFCPLR:
         # logic. Disable if your z_home_gcode already applies the offset.
         self.z_home_apply_tool_offset = config.getboolean(
             'z_home_apply_tool_offset', True)
+        # Standard (non-eddy) Z re-home: run a plain `G28 Z` for the Z-home
+        # resume, for machines with an ordinary Z endstop and no cartographer/
+        # beacon. Only safe when Z homes AWAY from the bed (toward max) — homing
+        # toward the bed after a power loss would crash into the print.
+        self.z_home_standard = config.getboolean('z_home_standard', False)
+        # Z homing direction from [stepper_z]: True if it homes toward max
+        # (safe for a blind G28 Z), False if toward the bed (unsafe), None if
+        # probe-homed/unknown (G28 Z goes to safe_z_home, not blind in place).
+        self._z_homes_to_max = self._detect_z_home_to_max(config)
         # True only while a Z-home resume is mid-flight, so homing_override
         # knows to touch at the safe corner. Read live via get_status.
         self._z_home_active = False
@@ -129,10 +155,11 @@ class AFCPLR:
                     self.mesh_zero_x, self.mesh_zero_y = coords[0], coords[1]
         except Exception:
             pass
-        # Whether the Z-home recovery path is usable at all (custom macro or a
-        # configured safe corner).
+        # Whether the Z-home recovery path is usable at all (custom macro,
+        # configured safe corner, or standard endstop homing).
         self._z_home_available = bool(self.z_home_gcode) or (
-            self.z_home_x is not None and self.z_home_y is not None)
+            self.z_home_x is not None and self.z_home_y is not None) \
+            or self.z_home_standard
         save_file = config.get('save_file', '')
         self._config_save_file = save_file
 
@@ -191,6 +218,29 @@ class AFCPLR:
         self.gcode.register_command(
             'AFC_PLR_CALIBRATE_ZHOME', self.cmd_PLR_CALIBRATE_ZHOME,
             desc='Measure corner-vs-center touch delta and report z_home_offset')
+
+    def _detect_z_home_to_max(self, config):
+        # Inspect [stepper_z] to decide whether a blind `G28 Z` is safe after a
+        # power loss. Returns True if Z homes toward max (away from the bed),
+        # False if toward the bed, None if probe-homed/unknown.
+        try:
+            zc = config.getsection('stepper_z')
+        except Exception:
+            return None
+        endstop = (zc.get('endstop_pin', '') or '').lower()
+        if 'virtual_endstop' in endstop:
+            # Probe-homed (cartographer/BLTouch/inductive): G28 Z goes to
+            # safe_z_home, not blindly in place — handled by the probe paths.
+            return None
+        pe = zc.getfloat('position_endstop', None)
+        if pe is None:
+            return None
+        pmin = zc.getfloat('position_min', 0.0)
+        pmax = zc.getfloat('position_max', None)
+        if pmax is None:
+            return None
+        # Homes toward whichever travel limit the endstop sits nearest.
+        return abs(pe - pmax) <= abs(pe - pmin)
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
@@ -639,10 +689,26 @@ class AFCPLR:
                 run("G28 Z")
             finally:
                 self._z_home_active = False
+        elif self.z_home_standard:
+            # Standard endstop homing (no eddy probe). Only safe when Z homes
+            # away from the bed — otherwise G28 Z drives into the print.
+            if self._z_homes_to_max is False:
+                raise gcmd.error(
+                    "AFC_PLR: z_home_standard refused — [stepper_z] homes Z "
+                    "toward the bed, so G28 Z would crash into the print after "
+                    "a power loss. Use the normal Resume (trusts the saved Z), "
+                    "or set z_home_gcode to a macro that homes Z at a safe spot.")
+            if self._z_homes_to_max is None:
+                gcmd.respond_info(
+                    "AFC_PLR: WARNING — could not confirm Z homes away from the "
+                    "bed (probe-homed or unknown). G28 Z may move toward the "
+                    "print; watch closely.")
+            gcmd.respond_info("AFC_PLR: Re-homing Z via standard G28 Z")
+            run("G28 Z")
         else:
             raise gcmd.error(
-                "AFC_PLR: Z-home requested but neither z_home_gcode nor "
-                "z_home_x/z_home_y is configured")
+                "AFC_PLR: Z-home requested but no method is configured "
+                "(set z_home_x/z_home_y, z_home_gcode, or z_home_standard)")
 
     def _resume_from_state(self, gcmd, state, z_home=False):
         file_path = state.get('file_path', '')
