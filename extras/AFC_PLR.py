@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -93,11 +94,23 @@ class AFCPLR:
         self._prompt_timer = None
         self._in_shutdown = False
 
+        # Background writer: the periodic save's json.dump + fsync + rename
+        # must not run on the reactor thread (an SD fsync can stall motion).
+        # The reactor only gathers state (which must read live, non-thread-
+        # safe Klipper objects on-thread) and hands the plain dict to this
+        # thread, mirroring how AFC_logger offloads disk I/O via QueueListener.
+        self._writer_thread = None
+        self._writer_cond = threading.Condition()
+        self._writer_pending = None   # latest (state, path) awaiting write
+        self._writer_busy = False     # True while a disk write is in progress
+        self._writer_stop = False
+
         if not self.enabled:
             return
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
+        self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
         self.printer.register_event_handler(
             "virtual_sdcard:reset_file", self._handle_reset_file)
 
@@ -203,9 +216,13 @@ class AFCPLR:
         # 'not printing', and wipe the checkpoint we're about to write.
         if self._timer is not None:
             self.reactor.update_timer(self._timer, self.reactor.NEVER)
+        # Stop the background writer so it can't race (and lose to) the final
+        # synchronous save below, then write the last checkpoint inline so it
+        # is guaranteed on disk before klippy exits.
+        self._stop_writer(join=True)
         if self._is_printing() or self._last_save_time > 0:
             try:
-                self._save_state()
+                self._save_state(sync=True)
                 self.logger.info("Shutdown save completed")
             except Exception as e:
                 self.logger.error("Shutdown save failed: %s" % e)
@@ -319,6 +336,11 @@ class AFCPLR:
             state['base_position'] = list(gm.base_position)
             state['homing_position'] = list(gm.homing_position)
             state['speed'] = gm.speed
+            # Raw gcode feedrate (mm/min) with the M220 factor backed out, so
+            # it can be re-issued as an F on resume regardless of speed factor.
+            # gm.speed (mm/s) == F(mm/min) * gm.speed_factor, so F = speed/factor.
+            sf = getattr(gm, 'speed_factor', 0.0)
+            state['feed_rate'] = (gm.speed / sf) if sf else 0.0
             gm_status = gm.get_status(self.reactor.monotonic())
             state['speed_factor'] = gm_status.get('speed_factor', 1.0)
             state['extrude_factor'] = gm_status.get('extrude_factor', 1.0)
@@ -379,9 +401,19 @@ class AFCPLR:
 
         return state
 
-    def _save_state(self):
+    def _save_state(self, sync=False):
+        # Gather must run on the reactor thread (it reads live, non-thread-safe
+        # Klipper objects). The slow disk write is then either done inline
+        # (sync=True, used at shutdown / manual save where we want the result
+        # to land before returning) or handed to the background writer.
         state = self._gather_state()
-        dir_path = os.path.dirname(self.save_file)
+        if sync:
+            self._write_state_to_disk(state, self.save_file)
+        else:
+            self._queue_save(state)
+
+    def _write_state_to_disk(self, state, path):
+        dir_path = os.path.dirname(path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
@@ -395,7 +427,7 @@ class AFCPLR:
                 # checkpoint (or no file at all if it was the first save).
                 f.flush()
                 os.fsync(f.fileno())
-            os.rename(tmp_path, self.save_file)
+            os.rename(tmp_path, path)
             # fsync the directory so the rename itself is durable across a
             # power loss, not just the file contents.
             if dir_path:
@@ -412,6 +444,73 @@ class AFCPLR:
                 pass
             raise
 
+    # ── Background writer thread ─────────────────────────────────────
+
+    def _ensure_writer(self):
+        if self._writer_thread is None:
+            self._writer_stop = False
+            t = threading.Thread(
+                target=self._writer_loop, name='AFC_PLR_writer', daemon=True)
+            self._writer_thread = t
+            t.start()
+
+    def _writer_loop(self):
+        while True:
+            with self._writer_cond:
+                while self._writer_pending is None and not self._writer_stop:
+                    self._writer_cond.wait()
+                if self._writer_pending is None and self._writer_stop:
+                    return
+                job = self._writer_pending
+                self._writer_pending = None
+                self._writer_busy = True
+            try:
+                self._write_state_to_disk(job[0], job[1])
+            except Exception as e:
+                self.logger.error("Background PLR save failed: %s" % e)
+            finally:
+                with self._writer_cond:
+                    self._writer_busy = False
+                    self._writer_cond.notify_all()
+
+    def _queue_save(self, state):
+        # Latest-wins: only the most recent checkpoint matters, so a pending
+        # write is simply replaced rather than queued up behind a slow fsync.
+        self._ensure_writer()
+        with self._writer_cond:
+            self._writer_pending = (state, self.save_file)
+            self._writer_cond.notify_all()
+
+    def _flush_writer(self, clear_pending=False, timeout=5.0):
+        # Wait until the writer is idle (no pending job, not mid-write) so a
+        # background write can't resurrect a file we're about to delete.
+        if self._writer_thread is None:
+            return
+        deadline = time.time() + timeout
+        with self._writer_cond:
+            if clear_pending:
+                self._writer_pending = None
+            while self._writer_pending is not None or self._writer_busy:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                self._writer_cond.wait(remaining)
+
+    def _stop_writer(self, join=True):
+        t = self._writer_thread
+        if t is None:
+            return
+        with self._writer_cond:
+            self._writer_stop = True
+            self._writer_cond.notify_all()
+        if join:
+            t.join(timeout=5.0)
+        self._writer_thread = None
+        self._writer_stop = False
+
+    def _handle_disconnect(self):
+        self._stop_writer(join=True)
+
     def _load_state(self):
         try:
             with open(self.save_file, 'r') as f:
@@ -421,6 +520,9 @@ class AFCPLR:
             return None
 
     def _clear_state(self):
+        # Drop any queued write and wait for an in-flight one so the file
+        # we're deleting doesn't get rewritten right after by the writer.
+        self._flush_writer(clear_pending=True)
         try:
             if os.path.exists(self.save_file):
                 os.unlink(self.save_file)
@@ -578,6 +680,18 @@ class AFCPLR:
         run("G90" if absolute_coord else "G91")
         run("M82" if absolute_extrude else "M83")
 
+        # 14b. Restore the print feedrate. The recovery Z move left F at 600
+        # (10mm/s); on a mid-file resume every slicer move that omits F (an
+        # entire feature, e.g. the wipe tower) would inherit that crawl —
+        # M220 still reads 100% because it's a separate multiplier. Re-issue
+        # the saved feedrate so resumed moves run at print speed (and don't
+        # over-extrude at the slow rate).
+        feed_rate = state.get('feed_rate', 0)
+        if not feed_rate:
+            feed_rate = state.get('speed', 0) * 60  # older checkpoints
+        if feed_rate > 0:
+            run("G1 F%d" % int(feed_rate))
+
         # 15. Select file, seek to saved position, then start printing
         gcmd.respond_info(
             "AFC_PLR: Resuming %s from position %d" % (file_path, file_pos))
@@ -627,7 +741,8 @@ class AFCPLR:
         if not self._is_printing():
             self._start_tracking()
         try:
-            self._save_state()
+            # Synchronous so the command reports the real on-disk result.
+            self._save_state(sync=True)
             gcmd.respond_info(
                 "AFC_PLR: State saved to %s (layer_z=%.3f, z=%.3f)"
                 % (self.save_file, self.layer_z, self._get_current_z()))
