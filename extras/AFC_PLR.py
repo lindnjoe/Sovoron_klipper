@@ -436,6 +436,41 @@ class AFCPLR:
 
     # ── Save / Load ─────────────────────────────────────────────────
 
+    def _gather_input_shaper(self, active_ext):
+        # Capture the input shaper to restore. Toolchangers store it per tool
+        # as params_input_shaper_* on each AFC_extruder (applied by the
+        # tool-change macro, lost on a restart), so read the active tool's
+        # params first; fall back to the live global [input_shaper] state.
+        param_map = {
+            'shaper_type_x': 'params_input_shaper_type_x',
+            'shaper_freq_x': 'params_input_shaper_freq_x',
+            'damping_ratio_x': 'params_input_shaper_damping_ratio_x',
+            'shaper_type_y': 'params_input_shaper_type_y',
+            'shaper_freq_y': 'params_input_shaper_freq_y',
+            'damping_ratio_y': 'params_input_shaper_damping_ratio_y',
+        }
+        if active_ext:
+            for _, ext in self.printer.lookup_objects('AFC_extruder'):
+                if getattr(ext, 'name', None) != active_ext:
+                    continue
+                params = getattr(ext, 'params', None) or {}
+                data = {sk: params[pk] for sk, pk in param_map.items()
+                        if params.get(pk) is not None}
+                if data.get('shaper_type_x') or data.get('shaper_type_y'):
+                    return data
+                break
+        is_obj = self.printer.lookup_object('input_shaper', None)
+        if is_obj is not None:
+            try:
+                iss = is_obj.get_status(self.reactor.monotonic())
+                data = {k: iss.get(k) for k in param_map
+                        if iss.get(k) is not None}
+                if data:
+                    return data
+            except Exception:
+                pass
+        return None
+
     def _gather_state(self):
         state = {}
         state['timestamp'] = time.time()
@@ -509,19 +544,12 @@ class AFCPLR:
                         if st is not None:
                             state['pa_smooth_time'][name] = st
 
-        # Input shaper (global, but a toolchanger may set it per active tool;
-        # a restart reverts it to the [input_shaper] config defaults).
-        is_obj = self.printer.lookup_object('input_shaper', None)
-        if is_obj is not None:
-            try:
-                iss = is_obj.get_status(self.reactor.monotonic())
-                state['input_shaper'] = {
-                    k: iss.get(k) for k in (
-                        'shaper_type_x', 'shaper_freq_x', 'damping_ratio_x',
-                        'shaper_type_y', 'shaper_freq_y', 'damping_ratio_y')
-                }
-            except Exception:
-                pass
+        # Input shaper: a restart reverts it to config defaults. Prefer the
+        # active tool's per-tool params (a toolchanger stores shaper per
+        # extruder as params_input_shaper_*); fall back to live [input_shaper].
+        is_data = self._gather_input_shaper(state.get('active_extruder'))
+        if is_data:
+            state['input_shaper'] = is_data
 
         if self._heater_bed is not None:
             state['bed_temp'] = self._heater_bed.get_status(
