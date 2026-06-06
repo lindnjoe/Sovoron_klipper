@@ -106,6 +106,20 @@ class AFCPLR:
         # True only while a Z-home resume is mid-flight, so homing_override
         # knows to touch at the safe corner. Read live via get_status.
         self._z_home_active = False
+        # Mesh zero-reference (print-area center) read from [bed_mesh], surfaced
+        # so the calibration macro can compare corner-vs-center without anything
+        # hardcoded.
+        self.mesh_zero_x = None
+        self.mesh_zero_y = None
+        try:
+            zrp = config.getsection('bed_mesh').get(
+                'zero_reference_position', None)
+            if zrp:
+                coords = [float(v.strip()) for v in zrp.split(',')]
+                if len(coords) >= 2:
+                    self.mesh_zero_x, self.mesh_zero_y = coords[0], coords[1]
+        except Exception:
+            pass
         # Whether the Z-home recovery path is usable at all (custom macro or a
         # configured safe corner).
         self._z_home_available = bool(self.z_home_gcode) or (
@@ -1013,6 +1027,9 @@ class AFCPLR:
             'z_home_active': self._z_home_active,
             'z_home_x': self.z_home_x if self.z_home_x is not None else 0.0,
             'z_home_y': self.z_home_y if self.z_home_y is not None else 0.0,
+            # Mesh zero-reference (print center) for the calibration macro.
+            'mesh_zero_x': self.mesh_zero_x if self.mesh_zero_x is not None else 0.0,
+            'mesh_zero_y': self.mesh_zero_y if self.mesh_zero_y is not None else 0.0,
         }
 
 
