@@ -77,17 +77,34 @@ class AFCPLR:
         self.double_home = config.getboolean('double_home', False)
         # "Resume - Z Home" recovery: instead of trusting the saved Z
         # (SET_KINEMATIC_POSITION), physically re-home Z at a safe spot so we
-        # never drive a fixed G28 Z into the existing print.
+        # never drive a fixed G28 Z into the existing print. Pick ONE backend:
         #
-        # Built-in mode: set z_home_x / z_home_y to the safe touch corner.
-        # During a Z-home resume AFC_PLR raises a flag (exposed via get_status
-        # as z_home_active) and runs a plain `G28 Z`; your homing_override
-        # reads printer['AFC_PLR'] to touch at that corner instead of center.
-        # No extra macros needed.
+        #   probe that homes in/at a point (cartographer/beacon eddy, BLTouch,
+        #     inductive): set z_home_x / z_home_y to a safe corner clear of the
+        #     print. During a Z-home resume AFC_PLR sets get_status z_home_active
+        #     True and runs `G28 Z`; your homing_override reads printer['AFC_PLR']
+        #     to home at that corner instead of center. Not eddy-specific — any
+        #     probe that can measure at the corner works. Override snippet:
         #
-        # Custom mode: set z_home_gcode to a macro name that does the whole
-        # safe re-home itself (used when the built-in flag approach doesn't
-        # fit the machine). Takes precedence over z_home_x/y when set.
+        #       [homing_override]
+        #       gcode:
+        #           ... (your X/Y homing) ...
+        #           {% if 'Z' in params or (... home_all ...) %}
+        #             {% set plr = printer['AFC_PLR'] %}
+        #             {% if plr.z_home_active %}
+        #               G0 X{plr.z_home_x} Y{plr.z_home_y} F6000   ; safe corner
+        #             {% else %}
+        #               G0 X150 Y150 F6000                         ; normal center
+        #             {% endif %}
+        #             G28.1 Z          ; the real Z homing (probe / BLTouch)
+        #             G0 Z10 F600
+        #           {% endif %}
+        #
+        #   plain Z endstop, no probe: set z_home_standard: True (below). Used
+        #     only when Z homes away from the bed; checked automatically.
+        #
+        #   fully custom: set z_home_gcode to a macro that does the whole safe
+        #     re-home itself (escape hatch). Takes precedence over the others.
         self.z_home_gcode = config.get('z_home_gcode', '').strip()
         self.z_home_x = config.getfloat('z_home_x', None)
         self.z_home_y = config.getfloat('z_home_y', None)
