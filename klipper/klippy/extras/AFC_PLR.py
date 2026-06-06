@@ -921,6 +921,11 @@ class AFCPLR:
         gcmd.respond_info(
             "AFC_PLR: TEST Z-home (dry run) — no file will be resumed")
 
+        # Start from a clean offset like a real post-restart resume, so the
+        # z_home_offset trim (applied additively below) doesn't stack across
+        # repeated dry-runs in one session.
+        run("SET_GCODE_OFFSET Z=0 MOVE=0")
+
         # Pre-lift (fake Z=0 then raise) so sensorless XY homing can't drag.
         if self.z_home_prelift > 0:
             gcmd.respond_info(
@@ -1009,12 +1014,14 @@ class AFCPLR:
         CLEAR_MESH : int, optional (default 1)
             BED_MESH_CLEAR first so touches read raw bed, not mesh-compensated.
         APPLY : int, optional (default 0)
-            Apply the measured value to z_home_offset for this session (still
-            add it to [AFC_PLR] to persist across restarts).
+            Apply the measured value to z_home_offset for this session.
+        SAVE : int, optional (default 0)
+            Apply AND persist it to [AFC_PLR] via AFC's config rewriter (the
+            'z_home_offset:' line must already exist in [AFC_PLR]).
 
         Usage
         -----
-        `AFC_PLR_CALIBRATE_ZHOME` or `AFC_PLR_CALIBRATE_ZHOME APPLY=1`
+        `AFC_PLR_CALIBRATE_ZHOME`, `... APPLY=1`, or `... SAVE=1`
         """
         if not self.z_home_calibrate_gcode:
             raise gcmd.error(
@@ -1023,13 +1030,18 @@ class AFCPLR:
         if self.z_home_x is None or self.z_home_y is None:
             raise gcmd.error("AFC_PLR: set z_home_x / z_home_y in [AFC_PLR]")
         clear_mesh = gcmd.get_int('CLEAR_MESH', 1)
-        apply_now = gcmd.get_int('APPLY', 0)
+        save = gcmd.get_int('SAVE', 0)
+        apply_now = gcmd.get_int('APPLY', 0) or save
         run = self.gcode.run_script_from_command
         th = self.printer.lookup_object('toolhead')
 
         if 'z' not in th.get_status(self.reactor.monotonic())['homed_axes']:
             gcmd.respond_info("AFC_PLR: homing first")
             run("G28")
+        # Measure in a clean frame: a lingering SET_GCODE_OFFSET (from a prior
+        # resume/test/APPLY) would be added into the reported touch Z, inflating
+        # the result. Homing doesn't clear the gcode offset, so zero it here.
+        run("SET_GCODE_OFFSET Z=0 MOVE=0")
         if clear_mesh:
             run("BED_MESH_CLEAR")
 
@@ -1054,12 +1066,32 @@ class AFCPLR:
         if apply_now:
             self.z_home_offset = offset
             gcmd.respond_info(
-                "AFC_PLR: z_home_offset set to %.4f for this session — add "
-                "'z_home_offset: %.4f' to [AFC_PLR] to persist" % (offset, offset))
-        else:
+                "AFC_PLR: z_home_offset set to %.4f for this session" % offset)
+        if save:
+            self._save_z_home_offset(gcmd, offset)
+        elif not apply_now:
             gcmd.respond_info(
-                "AFC_PLR: add 'z_home_offset: %.4f' to [AFC_PLR] (or re-run "
-                "with APPLY=1)" % offset)
+                "AFC_PLR: add 'z_home_offset: %.4f' to [AFC_PLR], or re-run "
+                "with SAVE=1 to write it automatically" % offset)
+
+    def _save_z_home_offset(self, gcmd, offset):
+        # Persist via AFC's config rewriter: updates the z_home_offset line in
+        # [AFC_PLR] in place if present, else writes it to AFC_auto_vars.cfg
+        # (which merges and takes precedence on the next restart).
+        afc = self._afc or self.printer.lookup_object('AFC', None)
+        fn = getattr(afc, 'function', None) if afc is not None else None
+        if fn is None or not hasattr(fn, 'ConfigRewrite'):
+            gcmd.respond_info(
+                "AFC_PLR: AFC config rewriter unavailable — add "
+                "'z_home_offset: %.4f' to [AFC_PLR] manually" % offset)
+            return
+        try:
+            fn.ConfigRewrite('AFC_PLR', 'z_home_offset', "%.4f" % offset,
+                             "AFC_PLR z_home_offset calibration")
+        except Exception as e:
+            gcmd.respond_info(
+                "AFC_PLR: failed to write z_home_offset (%s) — add "
+                "'z_home_offset: %.4f' to [AFC_PLR] manually" % (e, offset))
 
     def cmd_PLR_SAVE(self, gcmd):
         """
