@@ -509,6 +509,20 @@ class AFCPLR:
                         if st is not None:
                             state['pa_smooth_time'][name] = st
 
+        # Input shaper (global, but a toolchanger may set it per active tool;
+        # a restart reverts it to the [input_shaper] config defaults).
+        is_obj = self.printer.lookup_object('input_shaper', None)
+        if is_obj is not None:
+            try:
+                iss = is_obj.get_status(self.reactor.monotonic())
+                state['input_shaper'] = {
+                    k: iss.get(k) for k in (
+                        'shaper_type_x', 'shaper_freq_x', 'damping_ratio_x',
+                        'shaper_type_y', 'shaper_freq_y', 'damping_ratio_y')
+                }
+            except Exception:
+                pass
+
         if self._heater_bed is not None:
             state['bed_temp'] = self._heater_bed.get_status(
                 self.reactor.monotonic()).get('target', 0)
@@ -710,6 +724,57 @@ class AFCPLR:
                 "AFC_PLR: Z-home requested but no method is configured "
                 "(set z_home_x/z_home_y, z_home_gcode, or z_home_standard)")
 
+    def _format_state_summary(self, state, z_home=None):
+        # Render the restore set from a checkpoint. z_home True/False describes
+        # the Z handling of an actual resume; None = status preview (mode TBD).
+        fmt = lambda d, f: ", ".join(f % (k, v) for k, v in d.items()) or "none"
+        if z_home is True:
+            z_desc = "physically re-homed (offset %.4f, tool offset %.4f)" % (
+                self.z_home_offset, state.get('active_tool_z_offset', 0.0))
+        elif z_home is False:
+            z_desc = "trust saved layer_z"
+        else:
+            z_desc = "saved layer_z, or re-homed if 'Resume - Z Home'"
+        if state.get('bed_mesh_points') and state.get('bed_mesh_params'):
+            mesh_desc = "restored from saved data"
+        elif state.get('bed_mesh_profile'):
+            mesh_desc = "profile '%s'" % state.get('bed_mesh_profile')
+        else:
+            mesh_desc = "none saved"
+        isd = state.get('input_shaper') or {}
+        if isd.get('shaper_type_x') is not None:
+            is_desc = "x=%s@%.1f y=%s@%.1f" % (
+                isd.get('shaper_type_x'), isd.get('shaper_freq_x', 0),
+                isd.get('shaper_type_y'), isd.get('shaper_freq_y', 0))
+        else:
+            is_desc = "not saved"
+        feed_rate = state.get('feed_rate', 0) or (state.get('speed', 0) * 60)
+        return (
+            "  File:            %s @ pos %d\n"
+            "  Bed temp:        %.0fC\n"
+            "  Extruder temps:  %s\n"
+            "  Active extruder: %s\n"
+            "  Z:               %s (layer_z=%.3f)\n"
+            "  Bed mesh:        %s\n"
+            "  Fans:            %s\n"
+            "  Speed / Flow:    %d%% / %d%%\n"
+            "  Pressure adv:    %s\n"
+            "  Input shaper:    %s\n"
+            "  Feedrate:        %s mm/min\n"
+            "  Coord / Extrude: %s / %s"
+            % (os.path.basename(state.get('file_path', '')),
+               state.get('file_position', 0), state.get('bed_temp', 0),
+               fmt(state.get('extruder_temps', {}), "%s=%.0f"),
+               state.get('active_extruder', '?'), z_desc,
+               state.get('layer_z', 0.0), mesh_desc,
+               fmt(state.get('fan_speeds', {}), "%s=%.2f"),
+               int(state.get('speed_factor', 1.0) * 100),
+               int(state.get('extrude_factor', 1.0) * 100),
+               fmt(state.get('pressure_advance', {}), "%s=%.4f"), is_desc,
+               int(feed_rate) if feed_rate else "unchanged",
+               "abs" if state.get('absolute_coord', True) else "rel",
+               "abs" if state.get('absolute_extrude', True) else "rel"))
+
     def _resume_from_state(self, gcmd, state, z_home=False):
         file_path = state.get('file_path', '')
         file_pos = state.get('file_position', 0)
@@ -898,6 +963,24 @@ class AFCPLR:
                 cmd += " SMOOTH_TIME=%.4f" % st
             run(cmd)
 
+        # 13b. Restore input shaper (a restart reverts it to config defaults;
+        # a toolchanger may have set per-tool values that need re-applying).
+        is_data = state.get('input_shaper')
+        if is_data and self.printer.lookup_object('input_shaper', None) is not None:
+            parts = []
+            for axis in ('x', 'y'):
+                stype = is_data.get('shaper_type_%s' % axis)
+                sfreq = is_data.get('shaper_freq_%s' % axis)
+                dratio = is_data.get('damping_ratio_%s' % axis)
+                if stype is not None and sfreq is not None:
+                    parts.append("SHAPER_TYPE_%s=%s" % (axis.upper(), stype))
+                    parts.append("SHAPER_FREQ_%s=%.2f" % (axis.upper(), sfreq))
+                    if dratio is not None:
+                        parts.append("DAMPING_RATIO_%s=%.4f"
+                                     % (axis.upper(), dratio))
+            if parts:
+                run("SET_INPUT_SHAPER " + " ".join(parts))
+
         # 14. Restore coordinate mode
         run("G90" if absolute_coord else "G91")
         run("M82" if absolute_extrude else "M83")
@@ -930,7 +1013,9 @@ class AFCPLR:
         # 16. Clear saved state
         self._clear_state()
 
-        gcmd.respond_info("AFC_PLR: Resume complete — printing")
+        # Verification summary of everything re-applied on this resume.
+        gcmd.respond_info("AFC_PLR: Resume complete — applied:\n"
+                          + self._format_state_summary(state, z_home=z_home))
 
     # ── GCode Commands ──────────────────────────────────────────────
 
@@ -1286,19 +1371,10 @@ class AFCPLR:
             gcmd.respond_info("AFC_PLR: Saved state file exists but is unreadable")
             return
         age = time.time() - state.get('timestamp', 0)
-        msg = "AFC_PLR: Saved state:\n"
-        msg += "  File: %s\n" % state.get('file_name', '?')
-        msg += "  File position: %d bytes\n" % state.get('file_position', 0)
-        msg += "  Layer Z: %.3f mm\n" % state.get('layer_z', 0)
-        msg += "  Current Z: %.3f mm\n" % state.get('current_z', 0)
-        msg += "  Active extruder: %s\n" % state.get('active_extruder', '?')
-        msg += "  Lane: %s\n" % state.get('current_lane', '?')
-        msg += "  Bed temp: %.0f\n" % state.get('bed_temp', 0)
-        mesh_info = state.get('bed_mesh_profile', '') or 'none'
-        if state.get('bed_mesh_points'):
-            mesh_info += ' (mesh data saved)'
-        msg += "  Bed mesh: %s\n" % mesh_info
-        msg += "  Age: %.0f seconds" % age
+        msg = ("AFC_PLR: Saved checkpoint (%.0fs old) — would apply on resume:\n"
+               % age)
+        msg += self._format_state_summary(state, z_home=None)
+        msg += "\n  Lane:            %s" % state.get('current_lane', '?')
         gcmd.respond_info(msg)
 
     # ── Moonraker status ────────────────────────────────────────────
