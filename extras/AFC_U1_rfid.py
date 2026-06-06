@@ -363,14 +363,18 @@ class AFC_U1_RFID:
         :param info: Raw RFID info dict from filament_detect.
         :return: Normalized slot info dict for AFC use.
         """
-        rgb_int = info.get("RGB_1", 0)
-        if rgb_int == 16777215 or rgb_int == 0:
+        # RGB_1 is a packed RGB integer from the tag. Black (0x000000) and
+        # white (0xFFFFFF) are valid filament colors, so they must NOT be
+        # treated as an "unset" sentinel. Only suppress the color when the tag
+        # carries no RGB_1 field at all. Mask off any alpha byte (ARGB -> RGB).
+        rgb_raw = info.get("RGB_1")
+        if rgb_raw is None or rgb_raw == "":
             color_hex = ""
         else:
-            r = (rgb_int >> 16) & 0xFF
-            g = (rgb_int >> 8) & 0xFF
-            b = rgb_int & 0xFF
-            color_hex = f"{r:02x}{g:02x}{b:02x}"
+            try:
+                color_hex = f"{int(rgb_raw) & 0xFFFFFF:06x}"
+            except (ValueError, TypeError):
+                color_hex = ""
         ext_max = info.get("HOTEND_MAX_TEMP")
         ext_min = info.get("HOTEND_MIN_TEMP")
         bed_max = info.get("BED_TEMP")
