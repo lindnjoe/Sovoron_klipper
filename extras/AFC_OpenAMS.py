@@ -1843,6 +1843,8 @@ class afcAMS(afcUnit):
         success = False
         for attempt in range(3):
             try:
+                # Wait for the AMS to ack the prior action before each attempt.
+                self._wait_for_idle()
                 success, msg = self.oams.unload_spool()
             except Exception as e:
                 success = False
@@ -1866,6 +1868,7 @@ class afcAMS(afcUnit):
         except Exception:
             pass
         try:
+            self._wait_for_idle()
             self.oams.unload_spool()
         except Exception:
             pass
