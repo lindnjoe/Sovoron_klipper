@@ -1082,16 +1082,56 @@ class AFCPLR:
         fn = getattr(afc, 'function', None) if afc is not None else None
         if fn is None or not hasattr(fn, 'ConfigRewrite'):
             gcmd.respond_info(
-                "AFC_PLR: AFC config rewriter unavailable — add "
-                "'z_home_offset: %.4f' to [AFC_PLR] manually" % offset)
+                "AFC_PLR: AFC config rewriter unavailable (AFC object %s) — "
+                "add 'z_home_offset: %.4f' to [AFC_PLR] manually"
+                % ("found but no .function" if afc is not None
+                   else "not found", offset))
             return
+        cfgloc = getattr(afc, 'cfgloc', '?')
+        in_place = self._zhome_key_location(cfgloc)
+        gcmd.respond_info(
+            "AFC_PLR: saving z_home_offset=%.4f via AFC rewriter "
+            "(config dir: %s)" % (offset, cfgloc))
         try:
             fn.ConfigRewrite('AFC_PLR', 'z_home_offset', "%.4f" % offset,
                              "AFC_PLR z_home_offset calibration")
         except Exception as e:
             gcmd.respond_info(
-                "AFC_PLR: failed to write z_home_offset (%s) — add "
-                "'z_home_offset: %.4f' to [AFC_PLR] manually" % (e, offset))
+                "AFC_PLR: rewriter failed (%s) — add 'z_home_offset: %.4f' to "
+                "[AFC_PLR] manually" % (e, offset))
+            return
+        if in_place:
+            gcmd.respond_info(
+                "AFC_PLR: updated 'z_home_offset' in place at %s" % in_place)
+        else:
+            gcmd.respond_info(
+                "AFC_PLR: no unindented 'z_home_offset:' line found in any "
+                "[AFC_PLR] under %s, so it was written to AFC_auto_vars.cfg. "
+                "For in-place saves, add a top-level 'z_home_offset: 0.0' line "
+                "to your [AFC_PLR] section there." % cfgloc)
+
+    def _zhome_key_location(self, cfgloc):
+        # Return the path of a .cfg in cfgloc that has an unindented
+        # z_home_offset line inside an [AFC_PLR] section, else None — mirrors
+        # what ConfigRewrite matches, so we can report which path it took.
+        if not cfgloc or not os.path.isdir(cfgloc):
+            return None
+        sec = re.compile(r"^\[\s*AFC_PLR\s*\]")
+        for name in os.listdir(cfgloc):
+            if not name.endswith('.cfg'):
+                continue
+            path = os.path.join(cfgloc, name)
+            try:
+                in_section = False
+                with open(path) as f:
+                    for line in f:
+                        if line.startswith('['):
+                            in_section = sec.match(line) is not None
+                        elif in_section and line.startswith('z_home_offset'):
+                            return path
+            except OSError:
+                continue
+        return None
 
     def cmd_PLR_SAVE(self, gcmd):
         """
