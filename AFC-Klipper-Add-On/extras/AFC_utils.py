@@ -220,6 +220,19 @@ class AFC_moonraker:
             else:
                 logger(self.ERROR_STRING)
                 logger(f"Response: {resp.status} Reason: {resp.reason}")
+        except HTTPError as e:
+            # Moonraker proxies Spoolman's validation detail in the response
+            # body. For a 422 (Unprocessable Entity) this body names the exact
+            # field Spoolman rejected, so surface it instead of swallowing it.
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            logger(self.ERROR_STRING)
+            logger(f"HTTP Error {e.code} ({e.reason})"
+                   + (f": {body}" if body else ""))
+            data = None
         except:
             logger(self.ERROR_STRING, traceback=traceback.format_exc())
             data = None
@@ -379,7 +392,15 @@ class AFC_moonraker:
             json.dumps(payload).encode('utf-8'),
             headers={"Content-Type": "application/json"},
         )
-        return self._get_results(req, print_error=print_error)
+        result = self._get_results(req, print_error=print_error)
+        # Moonraker's proxy strips Spoolman's field-level 422 detail, so when a
+        # write fails surface the exact request that Spoolman rejected — that
+        # body (method/path + payload) is what's needed to find the bad field.
+        if result is None and method != "GET":
+            self.logger.error(
+                f"Spoolman {method} {path} failed; request body: "
+                f"{json.dumps(body) if body is not None else '(none)'}")
+        return result
 
     def search_filaments(self, vendor_name=None, material=None, article_number=None):
         """Search Spoolman for filaments matching the given criteria."""
