@@ -9,27 +9,26 @@
 # touch uses for Z, and the Snapmaker U1 firmware uses for XY.
 #
 # It is a REFINEMENT: call a normal `G28 <axis>` first to establish the frame,
-# then `AVERAGED_SENSORLESS_HOME AXIS=<axis>`. It never drives past
-# position_endstop (== the mechanical stop on these machines), and falls back
-# to the existing single home if the samples don't converge — so it is never
-# worse than a plain G28.
+# then `AVERAGED_SENSORLESS_HOME AXIS=<axis>`. Each probe runs up to the stop
+# and OVERSHOOTS the target (so it hits at full speed and stallguard trips like
+# a real home); the gantry physically can't pass the stop, and the axis limit
+# is only relaxed for the duration of the probe. If the samples don't converge
+# it falls back to the existing single home — never worse than a plain G28.
 #
 # Example config:
 #   [averaged_sensorless_home]
 #   samples: 3          # samples that must agree within tolerance
 #   max_samples: 10     # give up after this many probes -> keep single home
 #   tolerance: 0.05     # mm; window of `samples` must fall within this
-#   retract: 10         # mm to back off (away from endstop) between probes
+#   retract: 10         # mm run-up: back off this far, then probe back in
+#   overshoot: 3        # mm past the stop the probe targets (full-speed hit)
 #   probe_speed: 0      # mm/s; 0 = use the axis homing_speed
 #   retract_speed: 40   # mm/s
 #   settle: 0.1         # s dwell after retract so stallguard re-arms clean
 #
-# Usage from homing_override, replacing the bare G28:
-#   SET_TMC_CURRENT STEPPER=stepper_x CURRENT=0.55   ; your homing current
-#   SET_TMC_CURRENT STEPPER=stepper_y CURRENT=0.55
+# Usage from homing_override, after the bare G28:
 #   G28 Y
 #   AVERAGED_SENSORLESS_HOME AXIS=Y
-#   ... (your back-off + restore run current) ...
 import logging
 from . import homing
 
@@ -46,6 +45,7 @@ class AveragedSensorlessHome:
                 "averaged_sensorless_home: max_samples must be >= samples")
         self.tolerance = config.getfloat('tolerance', 0.05, above=0.)
         self.retract = config.getfloat('retract', 10.0, above=0.)
+        self.overshoot = config.getfloat('overshoot', 3.0, above=0.)
         self.probe_speed = config.getfloat('probe_speed', 0., minval=0.)
         self.retract_speed = config.getfloat('retract_speed', 40.0, above=0.)
         self.settle = config.getfloat('settle', 0.1, minval=0.)
@@ -68,6 +68,7 @@ class AveragedSensorlessHome:
                                    minval=samples)
         tolerance = gcmd.get_float('TOLERANCE', self.tolerance, above=0.)
         retract = gcmd.get_float('RETRACT', self.retract, above=0.)
+        overshoot = gcmd.get_float('OVERSHOOT', self.overshoot, above=0.)
 
         toolhead = self.printer.lookup_object('toolhead')
         eventtime = self.printer.get_reactor().monotonic()
@@ -80,31 +81,42 @@ class AveragedSensorlessHome:
         rail = kin.rails[axis]
         hi = rail.get_homing_info()
         endstop_pos = hi.position_endstop
-        positive_dir = hi.positive_dir
         endstops = rail.get_endstops()
         speed = gcmd.get_float('SPEED', self.probe_speed or hi.speed, above=0.)
-        # Back-off direction is away from the endstop (keeps the corner clear).
-        retract_delta = -retract if positive_dir else retract
+        # +1 if the endstop is at the max end, -1 if at the min end.
+        sign = 1.0 if hi.positive_dir else -1.0
+        start_pos = endstop_pos - sign * retract      # run-up start (off stop)
+        target_pos = endstop_pos + sign * overshoot   # past the stop
+        have_limits = hasattr(kin, 'limits')
 
         samples_list = []
         accepted = None
         for n in range(max_samples):
-            self._move_axis(toolhead, axis, retract_delta, self.retract_speed)
+            # Absolute start each time so a failed probe can't walk the axis.
+            self._move_to(toolhead, axis, start_pos, self.retract_speed)
             if self.settle:
                 toolhead.dwell(self.settle)
             movepos = list(toolhead.get_position())
-            # Target the endstop (== mechanical stop here), never past it.
-            movepos[axis] = endstop_pos
-            hmove = homing.HomingMove(self.printer, endstops)
+            movepos[axis] = target_pos
+            saved_limit = None
+            if have_limits:
+                # Allow targeting past the stop just for this probe; the gantry
+                # stalls at the physical stop well before reaching target_pos.
+                saved_limit = kin.limits[axis]
+                kin.limits[axis] = (min(saved_limit[0], target_pos),
+                                    max(saved_limit[1], target_pos))
             try:
+                hmove = homing.HomingMove(self.printer, endstops)
                 epos = hmove.homing_move(movepos, speed, probe_pos=True)
             except self.printer.command_error as e:
                 gcmd.respond_info(
                     "AVERAGED_SENSORLESS_HOME: probe %d failed (%s)"
                     % (n + 1, str(e)))
                 continue
+            finally:
+                if saved_limit is not None:
+                    kin.limits[axis] = saved_limit
             samples_list.append(epos[axis])
-            # Converged once the last `samples` fall within tolerance.
             if len(samples_list) >= samples:
                 window = samples_list[-samples:]
                 if max(window) - min(window) <= tolerance:
@@ -118,7 +130,7 @@ class AveragedSensorlessHome:
                 % (axis_name, samples, tolerance, len(samples_list),
                    "spread %.4f" % (max(samples_list) - min(samples_list))
                    if samples_list else "no triggers"))
-            self._move_axis(toolhead, axis, retract_delta, self.retract_speed)
+            self._move_to(toolhead, axis, start_pos, self.retract_speed)
             return
 
         avg = sum(accepted) / len(accepted)
@@ -132,11 +144,11 @@ class AveragedSensorlessHome:
             % (axis_name, len(accepted), len(samples_list),
                max(accepted) - min(accepted), correction))
         # Leave the axis backed off so it isn't parked against the stop.
-        self._move_axis(toolhead, axis, retract_delta, self.retract_speed)
+        self._move_to(toolhead, axis, start_pos, self.retract_speed)
 
-    def _move_axis(self, toolhead, axis, delta, speed):
+    def _move_to(self, toolhead, axis, pos_val, speed):
         coord = [None, None, None, None]
-        coord[axis] = toolhead.get_position()[axis] + delta
+        coord[axis] = pos_val
         toolhead.manual_move(coord, speed)
 
 
