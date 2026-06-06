@@ -74,6 +74,16 @@ class AFCPLR:
         self.purge_length = config.getfloat('pre_resume_purge_length', 30.0, minval=0.0)
         self.purge_speed = config.getfloat('pre_resume_purge_speed', 3.0, minval=0.1)
         self.double_home = config.getboolean('double_home', False)
+        # Optional "Resume - Z Home" recovery: instead of trusting the saved
+        # Z (SET_KINEMATIC_POSITION), physically re-home Z at a safe spot. The
+        # machine-specific touch/probe lives in a user macro named here, so we
+        # never drive a fixed G28 Z into the existing print. When empty the
+        # extra popup button is not offered.
+        self.z_home_gcode = config.get('z_home_gcode', '').strip()
+        # Clearance to gain before homing XY in Z-home mode: fake the current
+        # Z as 0 then raise this much so sensorless XY homing can't drag the
+        # nozzle across the print (real Z after a power loss is unknown).
+        self.z_home_prelift = config.getfloat('z_home_prelift', 5.0, minval=0.0)
         save_file = config.get('save_file', '')
         self._config_save_file = save_file
 
@@ -197,6 +207,10 @@ class AFCPLR:
         respond("// action:prompt_text ")
         respond("// action:prompt_text Resume this print?")
         respond("// action:prompt_footer_button Resume|AFC_PLR_RESUME|primary")
+        # Offer the Z-home variant only when a re-home macro is configured.
+        if self.z_home_gcode:
+            respond("// action:prompt_footer_button "
+                    "Resume - Z Home|AFC_PLR_RESUME Z_HOME=1|secondary")
         respond("// action:prompt_footer_button Discard|AFC_PLR_CLEAR|error")
         respond("// action:prompt_show")
         return self.reactor.NEVER
@@ -532,7 +546,7 @@ class AFCPLR:
 
     # ── Resume ──────────────────────────────────────────────────────
 
-    def _resume_from_state(self, gcmd, state):
+    def _resume_from_state(self, gcmd, state, z_home=False):
         file_path = state.get('file_path', '')
         file_pos = state.get('file_position', 0)
         layer_z = state.get('layer_z', 0.0)
@@ -563,6 +577,18 @@ class AFCPLR:
         for name, temp in ext_temps.items():
             if name.startswith('extruder') and temp > 0:
                 run("SET_HEATER_TEMPERATURE HEATER=%s TARGET=150" % name)
+
+        # 2b. Z-home only: gain clearance before homing XY. Real Z is unknown
+        # after a power loss, so fake it as 0 and raise — otherwise sensorless
+        # XY homing would drag the nozzle across the print at its last height.
+        if z_home and self.z_home_prelift > 0:
+            gcmd.respond_info(
+                "AFC_PLR: Z-home — lifting %.1fmm to clear print before homing XY"
+                % self.z_home_prelift)
+            run("SET_KINEMATIC_POSITION Z=0")
+            run("G91")
+            run("G1 Z%.3f F600" % self.z_home_prelift)
+            run("G90")
 
         # 3. Home XY only
         gcmd.respond_info("AFC_PLR: Homing XY")
@@ -606,15 +632,27 @@ class AFCPLR:
                     "AFC_PLR: Bed mesh profile '%s' not found, skipping"
                     % bed_mesh_profile)
 
-        # 4. Set Z position without homing — use layer_z (safe: at or below actual)
-        gcmd.respond_info("AFC_PLR: Setting Z position to %.3f (layer height)" % layer_z)
-        run("SET_KINEMATIC_POSITION Z=%.4f" % layer_z)
-
-        # 5. Z-hop for clearance
-        if self.resume_z_hop > 0:
-            run("G91")
-            run("G1 Z%.3f F600" % self.resume_z_hop)
+        # 4. Establish Z reference
+        if z_home:
+            # Physically re-home Z via the user's machine-specific macro, which
+            # must touch/probe at a SAFE spot (not over the print) and leave Z
+            # homed near the bed. This recovers a true Z zero instead of
+            # trusting the saved value.
+            gcmd.respond_info("AFC_PLR: Re-homing Z via z_home_gcode")
+            run(self.z_home_gcode)
+            # 5. Raise from the bed to print height + hop for safe travel.
             run("G90")
+            run("G1 Z%.3f F600" % (layer_z + self.resume_z_hop))
+        else:
+            # Set Z without homing — trust the saved layer_z (at or below the
+            # true print height, so the nozzle never starts below the surface).
+            gcmd.respond_info("AFC_PLR: Setting Z position to %.3f (layer height)" % layer_z)
+            run("SET_KINEMATIC_POSITION Z=%.4f" % layer_z)
+            # 5. Z-hop for clearance
+            if self.resume_z_hop > 0:
+                run("G91")
+                run("G1 Z%.3f F600" % self.resume_z_hop)
+                run("G90")
 
         # 6. Activate the saved extruder (tool is already on shuttle)
         current_ext = self.printer.lookup_object('toolhead').get_extruder()
@@ -720,15 +758,26 @@ class AFCPLR:
         the saved layer height, heats all extruders, primes the nozzle,
         and resumes printing from the saved file position.
 
+        Parameters
+        ----------
+        Z_HOME : int, optional
+            When 1, physically re-home Z via the configured ``z_home_gcode``
+            (touching at a safe spot) instead of trusting the saved Z.
+
         Usage
         -----
-        `AFC_PLR_RESUME`
+        `AFC_PLR_RESUME` or `AFC_PLR_RESUME Z_HOME=1`
         """
         self._close_prompt()
+        z_home = gcmd.get_int('Z_HOME', 0)
+        if z_home and not self.z_home_gcode:
+            raise gcmd.error(
+                "AFC_PLR: Z_HOME requested but no 'z_home_gcode' is configured "
+                "in [AFC_PLR]")
         state = self._load_state()
         if state is None:
             raise gcmd.error("No saved PLR state found at %s" % self.save_file)
-        self._resume_from_state(gcmd, state)
+        self._resume_from_state(gcmd, state, z_home=bool(z_home))
 
     def cmd_PLR_SAVE(self, gcmd):
         """
