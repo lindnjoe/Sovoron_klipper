@@ -1075,62 +1075,93 @@ class AFCPLR:
                 "with SAVE=1 to write it automatically" % offset)
 
     def _save_z_home_offset(self, gcmd, offset):
-        # Persist via AFC's config rewriter: updates the z_home_offset line in
-        # [AFC_PLR] in place if present, else writes it to AFC_auto_vars.cfg
-        # (which merges and takes precedence on the next restart).
+        # AFC's ConfigRewrite only scans the AFC folder (cfgloc), so it can't
+        # update an [AFC_PLR] kept elsewhere. Walk the whole config tree and
+        # rewrite the z_home_offset line wherever it lives; if there is no
+        # existing line, fall back to AFC's auto-vars store.
+        val = "%.4f" % offset
+        path = self._rewrite_config_value('AFC_PLR', 'z_home_offset', val)
+        if path:
+            gcmd.respond_info(
+                "AFC_PLR: saved 'z_home_offset: %s' in %s" % (val, path))
+            return
         afc = self._afc or self.printer.lookup_object('AFC', None)
         fn = getattr(afc, 'function', None) if afc is not None else None
-        if fn is None or not hasattr(fn, 'ConfigRewrite'):
-            gcmd.respond_info(
-                "AFC_PLR: AFC config rewriter unavailable (AFC object %s) — "
-                "add 'z_home_offset: %.4f' to [AFC_PLR] manually"
-                % ("found but no .function" if afc is not None
-                   else "not found", offset))
-            return
-        cfgloc = getattr(afc, 'cfgloc', '?')
-        in_place = self._zhome_key_location(cfgloc)
-        gcmd.respond_info(
-            "AFC_PLR: saving z_home_offset=%.4f via AFC rewriter "
-            "(config dir: %s)" % (offset, cfgloc))
-        try:
-            fn.ConfigRewrite('AFC_PLR', 'z_home_offset', "%.4f" % offset,
-                             "AFC_PLR z_home_offset calibration")
-        except Exception as e:
-            gcmd.respond_info(
-                "AFC_PLR: rewriter failed (%s) — add 'z_home_offset: %.4f' to "
-                "[AFC_PLR] manually" % (e, offset))
-            return
-        if in_place:
-            gcmd.respond_info(
-                "AFC_PLR: updated 'z_home_offset' in place at %s" % in_place)
-        else:
-            gcmd.respond_info(
-                "AFC_PLR: no unindented 'z_home_offset:' line found in any "
-                "[AFC_PLR] under %s, so it was written to AFC_auto_vars.cfg. "
-                "For in-place saves, add a top-level 'z_home_offset: 0.0' line "
-                "to your [AFC_PLR] section there." % cfgloc)
-
-    def _zhome_key_location(self, cfgloc):
-        # Return the path of a .cfg in cfgloc that has an unindented
-        # z_home_offset line inside an [AFC_PLR] section, else None — mirrors
-        # what ConfigRewrite matches, so we can report which path it took.
-        if not cfgloc or not os.path.isdir(cfgloc):
-            return None
-        sec = re.compile(r"^\[\s*AFC_PLR\s*\]")
-        for name in os.listdir(cfgloc):
-            if not name.endswith('.cfg'):
-                continue
-            path = os.path.join(cfgloc, name)
+        if fn is not None and hasattr(fn, 'ConfigRewrite'):
             try:
-                in_section = False
-                with open(path) as f:
-                    for line in f:
-                        if line.startswith('['):
-                            in_section = sec.match(line) is not None
-                        elif in_section and line.startswith('z_home_offset'):
-                            return path
-            except OSError:
-                continue
+                fn.ConfigRewrite('AFC_PLR', 'z_home_offset', val,
+                                 "AFC_PLR z_home_offset calibration")
+                gcmd.respond_info(
+                    "AFC_PLR: no existing z_home_offset line found — wrote it "
+                    "to AFC_auto_vars.cfg (merges on next restart)")
+                return
+            except Exception as e:
+                gcmd.respond_info("AFC_PLR: AFC rewriter error: %s" % e)
+        gcmd.respond_info(
+            "AFC_PLR: could not persist z_home_offset — add "
+            "'z_home_offset: %s' to [AFC_PLR] manually" % val)
+
+    def _config_roots(self):
+        # Directories that may hold config files: the printer config dir and
+        # the AFC config folder, de-duplicated.
+        roots = []
+        try:
+            cf = self.printer.get_start_args().get('config_file')
+            if cf:
+                roots.append(os.path.dirname(os.path.abspath(cf)))
+        except Exception:
+            pass
+        afc = self._afc or self.printer.lookup_object('AFC', None)
+        cfgloc = getattr(afc, 'cfgloc', None) if afc is not None else None
+        if cfgloc:
+            roots.append(os.path.abspath(cfgloc))
+        seen = set()
+        out = []
+        for r in roots:
+            if r and r not in seen and os.path.isdir(r):
+                seen.add(r)
+                out.append(r)
+        return out
+
+    def _rewrite_config_value(self, section, key, val):
+        # Find a .cfg in the config tree whose [section] holds a `key` line and
+        # rewrite it in place, preserving indentation and any trailing comment.
+        # Returns the file path on success, else None.
+        sec_re = re.compile(r"^\s*\[\s*%s\s*\]\s*$" % re.escape(section))
+        key_re = re.compile(r"^(\s*)%s\s*[:=]" % re.escape(key))
+        for root in self._config_roots():
+            for dirpath, _dirs, files in os.walk(root):
+                for name in sorted(files):
+                    if not name.endswith('.cfg'):
+                        continue
+                    fpath = os.path.join(dirpath, name)
+                    try:
+                        with open(fpath) as f:
+                            lines = f.readlines()
+                    except OSError:
+                        continue
+                    in_sec = False
+                    idx = None
+                    for i, line in enumerate(lines):
+                        if line.lstrip().startswith('['):
+                            in_sec = sec_re.match(line) is not None
+                            continue
+                        if in_sec and key_re.match(line):
+                            idx = i
+                            break
+                    if idx is None:
+                        continue
+                    indent = key_re.match(lines[idx]).group(1)
+                    comment = ''
+                    if '#' in lines[idx]:
+                        comment = '  ' + lines[idx][lines[idx].index('#'):].rstrip('\n')
+                    lines[idx] = "%s%s: %s%s\n" % (indent, key, val, comment)
+                    try:
+                        with open(fpath, 'w') as f:
+                            f.writelines(lines)
+                        return fpath
+                    except OSError:
+                        continue
         return None
 
     def cmd_PLR_SAVE(self, gcmd):
