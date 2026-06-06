@@ -141,6 +141,9 @@ class AFCPLR:
         self.gcode.register_command(
             'AFC_PLR_STATUS', self.cmd_PLR_STATUS,
             desc='Show PLR state info')
+        self.gcode.register_command(
+            'AFC_PLR_TEST_ZHOME', self.cmd_PLR_TEST_ZHOME,
+            desc='Dry-run the Z-home recovery sequence (no checkpoint/resume)')
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
@@ -811,6 +814,77 @@ class AFCPLR:
         if state is None:
             raise gcmd.error("No saved PLR state found at %s" % self.save_file)
         self._resume_from_state(gcmd, state, z_home=bool(z_home))
+
+    def cmd_PLR_TEST_ZHOME(self, gcmd):
+        """
+        Dry-run the Z-home recovery sequence on an empty bed.
+
+        Runs only the Z-recovery portion — pre-lift, ``G28 X Y``, the
+        configured ``z_home_gcode``, optional tool-offset apply, and a final
+        hop — then STOPS. No checkpoint is needed and no file is resumed, so
+        you can validate the safe touch spot and inspect the resulting Z
+        without power-cutting or air-printing.
+
+        Parameters
+        ----------
+        TOOL_OFFSET : float, optional
+            gcode Z offset to apply after the touch (default 0), to mimic a
+            specific tool and check the offset handling.
+        HOP : float, optional
+            mm to raise after establishing Z (default ``resume_z_hop``).
+
+        Usage
+        -----
+        `AFC_PLR_TEST_ZHOME` or `AFC_PLR_TEST_ZHOME TOOL_OFFSET=-0.2 HOP=10`
+        """
+        if not self.z_home_gcode:
+            raise gcmd.error(
+                "AFC_PLR: no 'z_home_gcode' is configured in [AFC_PLR]")
+        tool_off = gcmd.get_float('TOOL_OFFSET', 0.0)
+        hop = gcmd.get_float('HOP', self.resume_z_hop, minval=0.0)
+        run = self.gcode.run_script_from_command
+
+        gcmd.respond_info(
+            "AFC_PLR: TEST Z-home (dry run) — no file will be resumed")
+
+        # Pre-lift (fake Z=0 then raise) so sensorless XY homing can't drag.
+        if self.z_home_prelift > 0:
+            gcmd.respond_info(
+                "AFC_PLR: lifting %.1fmm (fake Z=0) before homing XY"
+                % self.z_home_prelift)
+            run("SET_KINEMATIC_POSITION Z=0")
+            run("G91")
+            run("G1 Z%.3f F600" % self.z_home_prelift)
+            run("G90")
+
+        gcmd.respond_info("AFC_PLR: homing XY")
+        run("G28 X Y")
+
+        gcmd.respond_info("AFC_PLR: running z_home_gcode")
+        run(self.z_home_gcode)
+
+        th = self.printer.lookup_object('toolhead')
+        z_after = th.get_position()[2]
+        gcmd.respond_info(
+            "AFC_PLR: Z after z_home_gcode = %.4f" % z_after)
+
+        if self.z_home_apply_tool_offset and tool_off:
+            new_z = z_after + tool_off
+            gcmd.respond_info(
+                "AFC_PLR: applying tool offset %.4f -> Z=%.4f"
+                % (tool_off, new_z))
+            run("SET_KINEMATIC_POSITION Z=%.4f" % new_z)
+
+        if hop > 0:
+            run("G91")
+            run("G1 Z%.3f F600" % hop)
+            run("G90")
+
+        final_z = th.get_position()[2]
+        gcmd.respond_info(
+            "AFC_PLR: TEST complete — Z after macro=%.4f, tool offset=%.4f, "
+            "final Z=%.4f. No file resumed."
+            % (z_after, tool_off, final_z))
 
     def cmd_PLR_SAVE(self, gcmd):
         """
