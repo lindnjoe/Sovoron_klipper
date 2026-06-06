@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -94,6 +95,14 @@ class AFCPLR:
         # absorb the bed-flatness delta between the safe touch corner and the
         # mesh zero-reference. Dial in once by live-babystepping a resume.
         self.z_home_offset = config.getfloat('z_home_offset', 0.0)
+        # AFC_PLR_CALIBRATE_ZHOME helpers. The anchor establishes Z=0 at the
+        # normal (center) reference; the probe touches in place and prints its
+        # result, which we capture from the console (cartographer doesn't
+        # expose the touch Z via get_status).
+        self.z_home_calibrate_anchor = config.get(
+            'z_home_calibrate_anchor', 'G28 Z')
+        self.z_home_calibrate_gcode = config.get(
+            'z_home_calibrate_gcode', '').strip()
         # Clearance to gain before homing XY in Z-home mode: fake the current
         # Z as 0 then raise this much so sensorless XY homing can't drag the
         # nozzle across the print (real Z after a power loss is unknown).
@@ -179,6 +188,9 @@ class AFCPLR:
         self.gcode.register_command(
             'AFC_PLR_TEST_ZHOME', self.cmd_PLR_TEST_ZHOME,
             desc='Dry-run the Z-home recovery sequence (no checkpoint/resume)')
+        self.gcode.register_command(
+            'AFC_PLR_CALIBRATE_ZHOME', self.cmd_PLR_CALIBRATE_ZHOME,
+            desc='Measure corner-vs-center touch delta and report z_home_offset')
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
@@ -951,6 +963,103 @@ class AFCPLR:
             "AFC_PLR: TEST complete — Z after re-home=%.4f, tool offset=%.4f, "
             "z_home_offset=%.4f, final Z=%.4f. No file resumed."
             % (z_after, tool_off, self.z_home_offset, final_z))
+
+    def _capture_touch_z(self, gcmd, touch_gcode):
+        # Run a touch and scrape its Z result from the console — cartographer's
+        # touch stores the value internally and does not expose it via
+        # get_status, so capturing the response line is the only way to read it.
+        captured = []
+        handler = captured.append
+        self.gcode.register_output_handler(handler)
+        try:
+            self.gcode.run_script_from_command(touch_gcode)
+        finally:
+            try:
+                self.gcode.output_callbacks.remove(handler)
+            except (ValueError, AttributeError):
+                pass
+        primary = re.compile(r'estimate contact at z\s*=\s*(-?\d+(?:\.\d+)?)')
+        fallback = re.compile(r'\bz\s*=\s*(-?\d+(?:\.\d+)?)')
+        val = None
+        for msg in captured:
+            for m in primary.finditer(msg):
+                val = float(m.group(1))
+        if val is None:
+            for msg in captured:
+                for m in fallback.finditer(msg):
+                    val = float(m.group(1))
+        if val is None:
+            raise gcmd.error(
+                "AFC_PLR: could not parse a touch Z from '%s' output"
+                % touch_gcode)
+        return val
+
+    def cmd_PLR_CALIBRATE_ZHOME(self, gcmd):
+        """
+        Measure the corner-vs-center touch delta and report z_home_offset.
+
+        Anchors Z at the normal (center) reference via z_home_calibrate_anchor
+        (default ``G28 Z``), then touch-probes the safe corner (z_home_x/y)
+        with z_home_calibrate_gcode and reads the result from the console. The
+        corner's height in that center-anchored frame is exactly the delta, so
+        the suggested z_home_offset is its negative.
+
+        Parameters
+        ----------
+        CLEAR_MESH : int, optional (default 1)
+            BED_MESH_CLEAR first so touches read raw bed, not mesh-compensated.
+        APPLY : int, optional (default 0)
+            Apply the measured value to z_home_offset for this session (still
+            add it to [AFC_PLR] to persist across restarts).
+
+        Usage
+        -----
+        `AFC_PLR_CALIBRATE_ZHOME` or `AFC_PLR_CALIBRATE_ZHOME APPLY=1`
+        """
+        if not self.z_home_calibrate_gcode:
+            raise gcmd.error(
+                "AFC_PLR: set z_home_calibrate_gcode in [AFC_PLR] (e.g. "
+                "CARTOGRAPHER_TOUCH_PROBE)")
+        if self.z_home_x is None or self.z_home_y is None:
+            raise gcmd.error("AFC_PLR: set z_home_x / z_home_y in [AFC_PLR]")
+        clear_mesh = gcmd.get_int('CLEAR_MESH', 1)
+        apply_now = gcmd.get_int('APPLY', 0)
+        run = self.gcode.run_script_from_command
+        th = self.printer.lookup_object('toolhead')
+
+        if 'z' not in th.get_status(self.reactor.monotonic())['homed_axes']:
+            gcmd.respond_info("AFC_PLR: homing first")
+            run("G28")
+        if clear_mesh:
+            run("BED_MESH_CLEAR")
+
+        # Anchor Z=0 at the normal center reference.
+        gcmd.respond_info(
+            "AFC_PLR: anchoring Z at center via '%s'"
+            % self.z_home_calibrate_anchor)
+        run(self.z_home_calibrate_anchor)
+
+        # Touch-probe the safe corner in that frame.
+        run("G90")
+        run("G0 X%.3f Y%.3f F12000" % (self.z_home_x, self.z_home_y))
+        gcmd.respond_info(
+            "AFC_PLR: touch-probing corner (%.1f, %.1f)"
+            % (self.z_home_x, self.z_home_y))
+        corner_z = self._capture_touch_z(gcmd, self.z_home_calibrate_gcode)
+
+        offset = round(-corner_z, 4)
+        gcmd.respond_info(
+            "AFC_PLR: corner touch z=%.4f (center-anchored) -> "
+            "suggested z_home_offset: %.4f" % (corner_z, offset))
+        if apply_now:
+            self.z_home_offset = offset
+            gcmd.respond_info(
+                "AFC_PLR: z_home_offset set to %.4f for this session — add "
+                "'z_home_offset: %.4f' to [AFC_PLR] to persist" % (offset, offset))
+        else:
+            gcmd.respond_info(
+                "AFC_PLR: add 'z_home_offset: %.4f' to [AFC_PLR] (or re-run "
+                "with APPLY=1)" % offset)
 
     def cmd_PLR_SAVE(self, gcmd):
         """
