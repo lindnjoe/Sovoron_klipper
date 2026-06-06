@@ -48,7 +48,14 @@ class AveragedSensorlessHome:
         # a millimetre. Anything larger means a false/early stall trigger, so
         # reject it and keep the plain G28 home rather than shift the frame.
         self.max_correction = config.getfloat('max_correction', 0.5, above=0.)
-        self.retract = config.getfloat('retract', 10.0, above=0.)
+        # A valid stall lands at the stop (~position_endstop). A trigger farther
+        # than this from the endstop is a low-speed false trip during the
+        # run-up and is discarded (it never enters the average).
+        self.max_trigger_dist = config.getfloat('max_trigger_dist', 2.0, above=0.)
+        # Run-up: back off this far after each trigger so the motor unloads and
+        # reaches a clean SG-valid speed before the next contact. Too short and
+        # it re-trips at the start; 40-60mm is a good range.
+        self.retract = config.getfloat('retract', 40.0, above=0.)
         self.overshoot = config.getfloat('overshoot', 3.0, above=0.)
         self.probe_speed = config.getfloat('probe_speed', 0., minval=0.)
         self.retract_speed = config.getfloat('retract_speed', 40.0, above=0.)
@@ -120,7 +127,16 @@ class AveragedSensorlessHome:
             finally:
                 if saved_limit is not None:
                     kin.limits[axis] = saved_limit
-            samples_list.append(epos[axis])
+            trig = epos[axis]
+            # Discard a low-speed false trip during the run-up (it lands far
+            # from the stop instead of at it).
+            if abs(trig - endstop_pos) > self.max_trigger_dist:
+                gcmd.respond_info(
+                    "AVERAGED_SENSORLESS_HOME: probe %d false trigger "
+                    "(%.3f, %.1fmm from endstop) — discarded"
+                    % (n + 1, trig, abs(trig - endstop_pos)))
+                continue
+            samples_list.append(trig)
             if len(samples_list) >= samples:
                 window = samples_list[-samples:]
                 if max(window) - min(window) <= tolerance:
