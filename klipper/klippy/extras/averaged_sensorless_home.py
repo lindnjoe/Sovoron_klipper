@@ -59,7 +59,9 @@ class AveragedSensorlessHome:
         self.overshoot = config.getfloat('overshoot', 3.0, above=0.)
         self.probe_speed = config.getfloat('probe_speed', 0., minval=0.)
         self.retract_speed = config.getfloat('retract_speed', 40.0, above=0.)
-        self.settle = config.getfloat('settle', 0.1, minval=0.)
+        # Real-time pause after the retract (with the motor fully stopped) so
+        # stallguard / the TMC homing registers recover before the next probe.
+        self.settle = config.getfloat('settle', 0.5, minval=0.)
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command(
             'AVERAGED_SENSORLESS_HOME', self.cmd_AVERAGED_SENSORLESS_HOME,
@@ -105,8 +107,14 @@ class AveragedSensorlessHome:
         for n in range(max_samples):
             # Absolute start each time so a failed probe can't walk the axis.
             self._move_to(toolhead, axis, start_pos, self.retract_speed)
+            # M400: ensure the retract has fully completed and the motor has
+            # stopped, then a real-time settle so stallguard re-arms cleanly
+            # between back-to-back probes (the root of the alternating
+            # false-trigger / no-trigger pattern).
+            toolhead.wait_moves()
             if self.settle:
                 toolhead.dwell(self.settle)
+                toolhead.wait_moves()
             movepos = list(toolhead.get_position())
             movepos[axis] = target_pos
             saved_limit = None
