@@ -279,6 +279,28 @@ def color_name(hex_str: str) -> str:
     return best_name
 
 
+def color_label(colors) -> str:
+    """Human-readable label for one or more hex colours.
+
+    Single colour -> 'Pale Muted Rose #e7c1d5'.
+    Dual/multi    -> 'Pale Muted Rose #e7c1d5 + Bisque #ffe9c9' (dual-colour).
+    Accepts a single hex string or a list of hex strings.
+    """
+    if isinstance(colors, str):
+        colors = [colors] if colors else []
+    parts = []
+    for c in colors:
+        c = (c or "").lstrip("#").lower()
+        if not c:
+            continue
+        nm = color_name(c)
+        parts.append(f"{nm} #{c}" if nm else f"#{c}")
+    label = " + ".join(parts)
+    if len(parts) > 1:
+        label += " (dual-colour)" if len(parts) == 2 else " (multi-colour)"
+    return label
+
+
 def color_distance(hex1: str, hex2: str) -> float:
     """Euclidean RGB distance between two hex color strings."""
     r1, g1, b1 = int(hex1[0:2], 16), int(hex1[2:4], 16), int(hex1[4:6], 16)
