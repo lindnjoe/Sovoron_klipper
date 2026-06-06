@@ -1327,10 +1327,12 @@ class afcAMS(afcUnit):
             # back as the spool motor rewinds. Uses the configured
             # tool_stn_unload (falls back to 20mm if it's unset).
             concurrent_retract = retract_dist if retract_dist and retract_dist > 0 else 20.0
+            concurrent_speed = getattr(
+                cur_lane.extruder_obj, 'tool_unload_speed', 25.0) * 60.0
             try:
                 self.afc.gcode.run_script_from_command("M83")
                 self.afc.gcode.run_script_from_command(
-                    "G1 E-%.2f F1500" % concurrent_retract)
+                    "G1 E-%.2f F%d" % (concurrent_retract, int(concurrent_speed)))
             except Exception as e:
                 self.logger.warning(f"Concurrent retract failed: {e}")
 
