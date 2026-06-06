@@ -84,6 +84,11 @@ class AFCPLR:
         # Z as 0 then raise this much so sensorless XY homing can't drag the
         # nozzle across the print (real Z after a power loss is unknown).
         self.z_home_prelift = config.getfloat('z_home_prelift', 5.0, minval=0.0)
+        # After a Z-home touch, re-apply the saved active tool's gcode Z offset
+        # so multi-tool resumes land at the right height without per-tool macro
+        # logic. Disable if your z_home_gcode already applies the offset.
+        self.z_home_apply_tool_offset = config.getboolean(
+            'z_home_apply_tool_offset', True)
         save_file = config.get('save_file', '')
         self._config_save_file = save_file
 
@@ -366,6 +371,22 @@ class AFCPLR:
             state['toolhead_position'] = list(toolhead.get_position())
             state['active_extruder'] = toolhead.get_extruder().get_name()
 
+        # Active tool's gcode Z offset, captured now while the toolchanger
+        # still knows which tool is mounted. On a Z-home resume we re-apply
+        # this after the touch so the resumed tool lands at the right height
+        # even though the toolchanger isn't re-initialized after a restart.
+        state['active_tool_z_offset'] = 0.0
+        for _, tc in self.printer.lookup_objects('AFC_Toolchanger'):
+            try:
+                tcs = tc.get_status(self.reactor.monotonic())
+                if tcs.get('tool') is not None:
+                    state['active_tool_z_offset'] = tcs.get(
+                        'active_tool_gcode_z_offset', 0.0)
+                    state['active_tool'] = tcs.get('tool')
+                    break
+            except Exception:
+                pass
+
         if self._afc is not None:
             cur_lane = getattr(self._afc, 'current', None)
             state['current_lane'] = cur_lane
@@ -640,6 +661,18 @@ class AFCPLR:
             # trusting the saved value.
             gcmd.respond_info("AFC_PLR: Re-homing Z via z_home_gcode")
             run(self.z_home_gcode)
+            # 4b. Re-apply the active tool's saved Z offset (the touch homes a
+            # shared reference; this corrects for the specific tool mounted),
+            # mirroring _ADJUST_Z_POSITION_WITH_TOOL_OFFSET but using the saved
+            # value since the toolchanger isn't re-initialized after a restart.
+            tool_z_off = state.get('active_tool_z_offset', 0.0)
+            if self.z_home_apply_tool_offset and tool_z_off:
+                th = self.printer.lookup_object('toolhead')
+                cur_z = th.get_position()[2]
+                gcmd.respond_info(
+                    "AFC_PLR: Applying tool %s Z offset %.4f"
+                    % (state.get('active_tool', '?'), tool_z_off))
+                run("SET_KINEMATIC_POSITION Z=%.4f" % (cur_z + tool_z_off))
             # 5. Raise from the bed to print height + hop for safe travel.
             run("G90")
             run("G1 Z%.3f F600" % (layer_z + self.resume_z_hop))
