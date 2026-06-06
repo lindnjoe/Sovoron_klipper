@@ -120,6 +120,11 @@ class AFCPLR:
         # absorb the bed-flatness delta between the safe touch corner and the
         # mesh zero-reference. Dial in once by live-babystepping a resume.
         self.z_home_offset = config.getfloat('z_home_offset', 0.0)
+        # Fixed XY trim applied on every resume via SET_GCODE_OFFSET, to absorb
+        # the small consistent shift between the original print's home and the
+        # independent re-home done at resume. Dial in by editing and re-testing.
+        self.resume_x_offset = config.getfloat('resume_x_offset', 0.0)
+        self.resume_y_offset = config.getfloat('resume_y_offset', 0.0)
         # AFC_PLR_CALIBRATE_ZHOME helpers. The anchor establishes Z=0 at the
         # normal (center) reference; the probe touches in place and prints its
         # result, which we capture from the console (cartographer doesn't
@@ -869,6 +874,7 @@ class AFCPLR:
             "  Pressure adv:    %s\n"
             "  Input shaper:    %s\n"
             "  Feedrate:        %s mm/min\n"
+            "  XY recov offset: X=%.4f Y=%.4f\n"
             "  Coord / Extrude: %s / %s"
             % (os.path.basename(state.get('file_path', '')),
                state.get('file_position', 0), state.get('bed_temp', 0),
@@ -880,6 +886,7 @@ class AFCPLR:
                int(state.get('extrude_factor', 1.0) * 100),
                fmt(state.get('pressure_advance', {}), "%s=%.4f"), is_desc,
                int(feed_rate) if feed_rate else "unchanged",
+               self.resume_x_offset, self.resume_y_offset,
                "abs" if state.get('absolute_coord', True) else "rel",
                "abs" if state.get('absolute_extrude', True) else "rel"))
 
@@ -968,6 +975,15 @@ class AFCPLR:
                 gcmd.respond_info(
                     "AFC_PLR: Bed mesh profile '%s' not found, skipping"
                     % bed_mesh_profile)
+
+        # 3c. Apply the configured XY recovery trim (corrects the consistent
+        # shift between the original home and the resume re-home).
+        if self.resume_x_offset or self.resume_y_offset:
+            gcmd.respond_info(
+                "AFC_PLR: applying XY recovery offset X=%.4f Y=%.4f"
+                % (self.resume_x_offset, self.resume_y_offset))
+            run("SET_GCODE_OFFSET X_ADJUST=%.4f Y_ADJUST=%.4f MOVE=0"
+                % (self.resume_x_offset, self.resume_y_offset))
 
         # 4. Establish Z reference
         if z_home:
