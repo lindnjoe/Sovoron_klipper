@@ -35,7 +35,7 @@
 #
 #   [AFC_PLR]
 #   enabled: True                    # Enable/disable PLR
-#   save_interval: 30                # Seconds between periodic saves
+#   save_interval: 30                # Seconds between periodic saves (min 1)
 #   z_check_interval: 1.0            # Seconds between Z position checks
 #   resume_z_hop: 5.0                # mm to raise Z during resume
 #   pre_resume_purge_length: 30      # mm of filament to purge on resume
@@ -69,7 +69,7 @@ class AFCPLR:
         self.logger = logging.getLogger('AFC_PLR')
 
         self.enabled = config.getboolean('enabled', True)
-        self.save_interval = config.getfloat('save_interval', 30.0, minval=5.0)
+        self.save_interval = config.getfloat('save_interval', 30.0, minval=1.0)
         self.z_check_interval = config.getfloat('z_check_interval', 1.0, minval=0.5)
         self.resume_z_hop = config.getfloat('resume_z_hop', 5.0, minval=0.0)
         self.purge_length = config.getfloat('pre_resume_purge_length', 30.0, minval=0.0)
@@ -169,6 +169,12 @@ class AFCPLR:
         self._last_save_time = 0.0
         self._timer = None
         self._has_saved_state = False
+        # Cache the serialized bed mesh — it's static during a print, so we
+        # avoid re-reading 900+ probe points and rebuilding the dict on every
+        # checkpoint. Keyed on the ZMesh object identity; refreshed only if the
+        # mesh actually changes.
+        self._mesh_cache_obj = None
+        self._mesh_cache_data = None
 
         self._sd = None
         self._gcode_move = None
@@ -410,6 +416,8 @@ class AFCPLR:
         self.layer_z = self._get_current_z()
         self._pending_layer_z = None
         self._z_up_ticks = 0
+        self._mesh_cache_obj = None     # re-capture the mesh for the new print
+        self._mesh_cache_data = None
         self._last_save_time = self.reactor.monotonic()
         self.reactor.update_timer(
             self._timer, self.reactor.monotonic() + self.z_check_interval)
@@ -560,12 +568,23 @@ class AFCPLR:
         bed_mesh = self.printer.lookup_object('bed_mesh', None)
         if bed_mesh is not None:
             z_mesh = bed_mesh.get_mesh()
-            if z_mesh is not None:
-                state['bed_mesh_profile'] = z_mesh.get_profile_name()
-                state['bed_mesh_points'] = z_mesh.get_probed_matrix()
-                state['bed_mesh_params'] = dict(z_mesh.get_mesh_params())
-            else:
+            if z_mesh is None:
                 state['bed_mesh_profile'] = ''
+                self._mesh_cache_obj = None
+                self._mesh_cache_data = None
+            elif z_mesh is self._mesh_cache_obj and self._mesh_cache_data:
+                # Unchanged since the last checkpoint — reuse the serialization
+                # instead of re-reading the probe matrix every save.
+                state.update(self._mesh_cache_data)
+            else:
+                data = {
+                    'bed_mesh_profile': z_mesh.get_profile_name(),
+                    'bed_mesh_points': z_mesh.get_probed_matrix(),
+                    'bed_mesh_params': dict(z_mesh.get_mesh_params()),
+                }
+                state.update(data)
+                self._mesh_cache_obj = z_mesh
+                self._mesh_cache_data = data
 
         state['fan_speeds'] = {}
         fan = self.printer.lookup_object('fan', None)
