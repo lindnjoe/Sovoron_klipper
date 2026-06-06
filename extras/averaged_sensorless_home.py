@@ -44,6 +44,10 @@ class AveragedSensorlessHome:
             raise config.error(
                 "averaged_sensorless_home: max_samples must be >= samples")
         self.tolerance = config.getfloat('tolerance', 0.05, above=0.)
+        # Hard safety clamp: a real sensorless scatter correction is well under
+        # a millimetre. Anything larger means a false/early stall trigger, so
+        # reject it and keep the plain G28 home rather than shift the frame.
+        self.max_correction = config.getfloat('max_correction', 0.5, above=0.)
         self.retract = config.getfloat('retract', 10.0, above=0.)
         self.overshoot = config.getfloat('overshoot', 3.0, above=0.)
         self.probe_speed = config.getfloat('probe_speed', 0., minval=0.)
@@ -135,6 +139,14 @@ class AveragedSensorlessHome:
 
         avg = sum(accepted) / len(accepted)
         correction = endstop_pos - avg
+        if abs(correction) > self.max_correction:
+            gcmd.respond_info(
+                "AVERAGED_SENSORLESS_HOME %s: correction %.3f exceeds "
+                "max_correction %.3f — almost certainly a false/early stall "
+                "trigger. Keeping the single G28 home (NOT shifting the frame)."
+                % (axis_name, correction, self.max_correction))
+            self._move_to(toolhead, axis, start_pos, self.retract_speed)
+            return
         pos = list(toolhead.get_position())
         pos[axis] += correction
         toolhead.set_position(pos)
