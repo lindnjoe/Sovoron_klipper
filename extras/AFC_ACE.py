@@ -179,6 +179,11 @@ class afcACE(afcUnit):
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         # Reconcile feed assist to the active lane on every tool load.
         self.printer.register_event_handler("afc:tool_loaded", self._handle_tool_loaded)
+        # A tool pickup activates that tool's extruder without necessarily
+        # firing afc:tool_loaded (the lane is already loaded), so also reconcile
+        # assist whenever the active extruder changes — works in both modes.
+        self.printer.register_event_handler(
+            "extruder:activate_extruder", self._handle_extruder_activated)
 
     def _handle_tool_loaded(self, lane):
         # Resolve the active lane name. The payload is usually the loaded
@@ -1445,6 +1450,27 @@ class afcACE(afcUnit):
                     f"{attempts} attempts: {e}")
             except Exception as e:
                 self.logger.error(f"Failed to stop feed assist slot {slot}: {e}")
+                return
+
+    def _handle_extruder_activated(self):
+        # A tool pickup (e.g. grabbing the probe tool during print start)
+        # activates that tool's extruder. If one of our lanes is already loaded
+        # on the now-active extruder, switch feed assist to it. Mode-agnostic:
+        # keys off the active toolhead extruder, not afc.current or the payload.
+        try:
+            active_ext = self.printer.lookup_object(
+                'toolhead').get_extruder().get_name()
+        except Exception:
+            return
+        for lane in self.lanes.values():
+            ext_obj = getattr(lane, 'extruder_obj', None)
+            if (ext_obj is not None
+                    and getattr(ext_obj, 'name', None) == active_ext
+                    and getattr(lane, 'tool_loaded', False)
+                    and getattr(ext_obj, 'lane_loaded', None) == lane.name):
+                if self._use_feed_assist(lane):
+                    self.afc.reactor.register_callback(
+                        lambda et, n=lane.name: self._reconcile_feed_assist(n))
                 return
 
     def _wait_for_ace_ready(self, timeout=30.0):
