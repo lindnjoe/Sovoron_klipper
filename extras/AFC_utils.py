@@ -608,7 +608,8 @@ class AFC_moonraker:
     def create_filament(self, name, vendor_id=None, material=None, density=None,
                         diameter=None, color_hex=None, settings_extruder_temp=None,
                         settings_bed_temp=None, weight=None, spool_weight=None,
-                        article_number=None):
+                        article_number=None, multi_color_hexes=None,
+                        multi_color_direction=None):
         """
         Create a new filament entry in Spoolman.
 
@@ -631,6 +632,16 @@ class AFC_moonraker:
         if density is not None: data["density"] = density
         if diameter is not None: data["diameter"] = diameter
         if color_hex is not None: data["color_hex"] = color_hex.lstrip("#")
+        # Multi-colour spools: Spoolman stores a comma-separated list of hexes
+        # plus a direction ("coaxial" = coextruded, or "longitudinal"). When
+        # multi is set, color_hex is omitted (Spoolman uses one or the other).
+        if multi_color_hexes:
+            data.pop("color_hex", None)
+            data["multi_color_hexes"] = ",".join(
+                c.lstrip("#") for c in multi_color_hexes) \
+                if isinstance(multi_color_hexes, (list, tuple)) \
+                else multi_color_hexes
+            data["multi_color_direction"] = multi_color_direction or "coaxial"
         if settings_extruder_temp is not None: data["settings_extruder_temp"] = settings_extruder_temp
         if settings_bed_temp is not None: data["settings_bed_temp"] = settings_bed_temp
         if weight is not None: data["weight"] = weight

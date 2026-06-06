@@ -308,6 +308,30 @@ def color_distance(hex1: str, hex2: str) -> float:
     return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
 
+def colors_match(scanned, candidate, tol=0.0) -> bool:
+    """True if two colour lists are the same set within ``tol`` (order-free).
+
+    Used for exact spool identity: a single-colour [a] only matches [a], a
+    dual-colour [a,b] only matches another [a,b] (either order). tol=0 = exact.
+    """
+    if len(scanned) != len(candidate):
+        return False
+    remaining = list(candidate)
+    for c in scanned:
+        hit = None
+        for i, d in enumerate(remaining):
+            try:
+                if color_distance(c, d) <= tol:
+                    hit = i
+                    break
+            except (ValueError, IndexError):
+                continue
+        if hit is None:
+            return False
+        remaining.pop(hit)
+    return True
+
+
 def density_for_material(material: str) -> float:
     """Return Spoolman density (g/cm^3) for a material string.
     Strips spaces, dashes, underscores so 'PLA-CF', 'pla cf', 'pla_cf'
@@ -463,6 +487,11 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
     brand = slot_info.get("brand", "")
     material = slot_info.get("material", "")
     color_hex = slot_info.get("color_hex", "") or None
+    # All colours the tag carries (dual/multi-colour spools have >1). Used for
+    # exact identity so a spool only matches a filament with the same colours.
+    multi_color = slot_info.get("multi_color") or ([color_hex] if color_hex else [])
+    scanned_colors = [c.lstrip("#").lower() for c in multi_color if c]
+    is_multi = len(scanned_colors) > 1
     diameter = slot_info.get("diameter", 1.75)
     ext_temp = slot_info.get("extruder_temp")
     bed_temp = slot_info.get("bed_temp")
@@ -510,18 +539,28 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                 if brand and f_vendor == brand.strip().lower():
                     score += 3
 
+                # Candidate's colour set (multi-colour aware).
+                f_multi = (f.get("multi_color_hexes") or "").strip()
+                if f_multi:
+                    f_colors = [c.strip().lstrip("#").lower()
+                                for c in f_multi.split(",") if c.strip()]
+                elif f_color:
+                    f_colors = [f_color]
+                else:
+                    f_colors = []
+
                 cdist = float('inf')
-                if color_hex and f_color and len(f_color) >= 6:
-                    cdist = color_distance(
-                        color_hex.strip().lower(), f_color[:6])
-                    if cdist <= COLOR_MATCH_TOLERANCE:
+                if scanned_colors and f_colors:
+                    if colors_match(scanned_colors, f_colors,
+                                    COLOR_MATCH_TOLERANCE):
                         score += 5
+                        cdist = 0.0
                     else:
-                        # Different colour = different filament. Never collapse
-                        # a slightly-off colour onto this spool — skip it so a
-                        # new (correctly coloured) filament/spool is used.
+                        # Different colour(s) = different filament. Never
+                        # collapse a slightly-off or differently-coloured spool
+                        # onto this one (also keeps dual-colour spools distinct).
                         continue
-                elif color_hex and not f_color:
+                elif scanned_colors and not f_colors:
                     score -= 3
 
                 if diameter and f_diameter is not None:
@@ -561,7 +600,9 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                 material=material or None,
                 density=density_for_material(material),
                 diameter=diameter,
-                color_hex=color_hex,
+                # Single -> color_hex; dual/multi -> multi_color_hexes (coaxial).
+                color_hex=color_hex if not is_multi else None,
+                multi_color_hexes=scanned_colors if is_multi else None,
                 settings_extruder_temp=ext_temp,
                 settings_bed_temp=bed_temp,
                 weight=default_filament_weight,
