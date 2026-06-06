@@ -1149,12 +1149,35 @@ class afcAMS(afcUnit):
         # auto-unload "OAMS is busy". Query the hardware directly (the spool
         # query IS answered even when load is not) and treat an
         # already-loaded spool as a successful load.
+        #
+        # determine_current_spool() queries the firmware, which reports a bay
+        # from its feeder (f1s) sensor. On insertion the OpenAMS hardware
+        # auto-stages filament (loads to the hub sensor, then backs off), so a
+        # freshly inserted-but-staged spool ALSO makes the query report that
+        # bay even though nothing is loaded through to the toolhead. Require
+        # the hub sensor for that bay to confirm filament is held past the hub
+        # (is_bay_loaded) before short-circuiting: a staged spool reads hub=0
+        # after backoff, while a spool genuinely loaded to the toolhead holds
+        # hub=1. Without this, a staged spool is mistaken for already-loaded
+        # and the real load is skipped (transport completes instantly, the
+        # toolhead sensor never sees filament, engagement verification pauses).
         hw_spool = None
         try:
             hw_spool = self.oams.determine_current_spool()
         except Exception as e:
             self.logger.debug(f"Could not query OAMS current spool: {e}")
+        hub_loaded = False
         if hw_spool is not None and hw_spool == spool_index:
+            try:
+                hub_loaded = bool(self.oams.is_bay_loaded(spool_index))
+            except Exception:
+                hub_loaded = False
+            if not hub_loaded:
+                self.logger.info(
+                    f"OAMS reports spool {spool_index} staged at feeder but "
+                    f"hub sensor not engaged for {cur_lane.name}; treating as "
+                    f"not loaded and running a real load")
+        if hw_spool is not None and hw_spool == spool_index and hub_loaded:
             self.logger.info(
                 f"OAMS spool {spool_index} already loaded in hardware "
                 f"(firmware current_spool={hw_spool}); skipping redundant "
