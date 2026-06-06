@@ -365,7 +365,9 @@ class afcACE(afcUnit):
                         # status stays NONE and this restore block re-fires on
                         # every hardware poll (log spam / wasted work).
                         lane.status = AFCLaneState.TOOLED
-                    if self._use_feed_assist(lane) and self.afc.current == lane.name:
+                    if self._use_feed_assist(lane) and (
+                            self.afc.current == lane.name
+                            or self._on_active_toolhead(lane)):
                         self._start_feed_assist(slot)
                 else:
                     if lane.name in self._hub_load_suppressed:
@@ -408,6 +410,20 @@ class afcACE(afcUnit):
         if fa is not None:
             return fa
         return self._default_feed_assist
+
+    def _on_active_toolhead(self, cur_lane) -> bool:
+        """True when this lane's extruder is the one currently mounted on the
+        shuttle (the active toolhead extruder). Lets startup enable feed assist
+        for a lane already on the shuttle, even before afc.current is set to
+        it (a toolchanger doesn't restore afc.current at prep time)."""
+        try:
+            ext_obj = getattr(cur_lane, 'extruder_obj', None)
+            if ext_obj is None:
+                return False
+            th_ext = self.printer.lookup_object('toolhead').get_extruder()
+            return th_ext is not None and th_ext.get_name() == ext_obj.name
+        except Exception:
+            return False
 
     def _get_slot(self, lane_name: str) -> int:
         return self._slot_map.get(lane_name, 0)
@@ -824,8 +840,12 @@ class afcACE(afcUnit):
                         else:
                             self.lane_tool_loaded_idle(cur_lane)
 
-                        # Start feed assist only for the active lane
-                        if self._use_feed_assist(cur_lane) and self.afc.current == cur_lane.name:
+                        # Start feed assist for the active lane, or for a lane
+                        # already on the shuttle at startup (its extruder is the
+                        # active toolhead) even before afc.current is set to it.
+                        if self._use_feed_assist(cur_lane) and (
+                                self.afc.current == cur_lane.name
+                                or self._on_active_toolhead(cur_lane)):
                             self._start_feed_assist(slot)
 
         if assignTcmd:
