@@ -443,6 +443,7 @@ class AFCPLR:
 
         state['extruder_temps'] = {}
         state['pressure_advance'] = {}
+        state['pa_smooth_time'] = {}
         pheaters = self.printer.lookup_object('heaters', None)
         if pheaters is not None:
             for name in pheaters.available_heaters:
@@ -452,8 +453,11 @@ class AFCPLR:
                     ext = self.printer.lookup_object(name, None)
                     if ext is not None and hasattr(ext, 'get_status'):
                         es = ext.get_status(self.reactor.monotonic())
-                        pa = es.get('pressure_advance', 0.0)
-                        state['pressure_advance'][name] = pa
+                        state['pressure_advance'][name] = es.get(
+                            'pressure_advance', 0.0)
+                        st = es.get('smooth_time', None)
+                        if st is not None:
+                            state['pa_smooth_time'][name] = st
 
         if self._heater_bed is not None:
             state['bed_temp'] = self._heater_bed.get_status(
@@ -817,11 +821,16 @@ class AFCPLR:
         run("M220 S%d" % int(speed_factor * 100))
         run("M221 S%d" % int(extrude_factor * 100))
 
-        # 13. Restore pressure advance
+        # 13. Restore pressure advance (and smooth time) per extruder. Restore
+        # unconditionally — the saved value is the real state at checkpoint, so
+        # an explicit 0 must win over any non-zero [extruder] config default.
+        pa_smooth = state.get('pa_smooth_time', {})
         for name, pa in pa_values.items():
-            if pa > 0:
-                run("SET_PRESSURE_ADVANCE EXTRUDER=%s ADVANCE=%.4f"
-                    % (name, pa))
+            cmd = "SET_PRESSURE_ADVANCE EXTRUDER=%s ADVANCE=%.4f" % (name, pa)
+            st = pa_smooth.get(name)
+            if st is not None:
+                cmd += " SMOOTH_TIME=%.4f" % st
+            run(cmd)
 
         # 14. Restore coordinate mode
         run("G90" if absolute_coord else "G91")
