@@ -1393,24 +1393,59 @@ class afcACE(afcUnit):
     def _start_feed_assist(self, slot: int):
         if slot in self._feed_assist_active:
             return
-        if self._ace and self._ace.connected:
+        if not (self._ace and self._ace.connected):
+            return
+        # The ACE is single-threaded; a momentary firmware/serial hiccup can
+        # push the ACK past the 2s command timeout. start_feed_assist is
+        # idempotent (re-enabling an already-on slot is a no-op), so retry on
+        # timeout instead of silently leaving the loaded lane with assist OFF.
+        attempts = 3
+        for attempt in range(1, attempts + 1):
             try:
                 self._wait_for_ace_ready()
                 self._ace.start_feed_assist(slot)
                 self._feed_assist_active.add(slot)
+                return
+            except ACETimeoutError as e:
+                if attempt < attempts:
+                    self.logger.debug(
+                        f"start feed assist slot {slot} timed out "
+                        f"(attempt {attempt}/{attempts}), retrying: {e}")
+                    continue
+                self.logger.error(
+                    f"Failed to start feed assist slot {slot} after "
+                    f"{attempts} attempts: {e}")
             except Exception as e:
                 self.logger.error(f"Failed to start feed assist slot {slot}: {e}")
+                return
 
     def _stop_feed_assist(self, slot: int):
         if slot not in self._feed_assist_active:
             return
-        if self._ace and self._ace.connected:
+        if not (self._ace and self._ace.connected):
+            return
+        # Retry on timeout for the same reason as start: a late ACK shouldn't
+        # leave us believing assist is still running on a slot we meant to
+        # stop. stop_feed_assist is idempotent too.
+        attempts = 3
+        for attempt in range(1, attempts + 1):
             try:
                 self._wait_for_ace_ready()
                 self._ace.stop_feed_assist_sync(slot)
                 self._feed_assist_active.discard(slot)
+                return
+            except ACETimeoutError as e:
+                if attempt < attempts:
+                    self.logger.debug(
+                        f"stop feed assist slot {slot} timed out "
+                        f"(attempt {attempt}/{attempts}), retrying: {e}")
+                    continue
+                self.logger.error(
+                    f"Failed to stop feed assist slot {slot} after "
+                    f"{attempts} attempts: {e}")
             except Exception as e:
                 self.logger.error(f"Failed to stop feed assist slot {slot}: {e}")
+                return
 
     def _wait_for_ace_ready(self, timeout=30.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
