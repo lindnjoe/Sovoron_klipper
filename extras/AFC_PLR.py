@@ -35,8 +35,12 @@
 #
 #   [AFC_PLR]
 #   enabled: True                    # Enable/disable PLR
-#   save_interval: 30                # Seconds between periodic saves (min 1)
-#   z_check_interval: 1.0            # Seconds between Z position checks
+#   save_interval: 30                # Seconds between periodic checkpoints
+#                                    # (min 0.1; effective rate capped by
+#                                    # z_check_interval below)
+#   z_check_interval: 1.0            # Seconds between Z/layer checks; also how
+#                                    # often a save is evaluated (min 0.1). For
+#                                    # sub-1s checkpoints, lower this too.
 #   resume_z_hop: 5.0                # mm to raise Z during resume
 #   pre_resume_purge_length: 30      # mm of filament to purge on resume
 #   pre_resume_purge_speed: 3        # mm/s purge extrusion speed
@@ -70,8 +74,11 @@ class AFCPLR:
         self.logger = logging.getLogger('AFC_PLR')
 
         self.enabled = config.getboolean('enabled', True)
-        self.save_interval = config.getfloat('save_interval', 30.0, minval=1.0)
-        self.z_check_interval = config.getfloat('z_check_interval', 1.0, minval=0.5)
+        # Both floors are low so solid-state storage can checkpoint tightly.
+        # Saves are evaluated on the Z-check timer, so the effective rate is
+        # max(save_interval, z_check_interval) — lower both for sub-1s saves.
+        self.save_interval = config.getfloat('save_interval', 30.0, minval=0.1)
+        self.z_check_interval = config.getfloat('z_check_interval', 1.0, minval=0.1)
         self.resume_z_hop = config.getfloat('resume_z_hop', 5.0, minval=0.0)
         self.purge_length = config.getfloat('pre_resume_purge_length', 30.0, minval=0.0)
         self.purge_speed = config.getfloat('pre_resume_purge_speed', 3.0, minval=0.1)
