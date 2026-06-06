@@ -521,16 +521,28 @@ class AFC_moonraker:
 
         :param method: HTTP method (GET, POST, PATCH, DELETE)
         :param path: Spoolman API path (e.g. ``/v1/spool/123``)
-        :param body: Optional request body string (JSON-encoded)
+        :param body: Optional request body — a dict, or a JSON-encoded string
         :param print_error: Whether to log errors on failure
         :return dict or list or None: Parsed JSON response, or None on error
         """
         payload = {"request_method": method, "path": path}
         if body is not None:
+            # Moonraker's proxy needs ``body`` as a JSON object so its
+            # http_client serializes it and sets Content-Type:
+            # application/json upstream. Form-urlencoding the whole envelope
+            # (and passing body as a string) made moonraker forward the body
+            # as a raw string without that header, which Spoolman rejects with
+            # 422. So always send the envelope as JSON and unwrap a
+            # pre-encoded JSON-string body back into a dict.
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except (ValueError, TypeError):
+                    pass
             payload["body"] = body
         url = urljoin(self.host, 'server/spoolman/proxy')
-        data = urlencode(payload).encode()
-        req = Request(url, data)
+        req = Request(url, json.dumps(payload).encode('utf-8'),
+                      headers={"Content-Type": "application/json"})
         result = self._get_results(req, print_error)
         # Moonraker's proxy strips Spoolman's field-level 422 detail, so when a
         # write fails surface the exact request that Spoolman rejected — that
@@ -538,7 +550,7 @@ class AFC_moonraker:
         if result is None and method != "GET":
             self.logger.error(
                 f"Spoolman {method} {path} failed; request body: "
-                f"{body if body is not None else '(none)'}")
+                f"{json.dumps(body) if body is not None else '(none)'}")
         return result
 
     def search_filaments(self, article_number=None, vendor_name=None, material=None):
