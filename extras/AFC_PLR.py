@@ -921,6 +921,11 @@ class AFCPLR:
         gcmd.respond_info(
             "AFC_PLR: TEST Z-home (dry run) — no file will be resumed")
 
+        # Start from a clean offset like a real post-restart resume, so the
+        # z_home_offset trim (applied additively below) doesn't stack across
+        # repeated dry-runs in one session.
+        run("SET_GCODE_OFFSET Z=0 MOVE=0")
+
         # Pre-lift (fake Z=0 then raise) so sensorless XY homing can't drag.
         if self.z_home_prelift > 0:
             gcmd.respond_info(
@@ -1033,6 +1038,10 @@ class AFCPLR:
         if 'z' not in th.get_status(self.reactor.monotonic())['homed_axes']:
             gcmd.respond_info("AFC_PLR: homing first")
             run("G28")
+        # Measure in a clean frame: a lingering SET_GCODE_OFFSET (from a prior
+        # resume/test/APPLY) would be added into the reported touch Z, inflating
+        # the result. Homing doesn't clear the gcode offset, so zero it here.
+        run("SET_GCODE_OFFSET Z=0 MOVE=0")
         if clear_mesh:
             run("BED_MESH_CLEAR")
 
