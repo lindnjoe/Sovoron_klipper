@@ -74,12 +74,26 @@ class AFCPLR:
         self.purge_length = config.getfloat('pre_resume_purge_length', 30.0, minval=0.0)
         self.purge_speed = config.getfloat('pre_resume_purge_speed', 3.0, minval=0.1)
         self.double_home = config.getboolean('double_home', False)
-        # Optional "Resume - Z Home" recovery: instead of trusting the saved
-        # Z (SET_KINEMATIC_POSITION), physically re-home Z at a safe spot. The
-        # machine-specific touch/probe lives in a user macro named here, so we
-        # never drive a fixed G28 Z into the existing print. When empty the
-        # extra popup button is not offered.
+        # "Resume - Z Home" recovery: instead of trusting the saved Z
+        # (SET_KINEMATIC_POSITION), physically re-home Z at a safe spot so we
+        # never drive a fixed G28 Z into the existing print.
+        #
+        # Built-in mode: set z_home_x / z_home_y to the safe touch corner.
+        # During a Z-home resume AFC_PLR raises a flag (exposed via get_status
+        # as z_home_active) and runs a plain `G28 Z`; your homing_override
+        # reads printer['AFC_PLR'] to touch at that corner instead of center.
+        # No extra macros needed.
+        #
+        # Custom mode: set z_home_gcode to a macro name that does the whole
+        # safe re-home itself (used when the built-in flag approach doesn't
+        # fit the machine). Takes precedence over z_home_x/y when set.
         self.z_home_gcode = config.get('z_home_gcode', '').strip()
+        self.z_home_x = config.getfloat('z_home_x', None)
+        self.z_home_y = config.getfloat('z_home_y', None)
+        # Fixed Z trim applied every Z-home resume via SET_GCODE_OFFSET, to
+        # absorb the bed-flatness delta between the safe touch corner and the
+        # mesh zero-reference. Dial in once by live-babystepping a resume.
+        self.z_home_offset = config.getfloat('z_home_offset', 0.0)
         # Clearance to gain before homing XY in Z-home mode: fake the current
         # Z as 0 then raise this much so sensorless XY homing can't drag the
         # nozzle across the print (real Z after a power loss is unknown).
@@ -89,6 +103,13 @@ class AFCPLR:
         # logic. Disable if your z_home_gcode already applies the offset.
         self.z_home_apply_tool_offset = config.getboolean(
             'z_home_apply_tool_offset', True)
+        # True only while a Z-home resume is mid-flight, so homing_override
+        # knows to touch at the safe corner. Read live via get_status.
+        self._z_home_active = False
+        # Whether the Z-home recovery path is usable at all (custom macro or a
+        # configured safe corner).
+        self._z_home_available = bool(self.z_home_gcode) or (
+            self.z_home_x is not None and self.z_home_y is not None)
         save_file = config.get('save_file', '')
         self._config_save_file = save_file
 
@@ -215,8 +236,8 @@ class AFCPLR:
         respond("// action:prompt_text ")
         respond("// action:prompt_text Resume this print?")
         respond("// action:prompt_footer_button Resume|AFC_PLR_RESUME|primary")
-        # Offer the Z-home variant only when a re-home macro is configured.
-        if self.z_home_gcode:
+        # Offer the Z-home variant only when a re-home method is configured.
+        if self._z_home_available:
             respond("// action:prompt_footer_button "
                     "Resume - Z Home|AFC_PLR_RESUME Z_HOME=1|secondary")
         respond("// action:prompt_footer_button Discard|AFC_PLR_CLEAR|error")
@@ -570,6 +591,29 @@ class AFCPLR:
 
     # ── Resume ──────────────────────────────────────────────────────
 
+    def _run_z_home(self, gcmd):
+        # Re-establish a true Z at the safe spot. Custom macro wins if set;
+        # otherwise flag z_home_active and run a plain G28 Z, which the
+        # homing_override redirects to (z_home_x, z_home_y) via get_status.
+        run = self.gcode.run_script_from_command
+        if self.z_home_gcode:
+            gcmd.respond_info(
+                "AFC_PLR: Re-homing Z via z_home_gcode (%s)" % self.z_home_gcode)
+            run(self.z_home_gcode)
+        elif self.z_home_x is not None and self.z_home_y is not None:
+            gcmd.respond_info(
+                "AFC_PLR: Re-homing Z (G28 Z) at safe corner (%.1f, %.1f)"
+                % (self.z_home_x, self.z_home_y))
+            self._z_home_active = True
+            try:
+                run("G28 Z")
+            finally:
+                self._z_home_active = False
+        else:
+            raise gcmd.error(
+                "AFC_PLR: Z-home requested but neither z_home_gcode nor "
+                "z_home_x/z_home_y is configured")
+
     def _resume_from_state(self, gcmd, state, z_home=False):
         file_path = state.get('file_path', '')
         file_pos = state.get('file_position', 0)
@@ -658,12 +702,9 @@ class AFCPLR:
 
         # 4. Establish Z reference
         if z_home:
-            # Physically re-home Z via the user's machine-specific macro, which
-            # must touch/probe at a SAFE spot (not over the print) and leave Z
-            # homed near the bed. This recovers a true Z zero instead of
-            # trusting the saved value.
-            gcmd.respond_info("AFC_PLR: Re-homing Z via z_home_gcode")
-            run(self.z_home_gcode)
+            # Physically re-home Z at the safe corner (not over the print),
+            # recovering a true Z zero instead of trusting the saved value.
+            self._run_z_home(gcmd)
             # 4b. Re-apply the active tool's saved Z offset (the touch homes a
             # shared reference; this corrects for the specific tool mounted),
             # mirroring _ADJUST_Z_POSITION_WITH_TOOL_OFFSET but using the saved
@@ -676,6 +717,12 @@ class AFCPLR:
                     "AFC_PLR: Applying tool %s Z offset %.4f"
                     % (state.get('active_tool', '?'), tool_z_off))
                 run("SET_KINEMATIC_POSITION Z=%.4f" % (cur_z + tool_z_off))
+            # 4c. Fixed corner->center trim, dialed in once via z_home_offset.
+            if self.z_home_offset:
+                gcmd.respond_info(
+                    "AFC_PLR: applying z_home_offset %.4f (corner->center trim)"
+                    % self.z_home_offset)
+                run("SET_GCODE_OFFSET Z_ADJUST=%.4f MOVE=0" % self.z_home_offset)
             # 5. Raise from the bed to print height + hop for safe travel.
             run("G90")
             run("G1 Z%.3f F600" % (layer_z + self.resume_z_hop))
@@ -806,10 +853,10 @@ class AFCPLR:
         """
         self._close_prompt()
         z_home = gcmd.get_int('Z_HOME', 0)
-        if z_home and not self.z_home_gcode:
+        if z_home and not self._z_home_available:
             raise gcmd.error(
-                "AFC_PLR: Z_HOME requested but no 'z_home_gcode' is configured "
-                "in [AFC_PLR]")
+                "AFC_PLR: Z_HOME requested but no Z-home method is configured "
+                "(set z_home_x/z_home_y or z_home_gcode in [AFC_PLR])")
         state = self._load_state()
         if state is None:
             raise gcmd.error("No saved PLR state found at %s" % self.save_file)
@@ -819,11 +866,11 @@ class AFCPLR:
         """
         Dry-run the Z-home recovery sequence on an empty bed.
 
-        Runs only the Z-recovery portion — pre-lift, ``G28 X Y``, the
-        configured ``z_home_gcode``, optional tool-offset apply, and a final
-        hop — then STOPS. No checkpoint is needed and no file is resumed, so
-        you can validate the safe touch spot and inspect the resulting Z
-        without power-cutting or air-printing.
+        Runs only the Z-recovery portion — pre-lift, ``G28 X Y``, the safe
+        Z re-home, optional tool-offset apply, the z_home_offset trim, and a
+        final hop — then STOPS. No checkpoint is needed and no file is
+        resumed, so you can validate the safe touch spot and inspect the
+        resulting Z without power-cutting or air-printing.
 
         Parameters
         ----------
@@ -837,9 +884,10 @@ class AFCPLR:
         -----
         `AFC_PLR_TEST_ZHOME` or `AFC_PLR_TEST_ZHOME TOOL_OFFSET=-0.2 HOP=10`
         """
-        if not self.z_home_gcode:
+        if not self._z_home_available:
             raise gcmd.error(
-                "AFC_PLR: no 'z_home_gcode' is configured in [AFC_PLR]")
+                "AFC_PLR: no Z-home method is configured (set z_home_x/"
+                "z_home_y or z_home_gcode in [AFC_PLR])")
         tool_off = gcmd.get_float('TOOL_OFFSET', 0.0)
         hop = gcmd.get_float('HOP', self.resume_z_hop, minval=0.0)
         run = self.gcode.run_script_from_command
@@ -860,13 +908,11 @@ class AFCPLR:
         gcmd.respond_info("AFC_PLR: homing XY")
         run("G28 X Y")
 
-        gcmd.respond_info("AFC_PLR: running z_home_gcode")
-        run(self.z_home_gcode)
+        self._run_z_home(gcmd)
 
         th = self.printer.lookup_object('toolhead')
         z_after = th.get_position()[2]
-        gcmd.respond_info(
-            "AFC_PLR: Z after z_home_gcode = %.4f" % z_after)
+        gcmd.respond_info("AFC_PLR: Z after re-home = %.4f" % z_after)
 
         if self.z_home_apply_tool_offset and tool_off:
             new_z = z_after + tool_off
@@ -875,6 +921,12 @@ class AFCPLR:
                 % (tool_off, new_z))
             run("SET_KINEMATIC_POSITION Z=%.4f" % new_z)
 
+        if self.z_home_offset:
+            gcmd.respond_info(
+                "AFC_PLR: applying z_home_offset %.4f (corner->center trim)"
+                % self.z_home_offset)
+            run("SET_GCODE_OFFSET Z_ADJUST=%.4f MOVE=0" % self.z_home_offset)
+
         if hop > 0:
             run("G91")
             run("G1 Z%.3f F600" % hop)
@@ -882,9 +934,9 @@ class AFCPLR:
 
         final_z = th.get_position()[2]
         gcmd.respond_info(
-            "AFC_PLR: TEST complete — Z after macro=%.4f, tool offset=%.4f, "
-            "final Z=%.4f. No file resumed."
-            % (z_after, tool_off, final_z))
+            "AFC_PLR: TEST complete — Z after re-home=%.4f, tool offset=%.4f, "
+            "z_home_offset=%.4f, final Z=%.4f. No file resumed."
+            % (z_after, tool_off, self.z_home_offset, final_z))
 
     def cmd_PLR_SAVE(self, gcmd):
         """
@@ -957,6 +1009,10 @@ class AFCPLR:
             'layer_z': self.layer_z,
             'save_file': self.save_file,
             'is_tracking': self._last_save_time > 0,
+            # Consumed by homing_override to pick the Z touch point.
+            'z_home_active': self._z_home_active,
+            'z_home_x': self.z_home_x if self.z_home_x is not None else 0.0,
+            'z_home_y': self.z_home_y if self.z_home_y is not None else 0.0,
         }
 
 
