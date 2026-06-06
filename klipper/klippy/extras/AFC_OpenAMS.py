@@ -865,6 +865,9 @@ class afcAMS(afcUnit):
         if self.oams is None:
             return None
         try:
+            # Wait for the AMS to ack the previous action before sending — a
+            # command sent while it is still busy is silently ignored.
+            self._wait_for_idle()
             self.oams.unload_spool_with_retry()
             self._wait_for_idle()
         except Exception as e:
@@ -1092,15 +1095,17 @@ class afcAMS(afcUnit):
             self._prev_states_stale = True
 
     def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
-        """Set OAMS follower to reverse before AFC runs cut/park/tip."""
+        """Stop the OAMS follower before AFC's unload begins.
+
+        We only STOP the forward-feeding follower here — the hardware unload
+        (unload_spool) drives the follower in reverse itself during the rewind.
+        Reversing it this early would pull filament back during the toolhead
+        cut/park/tip operations, before the tip is even formed.
+        """
         if self._follower:
             self._follower.set_follower_state(
                 self._get_monitor_state(), self.oams, 0, 0,
                 "stop before unload", force=True)
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
-            self._follower.set_follower_state(
-                self._get_monitor_state(), self.oams, 1, 0,
-                "reverse for unload", force=True)
 
     def _oams_unload_inner(self, cur_lane, cur_extruder) -> bool:
         """OAMS custom unload — filament transport only.
@@ -1194,6 +1199,9 @@ class afcAMS(afcUnit):
 
         for attempt in range(max_retries):
             try:
+                # Confirm the AMS has acked the follower change and is idle
+                # before sending the load — otherwise it may ignore the command.
+                self._wait_for_idle()
                 success, msg = self.oams.load_spool_with_retry(spool_index)
                 if not success:
                     self.logger.error(f"OAMS load attempt {attempt+1} failed: {msg}")
@@ -1282,8 +1290,8 @@ class afcAMS(afcUnit):
 
         spool_index = self._spool_map.get(cur_lane.name, 0)
 
-        # Follower reverse is set up by prepare_unload() before AFC's
-        # Phase 1 toolhead ops — no need to set it again here.
+        # prepare_unload() only STOPS the follower; the hardware unload
+        # (unload_spool, below) drives it in reverse itself during the rewind.
 
         # Wait for idle
         self._wait_for_idle()
@@ -1770,6 +1778,27 @@ class afcAMS(afcUnit):
             hw.update_lane_snapshot(
                 self.oams_name, lane.name, False, False,
                 self.afc.reactor.monotonic(), spool_index=spool_index)
+        # Clear stale spool/filament info so a newly inserted spool starts
+        # fresh. Skip if the spool is currently loaded to a toolhead (a print
+        # runout) — the runout handler still needs the lane's data.
+        if not getattr(lane, 'tool_loaded', False):
+            self._clear_lane_info(lane)
+
+    def _clear_lane_info(self, lane):
+        """Clear a lane's spool/filament data so a new insert starts fresh
+        (mirrors the U1 RFID _clear_lane)."""
+        lane.material = ""
+        lane.color = ""
+        if getattr(lane, 'spool_id', None) not in (None, "", 0):
+            try:
+                self.afc.spool.set_spoolID(lane, "")
+            except Exception as e:
+                self.logger.warning(
+                    f"OAMS: failed to clear spool_id on {lane.name}: {e}")
+        try:
+            lane.send_lane_data()
+        except Exception:
+            pass
 
     # ── TD-1 support ────────────────────────────────────────────────
 
@@ -1814,6 +1843,8 @@ class afcAMS(afcUnit):
         success = False
         for attempt in range(3):
             try:
+                # Wait for the AMS to ack the prior action before each attempt.
+                self._wait_for_idle()
                 success, msg = self.oams.unload_spool()
             except Exception as e:
                 success = False
@@ -1837,6 +1868,7 @@ class afcAMS(afcUnit):
         except Exception:
             pass
         try:
+            self._wait_for_idle()
             self.oams.unload_spool()
         except Exception:
             pass

@@ -8,6 +8,7 @@
 # Klipper module and syncs to AFC lanes / Spoolman.
 
 from __future__ import annotations
+import re
 from typing import TYPE_CHECKING, Optional, Dict
 
 if TYPE_CHECKING:
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
 
 from extras.AFC_RFID import (
-    color_name, color_distance, density_for_material,
+    color_name, color_label, color_distance, density_for_material,
     log_new_filament, log_new_spool,
     get_auto_spoolman_create, apply_filament_defaults,
     sync_rfid_to_spoolman,
@@ -200,10 +201,11 @@ class AFC_U1_RFID:
         brand = slot_info.get('brand', '')
         material = slot_info.get('material', '')
         color = slot_info.get('color_hex', '')
+        multi_color = slot_info.get('multi_color', [color] if color else [])
         tag_desc = f"{brand} {material}".strip() or "Unknown"
-        if color:
-            cname = color_name(color)
-            tag_desc += f" ({cname} #{color})" if cname else f" (#{color})"
+        clabel = color_label(multi_color)
+        if clabel:
+            tag_desc += f" ({clabel})"
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
@@ -277,18 +279,25 @@ class AFC_U1_RFID:
 
     def _map_to_slot_info(self, info: dict) -> dict:
         """Map filament_detect fields to AFC RFID slot_info format."""
-        # RGB_1 is a packed RGB integer from the tag. Black (0x000000) and
-        # white (0xFFFFFF) are valid filament colors, so they must NOT be
-        # treated as an "unset" sentinel. Only suppress the color when the tag
-        # carries no RGB_1 field at all. Mask off any alpha byte (ARGB -> RGB).
-        rgb_raw = info.get("RGB_1")
-        if rgb_raw is None or rgb_raw == "":
-            color_hex = ""
-        else:
+        # Collect every colour the tag carries. Single-colour spools expose
+        # only RGB_1; dual / multi-colour spools also carry RGB_2 (RGB_3...).
+        # Black (0x000000) and white (0xFFFFFF) are valid, so a present field is
+        # never treated as "unset" — only an omitted/empty one is skipped. Mask
+        # any alpha byte (ARGB -> RGB) and keep distinct colours in tag order.
+        multi_color = []
+        rgb_keys = sorted((k for k in info if re.fullmatch(r"RGB_\d+", str(k))),
+                          key=lambda k: int(str(k).split("_")[1]))
+        for key in rgb_keys:
+            raw = info.get(key)
+            if raw is None or raw == "":
+                continue
             try:
-                color_hex = f"{int(rgb_raw) & 0xFFFFFF:06x}"
+                hx = f"{int(raw) & 0xFFFFFF:06x}"
             except (ValueError, TypeError):
-                color_hex = ""
+                continue
+            if hx not in multi_color:
+                multi_color.append(hx)
+        color_hex = multi_color[0] if multi_color else ""
         ext_max = info.get("HOTEND_MAX_TEMP")
         ext_min = info.get("HOTEND_MIN_TEMP")
         bed_max = info.get("BED_TEMP")
@@ -306,6 +315,8 @@ class AFC_U1_RFID:
         return {
             "material": info.get("MAIN_TYPE", ""),
             "color_hex": color_hex,
+            "multi_color": multi_color,
+            "is_dual_color": len(multi_color) > 1,
             "sku": sku,
             "brand": vendor,
             "sub_type": info.get("SUB_TYPE", ""),
