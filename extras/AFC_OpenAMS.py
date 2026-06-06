@@ -865,6 +865,9 @@ class afcAMS(afcUnit):
         if self.oams is None:
             return None
         try:
+            # Wait for the AMS to ack the previous action before sending — a
+            # command sent while it is still busy is silently ignored.
+            self._wait_for_idle()
             self.oams.unload_spool_with_retry()
             self._wait_for_idle()
         except Exception as e:
@@ -1196,6 +1199,9 @@ class afcAMS(afcUnit):
 
         for attempt in range(max_retries):
             try:
+                # Confirm the AMS has acked the follower change and is idle
+                # before sending the load — otherwise it may ignore the command.
+                self._wait_for_idle()
                 success, msg = self.oams.load_spool_with_retry(spool_index)
                 if not success:
                     self.logger.error(f"OAMS load attempt {attempt+1} failed: {msg}")
@@ -1772,6 +1778,27 @@ class afcAMS(afcUnit):
             hw.update_lane_snapshot(
                 self.oams_name, lane.name, False, False,
                 self.afc.reactor.monotonic(), spool_index=spool_index)
+        # Clear stale spool/filament info so a newly inserted spool starts
+        # fresh. Skip if the spool is currently loaded to a toolhead (a print
+        # runout) — the runout handler still needs the lane's data.
+        if not getattr(lane, 'tool_loaded', False):
+            self._clear_lane_info(lane)
+
+    def _clear_lane_info(self, lane):
+        """Clear a lane's spool/filament data so a new insert starts fresh
+        (mirrors the U1 RFID _clear_lane)."""
+        lane.material = ""
+        lane.color = ""
+        if getattr(lane, 'spool_id', None) not in (None, "", 0):
+            try:
+                self.afc.spool.set_spoolID(lane, "")
+            except Exception as e:
+                self.logger.warning(
+                    f"OAMS: failed to clear spool_id on {lane.name}: {e}")
+        try:
+            lane.send_lane_data()
+        except Exception:
+            pass
 
     # ── TD-1 support ────────────────────────────────────────────────
 
