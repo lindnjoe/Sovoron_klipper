@@ -1149,16 +1149,42 @@ class afcAMS(afcUnit):
         # auto-unload "OAMS is busy". Query the hardware directly (the spool
         # query IS answered even when load is not) and treat an
         # already-loaded spool as a successful load.
+        #
+        # determine_current_spool() queries the firmware, which reports a bay
+        # from its feeder (f1s) sensor. On insertion the OpenAMS hardware
+        # auto-stages filament (feeds to the hub sensor, then backs off), so a
+        # freshly inserted spool ALSO makes the query report that bay even
+        # though nothing is loaded through to the toolhead — and the hub sensor
+        # can't tell "staged at hub" (momentarily hub=1 during staging, or
+        # hub=0 after backoff) from "loaded to the toolhead". The only reliable
+        # proof of an actual toolhead load is the toolhead sensor itself (the
+        # U1 physical switch). Require it before short-circuiting: if the
+        # toolhead sensor does NOT see filament we run a real load, so a
+        # staged/inserted spool is never mistaken for already-loaded (which
+        # would skip the load — transport completes instantly, the toolhead
+        # never sees filament, engagement verification pauses).
         hw_spool = None
         try:
             hw_spool = self.oams.determine_current_spool()
         except Exception as e:
             self.logger.debug(f"Could not query OAMS current spool: {e}")
+        toolhead_loaded = False
         if hw_spool is not None and hw_spool == spool_index:
+            try:
+                toolhead_loaded = bool(self._toolhead_sensor_triggered(cur_lane))
+            except Exception:
+                toolhead_loaded = False
+            if not toolhead_loaded:
+                self.logger.info(
+                    f"OAMS reports spool {spool_index} present in hardware but "
+                    f"the toolhead sensor does not see filament for "
+                    f"{cur_lane.name}; treating as not loaded and running a "
+                    f"real load")
+        if hw_spool is not None and hw_spool == spool_index and toolhead_loaded:
             self.logger.info(
-                f"OAMS spool {spool_index} already loaded in hardware "
-                f"(firmware current_spool={hw_spool}); skipping redundant "
-                f"load for {cur_lane.name}")
+                f"OAMS spool {spool_index} already loaded to the toolhead "
+                f"(firmware current_spool={hw_spool}, toolhead sensor "
+                f"triggered); skipping redundant load for {cur_lane.name}")
             self.oams.current_spool = spool_index
             # Re-establish follower + monitor exactly as a successful load
             if self._follower:
@@ -1265,6 +1291,14 @@ class afcAMS(afcUnit):
                 self._wait_for_idle()
                 self.oams.unload_spool_with_retry()
                 self._wait_for_idle()
+                # Reset the OAMS firmware/host state after a failed attempt so
+                # a stuck "OAMS is busy" doesn't poison the next load. Clears
+                # action_status + LED errors and re-reads current_spool.
+                try:
+                    self.oams.clear_errors()
+                except Exception as e:
+                    self.logger.debug(f"clear_errors after failed load: {e}")
+                self._wait_for_idle()
 
                 if attempt < max_retries - 1:
                     self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
@@ -1322,12 +1356,17 @@ class afcAMS(afcUnit):
             cur_lane._oams_runout_empty = False
 
         try:
-            # Queue a 20mm extruder retract WITHOUT waiting — it runs
-            # concurrently with the OAMS hardware unload so the extruder
-            # helps pull filament back as the spool motor rewinds.
+            # Queue an extruder retract WITHOUT waiting — it runs concurrently
+            # with the OAMS hardware unload so the extruder helps pull filament
+            # back as the spool motor rewinds. Uses the configured
+            # tool_stn_unload (falls back to 20mm if it's unset).
+            concurrent_retract = retract_dist if retract_dist and retract_dist > 0 else 20.0
+            concurrent_speed = getattr(
+                cur_lane.extruder_obj, 'tool_unload_speed', 25.0) * 60.0
             try:
                 self.afc.gcode.run_script_from_command("M83")
-                self.afc.gcode.run_script_from_command("G1 E-20.00 F1500")
+                self.afc.gcode.run_script_from_command(
+                    "G1 E-%.2f F%d" % (concurrent_retract, int(concurrent_speed)))
             except Exception as e:
                 self.logger.warning(f"Concurrent retract failed: {e}")
 
@@ -1783,6 +1822,42 @@ class afcAMS(afcUnit):
         # runout) — the runout handler still needs the lane's data.
         if not getattr(lane, 'tool_loaded', False):
             self._clear_lane_info(lane)
+            self._clear_oams_state_for_bay(spool_index, lane)
+
+    def _clear_oams_state_for_bay(self, spool_index, lane):
+        """Reset OAMS host/monitor/follower state when a bay's f1s goes empty.
+
+        A physically removed spool is never unloaded through the AMS, so the
+        OAMS-side state (host current_spool, the follower feeding that bay, and
+        the load monitor) can be left stale pointing at a now-empty bay. Clear
+        it so a fresh insert starts clean and nothing keeps feeding/monitoring
+        an empty lane. NOTE: determine_current_spool() re-queries the firmware
+        (authoritative), so the _oams_load "already loaded" guard relies on the
+        toolhead sensor, not this value — this is hygiene, not the load guard.
+        """
+        if spool_index is None or self.oams is None:
+            return
+        was_current = getattr(self.oams, 'current_spool', None) == spool_index
+        if was_current:
+            self.oams.current_spool = None
+        # Stop the follower for this OAMS so it isn't feeding a removed spool.
+        if was_current and self._follower:
+            try:
+                self._follower.set_follower_state(
+                    self._get_monitor_state(), self.oams, 0, 0,
+                    "spool removed — f1s empty", force=True)
+            except Exception:
+                pass
+        # Reset the load monitor if it was tracking this bay.
+        if self._monitor:
+            try:
+                monitor_state = self._get_monitor_state()
+                if (monitor_state is not None and getattr(
+                        monitor_state, 'current_spool_idx', None) == spool_index):
+                    self._monitor.notify_unload_complete()
+                    self._monitor.stop()
+            except Exception:
+                pass
 
     def _clear_lane_info(self, lane):
         """Clear a lane's spool/filament data so a new insert starts fresh

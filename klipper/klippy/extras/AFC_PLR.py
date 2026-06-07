@@ -44,8 +44,10 @@
 #   resume_z_hop: 5.0                # mm to raise Z during resume
 #   pre_resume_purge_length: 30      # mm of filament to purge on resume
 #   pre_resume_purge_speed: 3        # mm/s purge extrusion speed
-#   save_file: <auto>                # Path to state file (auto = next to AFC vars)
-#                                    # a '.static' companion holds the bed mesh
+#   save_file: <auto>                # Path to state file (auto = printer_data
+#                                    # root, OUTSIDE the config dir so frequent
+#                                    # rewrites don't clutter Mainsail). A
+#                                    # '.static' companion holds the bed mesh
 
 from __future__ import annotations
 
@@ -274,25 +276,42 @@ class AFCPLR:
         self._print_stats = self.printer.lookup_object('print_stats', None)
         self._heater_bed = self.printer.lookup_object('heater_bed', None)
 
+        # Resolve the state-file location. By default keep it OUT of the
+        # Moonraker-watched config tree. PLR checkpoints are rewritten many
+        # times a second via atomic rename; doing that inside config/ spams
+        # Moonraker's file watcher, which makes Mainsail's file manager render
+        # dozens of phantom duplicate rows of the one file (same name, "select
+        # one selects all") that won't delete, and a temp file left by a
+        # power-cut-mid-write clutters it too. The printer_data root is
+        # persistent but not a browsable file root, so none of that reaches
+        # Mainsail. A custom save_file: is honoured verbatim.
+        legacy_dirs = []
         if self._config_save_file:
             self.save_file = os.path.expanduser(self._config_save_file)
-        elif self._afc is not None:
-            afc_var = getattr(self._afc, 'VarFile', '')
-            if afc_var:
-                self.save_file = os.path.join(
-                    os.path.dirname(os.path.expanduser(afc_var)),
-                    'AFC_PLR_state.json')
-            else:
-                self.save_file = os.path.expanduser(
-                    '~/printer_data/config/AFC/AFC_PLR_state.json')
         else:
-            self.save_file = os.path.expanduser(
-                '~/printer_data/config/AFC/AFC_PLR_state.json')
+            self.save_file = os.path.join(
+                self._printer_data_root(), 'afc_plr', 'AFC_PLR_state.json')
+            # Older versions stored it next to the AFC vars file (inside
+            # config/AFC). Record that dir so we migrate/clean it up below.
+            afc_var = getattr(self._afc, 'VarFile', '') if self._afc else ''
+            if afc_var:
+                legacy_dirs.append(
+                    os.path.dirname(os.path.expanduser(afc_var)))
+            legacy_dirs.append(
+                os.path.expanduser('~/printer_data/config/AFC'))
 
         # Companion file holding the static, write-once data (bed mesh). The
         # frequent dynamic checkpoint omits it so periodic saves stay tiny.
         base, ext = os.path.splitext(self.save_file)
         self.static_file = base + '.static' + ext
+
+        # One-time migration + cleanup of the old config-dir location: move a
+        # still-valid checkpoint to the new spot, then remove leftover state
+        # and orphaned temp files so they stop cluttering Mainsail.
+        self._migrate_legacy_state(legacy_dirs)
+
+        # Remove orphaned temp files (plr_*.tmp from a power cut mid-write).
+        self._cleanup_temp_orphans(os.path.dirname(self.save_file))
 
         # The dynamic + static files are a pair (static now holds file_path).
         # If only one survives the checkpoint is incomplete/unresumable, so
@@ -641,6 +660,70 @@ class AFCPLR:
     _STATIC_KEYS = ('file_path', 'file_name',
                     'bed_mesh_profile', 'bed_mesh_points', 'bed_mesh_params')
 
+    def _printer_data_root(self):
+        # Derive the printer_data root (one level above 'config') from the AFC
+        # vars file path so multi-instance setups resolve correctly; fall back
+        # to ~/printer_data.
+        afc_var = getattr(self._afc, 'VarFile', '') if self._afc else ''
+        if afc_var:
+            p = os.path.expanduser(afc_var)
+            parts = p.split(os.sep)
+            if 'config' in parts:
+                root = os.sep.join(parts[:parts.index('config')])
+                if root:
+                    return root
+            return os.path.dirname(p)
+        return os.path.expanduser('~/printer_data')
+
+    def _cleanup_temp_orphans(self, directory):
+        # Delete leftover plr_*.tmp files (a write interrupted by a power cut
+        # before the atomic rename). These are never the live state, so it is
+        # always safe to remove them.
+        if not directory or not os.path.isdir(directory):
+            return
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return
+        for name in names:
+            if name.startswith('plr_') and name.endswith('.tmp'):
+                try:
+                    os.unlink(os.path.join(directory, name))
+                except OSError:
+                    pass
+
+    def _migrate_legacy_state(self, legacy_dirs):
+        # Move a still-valid checkpoint from the old config-dir location to the
+        # new one (if we don't already have one), then delete leftover state
+        # and temp orphans there so they stop cluttering Mainsail.
+        new_dir = os.path.dirname(self.save_file)
+        seen = set()
+        for d in legacy_dirs:
+            if not d:
+                continue
+            d = os.path.abspath(d)
+            if d in seen or d == os.path.abspath(new_dir):
+                continue
+            seen.add(d)
+            old_main = os.path.join(d, 'AFC_PLR_state.json')
+            old_static = os.path.join(d, 'AFC_PLR_state.static.json')
+            if (os.path.exists(old_main) and os.path.exists(old_static)
+                    and not os.path.exists(self.save_file)):
+                try:
+                    os.makedirs(new_dir, exist_ok=True)
+                    os.replace(old_main, self.save_file)
+                    os.replace(old_static, self.static_file)
+                except OSError as e:
+                    self.logger.error("PLR legacy migrate failed: %s" % e)
+            for name in ('AFC_PLR_state.json', 'AFC_PLR_state.static.json'):
+                p = os.path.join(d, name)
+                try:
+                    if os.path.exists(p):
+                        os.unlink(p)
+                except OSError:
+                    pass
+            self._cleanup_temp_orphans(d)
+
     def _save_state(self, sync=False):
         # Gather must run on the reactor thread (it reads live, non-thread-safe
         # Klipper objects). The slow disk write is then either done inline
@@ -792,6 +875,8 @@ class AFCPLR:
             except OSError as e:
                 self.logger.error("Failed to clear PLR state (%s): %s"
                                   % (path, e))
+        # Also sweep any temp orphans so a finished/aborted job leaves nothing.
+        self._cleanup_temp_orphans(os.path.dirname(self.save_file))
         self._has_saved_state = False
 
     # ── Resume ──────────────────────────────────────────────────────
