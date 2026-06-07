@@ -1182,7 +1182,11 @@ class afcAMS(afcUnit):
                 f"OAMS spool {spool_index} already loaded in hardware "
                 f"(firmware current_spool={hw_spool}); skipping redundant "
                 f"load for {cur_lane.name}")
-            self.oams.current_spool = spool_index
+            # Tell the OAMS manager the spool is loaded before AFC's purge
+            # runs: sets current_spool and confirms the load to the firmware
+            # so its load encoder limit is closed out (see the engaged-path
+            # note below for why this matters).
+            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
             # Re-establish follower + monitor exactly as a successful load
             if self._follower:
                 self._follower.enable_follower(
@@ -1233,7 +1237,21 @@ class afcAMS(afcUnit):
                 # Verify engagement (skip if deferred to AFC's Phase 2)
                 engaged = True if self._defer_engagement else self._verify_engagement(cur_lane)
                 if engaged:
-                    # Enable follower and start monitor
+                    # Tell the OAMS manager the load is complete. The firmware
+                    # feeds ptfe_length then switches to watching the FPS to
+                    # decide when to stop feeding; the load operation stays
+                    # "open" (its encoder limit armed) until we confirm it.
+                    # Without this confirmation the purge's extruder movement
+                    # pushes the encoder past that limit and the firmware
+                    # triggers an internal unload on the f1s — the feeder motor
+                    # then fights the extruder. Confirm AFTER the engagement
+                    # check and BEFORE returning: AFC runs tool_stn + the purge
+                    # after this custom load returns.
+                    self._cancel_and_mark_loaded(spool_index, cur_lane.name)
+
+                    # Re-establish FORWARD_FOLLOWING — the mark-loaded cancel
+                    # stops the follower motor — so the OAMS follows the
+                    # extruder through the purge and the rest of the print.
                     if self._follower:
                         self._follower.enable_follower(
                             self._get_monitor_state(), self.oams, 1,
