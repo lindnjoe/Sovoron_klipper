@@ -293,6 +293,21 @@ class afcACE(afcUnit):
 
         # Register callback for heartbeat status updates
         self._ace.status_callback = self._on_hw_status_callback
+        # Re-establish feed assist after a USB drop/reconnect (common on this
+        # hardware). The ACE firmware resets on reconnect and forgets any
+        # running feed assist, so clear our cached state — otherwise the
+        # watchdog's "already active" guard would never re-issue it.
+        self._ace.reconnect_callback = self._on_ace_reconnect
+
+    def _on_ace_reconnect(self):
+        # The ACE forgot its feed-assist state across the reset. Drop our
+        # stale tracking so the watchdog re-enables assist for the active lane
+        # on the next status tick (which respects _operation_active).
+        if self._feed_assist_active:
+            self.logger.info(
+                "ACE reconnected — clearing stale feed-assist state so it "
+                "re-enables for the active lane")
+        self._feed_assist_active.clear()
 
     def _on_hw_status_callback(self, response):
         """Process heartbeat status from ACE — keep lane states in sync."""
