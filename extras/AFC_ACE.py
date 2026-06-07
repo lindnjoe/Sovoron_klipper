@@ -70,6 +70,10 @@ class afcACE(afcUnit):
         self.unload_preretract = config.getfloat("unload_preretract", 50.0)
         self._unit_load_to_hub = config.getboolean("load_to_hub", None)
         self._default_feed_assist = config.getboolean("use_feed_assist", True)
+        # Watchdog: on each heartbeat (when idle) make sure the lane on the
+        # active tool actually has its feed assist running, in case a pickup /
+        # tool-change event didn't enable it.
+        self._assist_watchdog = config.getboolean("assist_watchdog", True)
         self.extruder_assist_length = config.getfloat("extruder_assist_length", 50.0)
         self.extruder_assist_speed = config.getfloat("extruder_assist_speed", 300.0)
         self.sensor_approach_margin = config.getfloat("sensor_approach_margin", 30.0)
@@ -343,6 +347,31 @@ class afcACE(afcUnit):
 
         # Register callback for heartbeat status updates
         self._ace.status_callback = self._on_hw_status_callback
+        # Re-establish feed assist after a USB drop/reconnect (common on this
+        # hardware). The ACE firmware resets on reconnect and forgets any
+        # running feed assist, so resync it back to the active lane.
+        self._ace.reconnect_callback = self._on_ace_reconnect
+
+    def _on_ace_reconnect(self):
+        # The ACE forgot its feed-assist state across the reset. Drop our
+        # stale tracking (otherwise the watchdog's "already active" guard would
+        # never re-issue it) and immediately re-send assist for whatever lane
+        # is currently loaded on the active toolhead — derived from live state
+        # so it stays correct even if a tool change happened during the drop.
+        if self._feed_assist_active:
+            self.logger.info(
+                "ACE reconnected — re-establishing feed assist for the "
+                "active lane")
+        self._feed_assist_active.clear()
+        # Defer off the reconnect/serial path so the ACE acks don't block it.
+        self.afc.reactor.register_callback(self._resync_assist_after_reconnect)
+
+    def _resync_assist_after_reconnect(self, eventtime):
+        # Don't fight an in-flight load/unload — it sets assist itself when it
+        # finishes. Otherwise let the watchdog re-issue assist for the active
+        # lane right now (its target is empty again, so it will reconcile).
+        if not self._operation_active:
+            self._maybe_assist_watchdog()
 
     def _on_hw_status_callback(self, response):
         """Process heartbeat status from ACE — keep lane states in sync."""
@@ -355,6 +384,7 @@ class afcACE(afcUnit):
         if self._operation_active:
             return
         self._sync_slot_states(result)
+        self._maybe_assist_watchdog()
 
     def _is_virtual_hub(self, lane) -> bool:
         hub = lane.hub_obj
@@ -1452,26 +1482,65 @@ class afcACE(afcUnit):
                 self.logger.error(f"Failed to stop feed assist slot {slot}: {e}")
                 return
 
-    def _handle_extruder_activated(self):
-        # A tool pickup (e.g. grabbing the probe tool during print start)
-        # activates that tool's extruder. If one of our lanes is already loaded
-        # on the now-active extruder, switch feed assist to it. Mode-agnostic:
-        # keys off the active toolhead extruder, not afc.current or the payload.
+    def _active_assist_lane(self):
+        # Name of the lane that SHOULD have feed assist: the one loaded on the
+        # toolhead extruder currently on the shuttle. None if there isn't one.
         try:
             active_ext = self.printer.lookup_object(
                 'toolhead').get_extruder().get_name()
         except Exception:
-            return
+            return None
+        # A lane is the assist target when it is loaded (tool_loaded) AND its
+        # extruder is the one on the shuttle. Prefer the lane the extruder
+        # records as loaded, but fall back to the (unique, since only one lane
+        # per extruder is tool_loaded at a time) loaded lane on that extruder.
+        # The fallback matters at print start when a lane is "already loaded":
+        # the load sequence is skipped so extruder.lane_loaded can lag behind
+        # tool_loaded, which used to make this return None and leave assist off.
+        candidate = None
         for lane in self.lanes.values():
             ext_obj = getattr(lane, 'extruder_obj', None)
-            if (ext_obj is not None
-                    and getattr(ext_obj, 'name', None) == active_ext
-                    and getattr(lane, 'tool_loaded', False)
-                    and getattr(ext_obj, 'lane_loaded', None) == lane.name):
-                if self._use_feed_assist(lane):
-                    self.afc.reactor.register_callback(
-                        lambda et, n=lane.name: self._reconcile_feed_assist(n))
-                return
+            if (ext_obj is None
+                    or getattr(ext_obj, 'name', None) != active_ext
+                    or not getattr(lane, 'tool_loaded', False)):
+                continue
+            if getattr(ext_obj, 'lane_loaded', None) == lane.name:
+                return lane.name
+            if candidate is None:
+                candidate = lane.name
+        return candidate
+
+    def _maybe_assist_watchdog(self):
+        # Heartbeat watchdog: if the active tool's lane should be assisted but
+        # isn't (or the wrong slot is), reconcile. Idempotent — a no-op once
+        # assist is correct, so it only acts on a genuine discrepancy.
+        if not self._assist_watchdog:
+            return
+        name = self._active_assist_lane()
+        if name is None:
+            return
+        slot = self._slot_map.get(name)
+        lane = self.afc.lanes.get(name)
+        if (slot is not None and lane is not None
+                and self._use_feed_assist(lane)
+                and self._feed_assist_active != {slot}):
+            self.logger.info(
+                "ACE assist watchdog: enabling feed assist for %s (slot %d)"
+                % (name, slot))
+            self.afc.reactor.register_callback(
+                lambda et, n=name: self._reconcile_feed_assist(n))
+
+    def _handle_extruder_activated(self):
+        # A tool pickup (e.g. grabbing the probe tool during print start)
+        # activates that tool's extruder. If one of our lanes is loaded on the
+        # now-active extruder, switch feed assist to it. Mode-agnostic.
+        name = self._active_assist_lane()
+        if name is None:
+            return
+        lane = self.afc.lanes.get(name)
+        if lane is not None and self._use_feed_assist(lane):
+            self.afc.reactor.register_callback(
+                lambda et, n=name: self._reconcile_feed_assist(n))
 
     def _wait_for_ace_ready(self, timeout=30.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
