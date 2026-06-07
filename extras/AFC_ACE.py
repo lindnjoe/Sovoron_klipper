@@ -295,19 +295,29 @@ class afcACE(afcUnit):
         self._ace.status_callback = self._on_hw_status_callback
         # Re-establish feed assist after a USB drop/reconnect (common on this
         # hardware). The ACE firmware resets on reconnect and forgets any
-        # running feed assist, so clear our cached state — otherwise the
-        # watchdog's "already active" guard would never re-issue it.
+        # running feed assist, so resync it back to the active lane.
         self._ace.reconnect_callback = self._on_ace_reconnect
 
     def _on_ace_reconnect(self):
         # The ACE forgot its feed-assist state across the reset. Drop our
-        # stale tracking so the watchdog re-enables assist for the active lane
-        # on the next status tick (which respects _operation_active).
+        # stale tracking (otherwise the watchdog's "already active" guard would
+        # never re-issue it) and immediately re-send assist for whatever lane
+        # is currently loaded on the active toolhead — derived from live state
+        # so it stays correct even if a tool change happened during the drop.
         if self._feed_assist_active:
             self.logger.info(
-                "ACE reconnected — clearing stale feed-assist state so it "
-                "re-enables for the active lane")
+                "ACE reconnected — re-establishing feed assist for the "
+                "active lane")
         self._feed_assist_active.clear()
+        # Defer off the reconnect/serial path so the ACE acks don't block it.
+        self.afc.reactor.register_callback(self._resync_assist_after_reconnect)
+
+    def _resync_assist_after_reconnect(self, eventtime):
+        # Don't fight an in-flight load/unload — it sets assist itself when it
+        # finishes. Otherwise let the watchdog re-issue assist for the active
+        # lane right now (its target is empty again, so it will reconcile).
+        if not self._operation_active:
+            self._maybe_assist_watchdog()
 
     def _on_hw_status_callback(self, response):
         """Process heartbeat status from ACE — keep lane states in sync."""
