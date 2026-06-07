@@ -1578,8 +1578,22 @@ class AFCU1Bridge:
             self._apply_lane_flow_k(lane_name)
 
     def _handle_lane_inserted(self, cur_lane):
+        """Event handler for ``afc:lane_inserted``.
+
+        This fires synchronously from the OpenAMS sensor-poll reactor timer.
+        The real handler below can home the printer (G28) and run TOOL_LOAD,
+        and running a homing/toolhead move inline in that timer's flush context
+        corrupts step generation — Klipper dies with "Internal error in
+        stepcompress" / "Invalid sequence" and shuts down. Defer the work onto
+        a fresh reactor callback, which runs on a clean context where gcode and
+        homing are safe.
         """
-        Event handler for ``afc:lane_inserted``.
+        self.printer.get_reactor().register_callback(
+            lambda et, l=cur_lane: self._do_handle_lane_inserted(l))
+
+    def _do_handle_lane_inserted(self, cur_lane):
+        """Deferred body of _handle_lane_inserted (see that method).
+
         Runs auto flow calibration if ``auto_insert_flow_cal`` is enabled for
         the lane. Checks for existing K (memory or Spoolman) before calibrating.
         Loads filament to the toolhead via TOOL_LOAD if not already loaded.
