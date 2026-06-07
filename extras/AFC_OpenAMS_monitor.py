@@ -66,6 +66,11 @@ class FPSState:
         self.current_spool_idx = None
         self.since = None
 
+        # Set True once the lane is actually confirmed loaded to the toolhead.
+        # Used to distinguish "load sequence still finishing" (never confirmed
+        # yet) from a real desync (was confirmed, then silently unloaded).
+        self.toolhead_confirmed = False
+
         # Encoder tracking
         self.last_encoder = None
 
@@ -93,6 +98,7 @@ class FPSState:
         self.current_oams = None
         self.current_spool_idx = None
         self.since = None
+        self.toolhead_confirmed = False
         self.stuck_active = False
         self.stuck_start_time = None
         self.clog_active = False
@@ -193,6 +199,12 @@ class OAMSMonitor:
         self.state.current_spool_idx = spool_idx
         self.state.since = self.reactor.monotonic()
         self.state.last_lane_change_time = self.state.since
+        # Not yet confirmed at the toolhead — AFC's load_sequence (tool_stn +
+        # purge) is still finishing after the OAMS transport completes, so
+        # is_lane_loaded() will read False for a while. Don't auto-stop the
+        # monitor for that; only stop if the lane was confirmed loaded and
+        # then disappeared (a real desync).
+        self.state.toolhead_confirmed = False
         self.state.stuck_active = False
         self.state.clog_active = False
         self.state.clear_encoder_samples()
@@ -221,15 +233,26 @@ class OAMSMonitor:
         if st.state != FPSLoadState.LOADED:
             return eventtime + MONITOR_INTERVAL_IDLE
 
-        # Verify a lane is ACTUALLY loaded to toolhead. If state got
-        # out of sync (e.g. unload didn't go through _oams_unload),
-        # auto-stop the monitor to prevent false detections.
-        if self._is_lane_loaded and not self._is_lane_loaded():
-            self.logger.debug(
-                f"{self.fps_name}: no lane loaded to toolhead, stopping monitor")
-            self._running = False
-            self.state.reset()
-            return self.reactor.NEVER
+        # Verify a lane is ACTUALLY loaded to toolhead. The monitor is started
+        # as soon as the OAMS transport completes, but AFC's load_sequence
+        # (tool_stn + purge) hasn't set tool_loaded yet, so is_lane_loaded()
+        # reads False for ~20s during the load. Only auto-stop on a real
+        # desync — the lane was confirmed loaded once and then disappeared
+        # (e.g. an unload that didn't go through _oams_unload). Until the first
+        # confirmation, just wait; don't stop mid-load.
+        if self._is_lane_loaded:
+            if self._is_lane_loaded():
+                st.toolhead_confirmed = True
+            elif st.toolhead_confirmed:
+                self.logger.debug(
+                    f"{self.fps_name}: lane no longer loaded to toolhead, "
+                    f"stopping monitor")
+                self._running = False
+                self.state.reset()
+                return self.reactor.NEVER
+            else:
+                # Load still finishing — keep the monitor alive but idle.
+                return eventtime + MONITOR_INTERVAL
 
         # Only run detection while actively printing — skip during
         # idle, PRINT_START, homing, probing, manual moves, etc.
