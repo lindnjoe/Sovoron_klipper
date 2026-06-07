@@ -1377,14 +1377,25 @@ class afcACE(afcUnit):
                 'toolhead').get_extruder().get_name()
         except Exception:
             return None
+        # A lane is the assist target when it is loaded (tool_loaded) AND its
+        # extruder is the one on the shuttle. Prefer the lane the extruder
+        # records as loaded, but fall back to the (unique, since only one lane
+        # per extruder is tool_loaded at a time) loaded lane on that extruder.
+        # The fallback matters at print start when a lane is "already loaded":
+        # the load sequence is skipped so extruder.lane_loaded can lag behind
+        # tool_loaded, which used to make this return None and leave assist off.
+        candidate = None
         for lane in self.lanes.values():
             ext_obj = getattr(lane, 'extruder_obj', None)
-            if (ext_obj is not None
-                    and getattr(ext_obj, 'name', None) == active_ext
-                    and getattr(lane, 'tool_loaded', False)
-                    and getattr(ext_obj, 'lane_loaded', None) == lane.name):
+            if (ext_obj is None
+                    or getattr(ext_obj, 'name', None) != active_ext
+                    or not getattr(lane, 'tool_loaded', False)):
+                continue
+            if getattr(ext_obj, 'lane_loaded', None) == lane.name:
                 return lane.name
-        return None
+            if candidate is None:
+                candidate = lane.name
+        return candidate
 
     def _maybe_assist_watchdog(self):
         # Heartbeat watchdog: if the active tool's lane should be assisted but
@@ -1400,8 +1411,8 @@ class afcACE(afcUnit):
         if (slot is not None and lane is not None
                 and self._use_feed_assist(lane)
                 and self._feed_assist_active != {slot}):
-            self.logger.debug(
-                "ACE assist watchdog: reconciling assist to %s (slot %d)"
+            self.logger.info(
+                "ACE assist watchdog: enabling feed assist for %s (slot %d)"
                 % (name, slot))
             self.afc.reactor.register_callback(
                 lambda et, n=name: self._reconcile_feed_assist(n))
