@@ -90,6 +90,10 @@
 #
 #   Then run:  AFC_PLR_CALIBRATE_ZHOME SAVE=1
 #   (z_home_offset: 0.0 must already exist in [AFC_PLR] for SAVE to rewrite it.)
+#
+#   CLEAR_MESH (default 1) runs BED_MESH_CLEAR first so the touches read the
+#   raw bed, not mesh-compensated values — leave it on for an accurate delta.
+#   It does not reload the mesh afterward (your next print/PRINT_START will).
 
 from __future__ import annotations
 
