@@ -166,7 +166,7 @@ class AFCPLR:
         # Both floors are low so solid-state storage can checkpoint tightly.
         # Saves are evaluated on the Z-check timer, so the effective rate is
         # max(save_interval, z_check_interval) — lower both for sub-1s saves.
-        self.save_interval = config.getfloat('save_interval', 30.0, minval=0.1)
+        self.save_interval = config.getfloat('save_interval', 5.0, minval=0.1)
         self.z_check_interval = config.getfloat('z_check_interval', 1.0, minval=0.1)
         self.resume_z_hop = config.getfloat('resume_z_hop', 5.0, minval=0.0)
         self.purge_length = config.getfloat('pre_resume_purge_length', 30.0, minval=0.0)
