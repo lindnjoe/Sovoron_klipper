@@ -57,6 +57,42 @@
 #                                    # rewrites don't clutter Mainsail). A
 #                                    # '.static' companion holds the bed mesh
 #
+# ── Z-home resume (homing_override) ──────────────────────────────────
+#
+# AFC_PLR_RESUME Z_HOME=1 physically re-homes Z instead of trusting the saved
+# Z. For probes that home by touching the bed, it moves to a safe corner
+# (z_home_x / z_home_y, clear of the print) and runs `G28 Z` with get_status
+# z_home_active=True — so your homing_override must touch THERE, not at center,
+# or a blind G28 Z would drive into the print. The override can read from
+# printer['AFC_PLR']: z_home_active, z_home_x, z_home_y, mesh_zero_x/y.
+#
+#   Cartographer / eddy (CARTOGRAPHER_TOUCH):  in your [homing_override] Z
+#   branch, pick the corner touch when a Z-home resume is active:
+#       {% set plr = printer['AFC_PLR'] %}
+#       {% if plr.z_home_active %}
+#           G90
+#           G0 X{plr.z_home_x} Y{plr.z_home_y} F12000   ; safe corner
+#           CARTOGRAPHER_TOUCH_PROBE                     ; touch in place
+#       {% else %}
+#           CARTOGRAPHER_TOUCH_HOME                      ; normal center touch
+#       {% endif %}
+#
+#   Regular probe that homes to the bed (BLTouch / inductive / load cell):
+#   move to the safe corner before the probe touch when active, else center:
+#       {% set plr = printer['AFC_PLR'] %}
+#       {% if plr.z_home_active %}
+#           G0 X{plr.z_home_x} Y{plr.z_home_y} F6000     ; safe corner
+#       {% else %}
+#           G0 X150 Y150 F6000                           ; normal center
+#       {% endif %}
+#       G28.1 Z                                          ; the real Z home (probe)
+#       G0 Z10 F600
+#
+#   Plain Z endstop that homes AWAY from the bed (Z toward max): no override
+#   change needed — just set z_home_standard: True. A blind G28 Z is safe
+#   there (it lifts away from the print); AFC refuses it if [stepper_z] homes
+#   toward the bed.
+#
 # ── Z-offset calibration (AFC_PLR_CALIBRATE_ZHOME) ───────────────────
 #
 # A Z-home resume re-homes Z at a safe corner (z_home_x / z_home_y) instead
