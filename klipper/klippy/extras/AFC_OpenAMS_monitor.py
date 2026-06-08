@@ -373,12 +373,24 @@ class OAMSMonitor:
             else:
                 elapsed = eventtime - st.clog_start_time
                 extrusion_delta = abs(extruder_pos - st.clog_start_extruder)
+                encoder_total = abs((st.last_encoder or 0) - (st.clog_start_encoder or 0))
 
-                if elapsed >= self.clog_dwell and extrusion_delta >= self.clog_extrusion_window:
-                    # Clog confirmed
+                # The FPS buffer decouples the feeder encoder from the extruder:
+                # at low flow the follower feeds in small bursts, so each check's
+                # encoder_delta stays under the per-check slack even though
+                # filament IS flowing. Only a *cumulative* lack of encoder
+                # movement over the window is a real (downstream/nozzle) clog. If
+                # the encoder has made real cumulative progress, the filament is
+                # moving — restart the window instead of firing a false clog.
+                if encoder_total > CLOG_ENCODER_SLACK:
+                    st.clog_start_time = eventtime
+                    st.clog_start_extruder = extruder_pos
+                    st.clog_start_encoder = st.last_encoder
+                elif elapsed >= self.clog_dwell and extrusion_delta >= self.clog_extrusion_window:
+                    # Clog confirmed: extruder advanced past the window while the
+                    # encoder stayed essentially stationary the whole time.
                     if not st.clog_active:
                         st.clog_active = True
-                        encoder_total = abs((st.last_encoder or 0) - (st.clog_start_encoder or 0))
                         msg = (
                             f"Clog detected on {self.fps_name}: "
                             f"extruder advanced {extrusion_delta:.1f}mm, "
