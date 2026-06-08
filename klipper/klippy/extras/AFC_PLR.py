@@ -18,9 +18,12 @@
 #
 # ── GCode Commands ──────────────────────────────────────────────────
 #
-#   AFC_PLR_RESUME
+#   AFC_PLR_RESUME  [Z_HOME=1]
 #       Full power loss resume sequence. Reads saved state, homes XY,
-#       restores Z without homing, heats, primes, and resumes printing.
+#       restores Z, heats, primes, and resumes printing. By default Z is
+#       restored from the saved layer height (no Z homing). Z_HOME=1 instead
+#       physically re-homes Z at the safe corner (z_home_x/y or z_home_gcode)
+#       and applies z_home_offset — use it when the saved Z can't be trusted.
 #
 #   AFC_PLR_SAVE
 #       Manual checkpoint save (for testing/debugging).
@@ -30,6 +33,11 @@
 #
 #   AFC_PLR_STATUS
 #       Show saved PLR state info (file, position, age).
+#
+#   AFC_PLR_CALIBRATE_ZHOME  [SAVE=1] [APPLY=1] [CLEAR_MESH=1]
+#       Calibrate the corner-vs-center Z offset (z_home_offset). See the
+#       "Z-offset calibration" section below for how it works and example
+#       configs for Cartographer and a normal Klipper probe.
 #
 # ── Configuration ───────────────────────────────────────────────────
 #
@@ -48,6 +56,49 @@
 #                                    # root, OUTSIDE the config dir so frequent
 #                                    # rewrites don't clutter Mainsail). A
 #                                    # '.static' companion holds the bed mesh
+#
+# ── Z-offset calibration (AFC_PLR_CALIBRATE_ZHOME) ───────────────────
+#
+# A Z-home resume re-homes Z at a safe corner (z_home_x / z_home_y) instead
+# of bed center, so the consistent corner-vs-center bed-flatness delta must
+# be applied on every resume as z_home_offset. Calibrate that value once.
+# AFC_PLR_CALIBRATE_ZHOME:
+#
+#   1. Anchors Z=0 at the normal center reference  (z_home_calibrate_anchor)
+#   2. Moves to the safe corner                    (z_home_x / z_home_y)
+#   3. Probes IN PLACE there and reads the touch Z (z_home_calibrate_gcode)
+#   4. Reports z_home_offset = -(corner touch Z);  SAVE=1 persists it
+#
+# The touch Z is parsed from the probe's console output, so any probe whose
+# command prints its result works — Cartographer ("estimate contact at z=")
+# or a normal Klipper PROBE ("... is z="). The probe command MUST touch at
+# the current XY (the corner); it must not re-home to center. Use the SAME
+# z_home_x / z_home_y you use for the resume so the measured delta matches.
+#
+#   Cartographer touch:
+#     [AFC_PLR]
+#     z_home_x: 5                            # safe corner the touch can reach
+#     z_home_y: 5
+#     z_home_offset: 0.0                     # written by SAVE=1
+#     z_home_calibrate_anchor: CARTOGRAPHER_TOUCH_HOME   # center touch = Z=0 ref
+#     z_home_calibrate_gcode: CARTOGRAPHER_TOUCH_PROBE   # touches in place
+#
+#   Normal Klipper probe:
+#     [AFC_PLR]
+#     z_home_x: 30                           # safe spot the probe can reach
+#     z_home_y: 30
+#     z_home_offset: 0.0                     # written by SAVE=1
+#     z_home_calibrate_anchor: G28 Z         # center Z home (safe_z_home/probe)
+#     z_home_calibrate_gcode: PROBE          # touches in place, "... is z="
+#
+#   Then run:  AFC_PLR_CALIBRATE_ZHOME SAVE=1
+#   SAVE persists z_home_offset: it rewrites the existing z_home_offset line in
+#   your config if present, otherwise AFC stores it in AFC_auto_vars.cfg
+#   (merges on restart). APPLY=1 sets it for this session only.
+#
+#   CLEAR_MESH (default 1) runs BED_MESH_CLEAR first so the touches read the
+#   raw bed, not mesh-compensated values — leave it on for an accurate delta.
+#   It does not reload the mesh afterward (your next print/PRINT_START will).
 
 from __future__ import annotations
 
@@ -285,30 +336,16 @@ class AFCPLR:
         # power-cut-mid-write clutters it too. The printer_data root is
         # persistent but not a browsable file root, so none of that reaches
         # Mainsail. A custom save_file: is honoured verbatim.
-        legacy_dirs = []
         if self._config_save_file:
             self.save_file = os.path.expanduser(self._config_save_file)
         else:
             self.save_file = os.path.join(
                 self._printer_data_root(), 'afc_plr', 'AFC_PLR_state.json')
-            # Older versions stored it next to the AFC vars file (inside
-            # config/AFC). Record that dir so we migrate/clean it up below.
-            afc_var = getattr(self._afc, 'VarFile', '') if self._afc else ''
-            if afc_var:
-                legacy_dirs.append(
-                    os.path.dirname(os.path.expanduser(afc_var)))
-            legacy_dirs.append(
-                os.path.expanduser('~/printer_data/config/AFC'))
 
         # Companion file holding the static, write-once data (bed mesh). The
         # frequent dynamic checkpoint omits it so periodic saves stay tiny.
         base, ext = os.path.splitext(self.save_file)
         self.static_file = base + '.static' + ext
-
-        # One-time migration + cleanup of the old config-dir location: move a
-        # still-valid checkpoint to the new spot, then remove leftover state
-        # and orphaned temp files so they stop cluttering Mainsail.
-        self._migrate_legacy_state(legacy_dirs)
 
         # Remove orphaned temp files (plr_*.tmp from a power cut mid-write).
         self._cleanup_temp_orphans(os.path.dirname(self.save_file))
@@ -691,38 +728,6 @@ class AFCPLR:
                     os.unlink(os.path.join(directory, name))
                 except OSError:
                     pass
-
-    def _migrate_legacy_state(self, legacy_dirs):
-        # Move a still-valid checkpoint from the old config-dir location to the
-        # new one (if we don't already have one), then delete leftover state
-        # and temp orphans there so they stop cluttering Mainsail.
-        new_dir = os.path.dirname(self.save_file)
-        seen = set()
-        for d in legacy_dirs:
-            if not d:
-                continue
-            d = os.path.abspath(d)
-            if d in seen or d == os.path.abspath(new_dir):
-                continue
-            seen.add(d)
-            old_main = os.path.join(d, 'AFC_PLR_state.json')
-            old_static = os.path.join(d, 'AFC_PLR_state.static.json')
-            if (os.path.exists(old_main) and os.path.exists(old_static)
-                    and not os.path.exists(self.save_file)):
-                try:
-                    os.makedirs(new_dir, exist_ok=True)
-                    os.replace(old_main, self.save_file)
-                    os.replace(old_static, self.static_file)
-                except OSError as e:
-                    self.logger.error("PLR legacy migrate failed: %s" % e)
-            for name in ('AFC_PLR_state.json', 'AFC_PLR_state.static.json'):
-                p = os.path.join(d, name)
-                try:
-                    if os.path.exists(p):
-                        os.unlink(p)
-                except OSError:
-                    pass
-            self._cleanup_temp_orphans(d)
 
     def _save_state(self, sync=False):
         # Gather must run on the reactor thread (it reads live, non-thread-safe
