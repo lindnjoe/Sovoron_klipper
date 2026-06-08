@@ -1183,6 +1183,14 @@ class afcACE(afcUnit):
         the serial unwind. This prevents inadvertent assist state on resume
         if an error during tip-forming pauses the print.
         """
+        # Suppress the assist watchdog for the whole unload. AFC's quick-pull /
+        # cut / tip-forming runs between here and the custom unload sequence
+        # (which is the only thing that sets _operation_active). Without this,
+        # the watchdog re-issues start_feed_assist on its ~2s tick while the
+        # lane is still loaded, and the ACE feeds forward against the retract.
+        # _ace_unload_sequence clears _operation_active in its finally; a failed
+        # tip-form self-heals on the next load (which also resets it).
+        self._operation_active = True
         slot = self._get_slot(cur_lane.name)
         self._stop_feed_assist(slot)
 
