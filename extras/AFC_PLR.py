@@ -32,10 +32,13 @@
 #       Show saved PLR state info (file, position, age).
 #
 #   AFC_PLR_CALIBRATE_ZHOME  [SAVE=1] [APPLY=1] [CLEAR_MESH=1]
-#       Calibrate the corner-vs-center Z offset. Measures the Cartographer
-#       touch delta between the safe corner used on resume and bed center,
-#       and reports the z_home_offset to use. APPLY=1 applies it for this
-#       session; SAVE=1 also writes it to the [AFC_PLR] config.
+#       Calibrate the corner-vs-center Z offset. Anchors Z at center
+#       (z_home_calibrate_anchor, default G28 Z), then probes the safe resume
+#       corner in place with z_home_calibrate_gcode and reads the touch Z to
+#       report the z_home_offset to use. Works with a Cartographer touch
+#       (CARTOGRAPHER_TOUCH_PROBE) or a normal Klipper probe (PROBE) — the
+#       result is parsed from the probe's console output. APPLY=1 applies it
+#       for this session; SAVE=1 also writes it to the [AFC_PLR] config.
 #
 # ── Configuration ───────────────────────────────────────────────────
 #
