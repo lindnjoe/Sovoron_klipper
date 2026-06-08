@@ -32,10 +32,9 @@
 #       Show saved PLR state info (file, position, age).
 #
 #   AFC_PLR_CALIBRATE_ZHOME  [SAVE=1] [APPLY=1] [CLEAR_MESH=1]
-#       Calibrate the corner-vs-center Z offset. Measures the Cartographer
-#       touch delta between the safe corner used on resume and bed center,
-#       and reports the z_home_offset to use. APPLY=1 applies it for this
-#       session; SAVE=1 also writes it to the [AFC_PLR] config.
+#       Calibrate the corner-vs-center Z offset (z_home_offset). See the
+#       "Z-offset calibration" section below for how it works and example
+#       configs for Cartographer and a normal Klipper probe.
 #
 # ── Configuration ───────────────────────────────────────────────────
 #
@@ -54,6 +53,43 @@
 #                                    # root, OUTSIDE the config dir so frequent
 #                                    # rewrites don't clutter Mainsail). A
 #                                    # '.static' companion holds the bed mesh
+#
+# ── Z-offset calibration (AFC_PLR_CALIBRATE_ZHOME) ───────────────────
+#
+# A Z-home resume re-homes Z at a safe corner (z_home_x / z_home_y) instead
+# of bed center, so the consistent corner-vs-center bed-flatness delta must
+# be applied on every resume as z_home_offset. Calibrate that value once.
+# AFC_PLR_CALIBRATE_ZHOME:
+#
+#   1. Anchors Z=0 at the normal center reference  (z_home_calibrate_anchor)
+#   2. Moves to the safe corner                    (z_home_x / z_home_y)
+#   3. Probes IN PLACE there and reads the touch Z (z_home_calibrate_gcode)
+#   4. Reports z_home_offset = -(corner touch Z);  SAVE=1 persists it
+#
+# The touch Z is parsed from the probe's console output, so any probe whose
+# command prints its result works — Cartographer ("estimate contact at z=")
+# or a normal Klipper PROBE ("... is z="). The probe command MUST touch at
+# the current XY (the corner); it must not re-home to center. Use the SAME
+# z_home_x / z_home_y you use for the resume so the measured delta matches.
+#
+#   Cartographer touch:
+#     [AFC_PLR]
+#     z_home_x: 5                            # safe corner the touch can reach
+#     z_home_y: 5
+#     z_home_offset: 0.0                     # written by SAVE=1
+#     z_home_calibrate_anchor: G28 Z         # your normal (center) Z home
+#     z_home_calibrate_gcode: CARTOGRAPHER_TOUCH_PROBE   # touches in place
+#
+#   Normal Klipper probe:
+#     [AFC_PLR]
+#     z_home_x: 30                           # safe spot the probe can reach
+#     z_home_y: 30
+#     z_home_offset: 0.0                     # written by SAVE=1
+#     z_home_calibrate_anchor: G28 Z         # center Z home (safe_z_home/probe)
+#     z_home_calibrate_gcode: PROBE          # touches in place, "... is z="
+#
+#   Then run:  AFC_PLR_CALIBRATE_ZHOME SAVE=1
+#   (z_home_offset: 0.0 must already exist in [AFC_PLR] for SAVE to rewrite it.)
 
 from __future__ import annotations
 
