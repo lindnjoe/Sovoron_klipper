@@ -18,9 +18,12 @@
 #
 # ── GCode Commands ──────────────────────────────────────────────────
 #
-#   AFC_PLR_RESUME
+#   AFC_PLR_RESUME  [Z_HOME=1]
 #       Full power loss resume sequence. Reads saved state, homes XY,
-#       restores Z without homing, heats, primes, and resumes printing.
+#       restores Z, heats, primes, and resumes printing. By default Z is
+#       restored from the saved layer height (no Z homing). Z_HOME=1 instead
+#       physically re-homes Z at the safe corner (z_home_x/y or z_home_gcode)
+#       and applies z_home_offset — use it when the saved Z can't be trusted.
 #
 #   AFC_PLR_SAVE
 #       Manual checkpoint save (for testing/debugging).
@@ -89,7 +92,9 @@
 #     z_home_calibrate_gcode: PROBE          # touches in place, "... is z="
 #
 #   Then run:  AFC_PLR_CALIBRATE_ZHOME SAVE=1
-#   (z_home_offset: 0.0 must already exist in [AFC_PLR] for SAVE to rewrite it.)
+#   SAVE persists z_home_offset: it rewrites the existing z_home_offset line in
+#   your config if present, otherwise AFC stores it in AFC_auto_vars.cfg
+#   (merges on restart). APPLY=1 sets it for this session only.
 #
 #   CLEAR_MESH (default 1) runs BED_MESH_CLEAR first so the touches read the
 #   raw bed, not mesh-compensated values — leave it on for an accurate delta.
