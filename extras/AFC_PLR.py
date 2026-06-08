@@ -77,7 +77,7 @@
 #     z_home_x: 5                            # safe corner the touch can reach
 #     z_home_y: 5
 #     z_home_offset: 0.0                     # written by SAVE=1
-#     z_home_calibrate_anchor: G28 Z         # your normal (center) Z home
+#     z_home_calibrate_anchor: CARTOGRAPHER_TOUCH_HOME   # center touch = Z=0 ref
 #     z_home_calibrate_gcode: CARTOGRAPHER_TOUCH_PROBE   # touches in place
 #
 #   Normal Klipper probe:
