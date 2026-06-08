@@ -43,7 +43,7 @@
 #
 #   [AFC_PLR]
 #   enabled: True                    # Enable/disable PLR
-#   save_interval: 30                # Seconds between periodic checkpoints
+#   save_interval: 5                 # Seconds between periodic checkpoints
 #                                    # (min 0.1; effective rate capped by
 #                                    # z_check_interval below)
 #   z_check_interval: 1.0            # Seconds between Z/layer checks; also how
