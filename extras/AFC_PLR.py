@@ -57,6 +57,17 @@
 #                                    # rewrites don't clutter Mainsail). A
 #                                    # '.static' companion holds the bed mesh
 #
+# ── Exclude-object recovery ──────────────────────────────────────────
+#
+# exclude_object state (the per-object definitions plus which objects the
+# user cancelled) lives only in RAM and is wiped by the restart's
+# reset_file. Without recovery, a resumed print re-prints every cancelled
+# object. PLR snapshots the exclude_object status each checkpoint and, on
+# resume, re-issues EXCLUDE_OBJECT_DEFINE + EXCLUDE_OBJECT after the file is
+# selected (M23) and before the print is started (M24), so cancellations
+# survive a power loss. No configuration needed; inert if [exclude_object]
+# is not loaded. Uses stock Klipper exclude_object — no custom module.
+#
 # ── Z-home resume (homing_override) ──────────────────────────────────
 #
 # AFC_PLR_RESUME Z_HOME=1 physically re-homes Z instead of trusting the saved
@@ -277,8 +288,13 @@ class AFCPLR:
         # mesh actually changes.
         self._mesh_cache_obj = None
         self._mesh_cache_data = None
-        # The static (bed mesh) data is written to a companion file only when
-        # it changes, not every cycle.
+        # Names of the exclude_object definitions last written to the static
+        # file. The geometry is set once when the file header plays (a beat
+        # after tracking starts), so we rewrite the static file when the set
+        # of defined objects changes — same pattern as the mesh cache.
+        self._exclude_names_cache = None
+        # The static (bed mesh + exclude-object geometry) data is written to a
+        # companion file only when it changes, not every cycle.
         self.static_file = None
         self._static_dirty = False
 
@@ -543,6 +559,7 @@ class AFCPLR:
         self._z_up_ticks = 0
         self._mesh_cache_obj = None     # re-capture the mesh for the new print
         self._mesh_cache_data = None
+        self._exclude_names_cache = None  # re-capture exclude objects too
         self._static_dirty = True       # write the static file once for this print
         self._last_save_time = self.reactor.monotonic()
         self.reactor.update_timer(
@@ -725,13 +742,35 @@ class AFCPLR:
             fs = fobj.get_status(self.reactor.monotonic())
             state['fan_speeds'][fname] = fs.get('speed', 0)
 
+        # Exclude-object state. It lives only in RAM (built from the header's
+        # EXCLUDE_OBJECT_DEFINE lines plus live EXCLUDE_OBJECT cancellations)
+        # and is wiped on the restart's reset_file, so a resumed print would
+        # otherwise re-print every object the user had cancelled. The
+        # definitions (geometry) are static; the excluded set and current
+        # object are dynamic (the user cancels objects mid-print).
+        eo = self.printer.lookup_object('exclude_object', None)
+        if eo is not None:
+            eos = eo.get_status(self.reactor.monotonic())
+            objects = eos.get('objects', []) or []
+            state['exclude_objects'] = objects
+            state['excluded_objects'] = eos.get('excluded_objects', []) or []
+            state['current_object'] = eos.get('current_object')
+            # Objects usually appear a beat after tracking starts (the header
+            # runs the DEFINE lines), so rewrite the static file when the set
+            # of defined names changes.
+            names = tuple(o.get('name') for o in objects)
+            if names != self._exclude_names_cache:
+                self._exclude_names_cache = names
+                self._static_dirty = True
+
         return state
 
     # Static, write-once-per-print fields split into the companion file so the
     # frequent dynamic checkpoint stays tiny. None of these change once a print
     # starts (the file being printed, and the bed mesh ~900 points).
     _STATIC_KEYS = ('file_path', 'file_name',
-                    'bed_mesh_profile', 'bed_mesh_points', 'bed_mesh_params')
+                    'bed_mesh_profile', 'bed_mesh_points', 'bed_mesh_params',
+                    'exclude_objects')
 
     def _printer_data_root(self):
         # Derive the printer_data root (one level above 'config') from the AFC
@@ -1001,6 +1040,7 @@ class AFCPLR:
             "  Input shaper:    %s\n"
             "  Feedrate:        %s mm/min\n"
             "  XY recov offset: X=%.4f Y=%.4f\n"
+            "  Exclude objects: %d defined, %d cancelled\n"
             "  Coord / Extrude: %s / %s"
             % (os.path.basename(state.get('file_path', '')),
                state.get('file_position', 0), state.get('bed_temp', 0),
@@ -1013,6 +1053,8 @@ class AFCPLR:
                fmt(state.get('pressure_advance', {}), "%s=%.4f"), is_desc,
                int(feed_rate) if feed_rate else "unchanged",
                self.resume_x_offset, self.resume_y_offset,
+               len(state.get('exclude_objects', []) or []),
+               len(state.get('excluded_objects', []) or []),
                "abs" if state.get('absolute_coord', True) else "rel",
                "abs" if state.get('absolute_extrude', True) else "rel"))
 
@@ -1267,6 +1309,46 @@ class AFCPLR:
         fname = os.path.basename(file_path)
         run('M23 %s' % fname)
         run('M26 S%d' % file_pos)
+
+        # Restore exclude_object state, wiped by the restart's reset_file.
+        # Must run AFTER M23 (which fires reset_file and clears it) and BEFORE
+        # M24 so the move transform and cancellations are in place before any
+        # object body replays — otherwise cancelled objects print again. The
+        # name match alone drives exclusion; the geometry is re-issued so the
+        # front-end object map redraws too.
+        eo = self.printer.lookup_object('exclude_object', None)
+        if eo is not None:
+            objects = state.get('exclude_objects', []) or []
+            excluded = state.get('excluded_objects', []) or []
+            cur_obj = state.get('current_object')
+            if objects or excluded:
+                gcmd.respond_info(
+                    "AFC_PLR: Restoring exclude_object state "
+                    "(%d defined, %d cancelled)" % (len(objects), len(excluded)))
+            for obj in objects:
+                name = obj.get('name')
+                if not name:
+                    continue
+                parts = ['EXCLUDE_OBJECT_DEFINE NAME=%s' % name]
+                center = obj.get('center')
+                if center:
+                    parts.append('CENTER=' + ','.join(str(c) for c in center))
+                polygon = obj.get('polygon')
+                if polygon:
+                    # Compact JSON — the gcode parser splits parameters on
+                    # spaces, so json.dumps' default spacing would corrupt the
+                    # POLYGON value. Moonraker emits it compact for this reason.
+                    parts.append('POLYGON=' + json.dumps(
+                        polygon, separators=(',', ':')))
+                run(' '.join(parts))
+            for name in excluded:
+                run('EXCLUDE_OBJECT NAME=%s' % name)
+            # Power lost mid-object: re-mark the in-progress object so a resume
+            # inside a cancelled object keeps excluding until its
+            # EXCLUDE_OBJECT_END arrives in the replayed body.
+            if cur_obj:
+                run('EXCLUDE_OBJECT_START NAME=%s' % cur_obj)
+
         run('M24')
 
         # 16. Clear saved state
