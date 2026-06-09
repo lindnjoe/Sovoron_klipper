@@ -77,15 +77,21 @@
 # or a blind G28 Z would drive into the print. The override can read from
 # printer['AFC_PLR']: z_home_active, z_home_x, z_home_y, mesh_zero_x/y.
 #
-#   Cartographer / eddy (CARTOGRAPHER_TOUCH):  in your [homing_override] Z
-#   branch, pick the corner touch when a Z-home resume is active:
-#       {% set plr = printer['AFC_PLR'] %}
-#       {% if plr.z_home_active %}
+#   Cartographer / eddy:  in your [homing_override] gcode, inside the Z
+#   branch, move to the safe corner when a Z-home resume is active (else the
+#   normal center), then run G28 Z — with cartographer as the Z endstop that
+#   touches in place at the current XY. (Inside a homing_override, G28 Z runs
+#   the real homing, not the override again, so there's no recursion.)
+#       {% if z %}
 #           G90
-#           G0 X{plr.z_home_x} Y{plr.z_home_y} F12000   ; safe corner
-#           CARTOGRAPHER_TOUCH_PROBE                     ; touch in place
-#       {% else %}
-#           CARTOGRAPHER_TOUCH_HOME                      ; normal center touch
+#           {% set plr = printer['AFC_PLR'] %}
+#           {% if plr.z_home_active %}
+#             G0 X{plr.z_home_x} Y{plr.z_home_y} F12000   ; safe corner
+#           {% else %}
+#             G0 X175 Y175 F12000                         ; normal center
+#           {% endif %}
+#           G28 Z
+#           G0 Z10 F3000
 #       {% endif %}
 #
 #   Regular probe that homes to the bed (BLTouch / inductive / load cell):
