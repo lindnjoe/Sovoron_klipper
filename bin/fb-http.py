@@ -3,6 +3,7 @@
 import argparse
 import ctypes
 import fcntl
+import glob
 import hashlib
 import mmap
 import os
@@ -152,6 +153,106 @@ ABS_MT_POSITION_Y = 0x36
 def log(msg):
     ts = time.strftime('%H:%M:%S')
     print(f"[{ts}] {msg}", flush=True)
+
+# ── Touchscreen auto-detection (self-healing device resolution) ──────
+# Find the touchscreen by what it IS (evdev capabilities), not a hardcoded
+# eventN that can renumber across reboots/driver loads.
+INPUT_PROP_DIRECT = 0x01
+
+def _eviocgbit(ev_type, length):
+    return (2 << 30) | (length << 16) | (0x45 << 8) | (0x20 + ev_type)
+
+def _eviocgprop(length):
+    return (2 << 30) | (length << 16) | (0x45 << 8) | 0x09
+
+def _eviocgname(length):
+    return (2 << 30) | (length << 16) | (0x45 << 8) | 0x06
+
+def _test_bit(bitmap, bit):
+    idx = bit // 8
+    return idx < len(bitmap) and bool(bitmap[idx] & (1 << (bit % 8)))
+
+def _device_is_touchscreen(path):
+    """Return (is_touchscreen, name_str) by querying evdev capabilities."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return False, None
+    try:
+        name = None
+        try:
+            buf = bytearray(256)
+            fcntl.ioctl(fd, _eviocgname(len(buf)), buf)
+            name = bytes(buf).split(b'\x00', 1)[0].decode('utf-8', 'replace')
+        except OSError:
+            pass
+        abs_bits = bytearray(8)
+        try:
+            fcntl.ioctl(fd, _eviocgbit(EV_ABS, len(abs_bits)), abs_bits)
+        except OSError:
+            return False, name
+        has_xy = (_test_bit(abs_bits, ABS_MT_POSITION_X)
+                  or (_test_bit(abs_bits, ABS_X) and _test_bit(abs_bits, ABS_Y)))
+        if not has_xy:
+            return False, name
+        key_bits = bytearray(96)
+        has_touch = False
+        try:
+            fcntl.ioctl(fd, _eviocgbit(EV_KEY, len(key_bits)), key_bits)
+            has_touch = _test_bit(key_bits, BTN_TOUCH)
+        except OSError:
+            pass
+        prop_bits = bytearray(4)
+        is_direct = False
+        try:
+            fcntl.ioctl(fd, _eviocgprop(len(prop_bits)), prop_bits)
+            is_direct = _test_bit(prop_bits, INPUT_PROP_DIRECT)
+        except OSError:
+            pass
+        return (has_touch or is_direct), name
+    finally:
+        os.close(fd)
+
+def _prefer_by_path(dev):
+    """Return a stable /dev/input/by-path symlink for dev if one exists."""
+    bp_dir = '/dev/input/by-path'
+    try:
+        target = os.path.realpath(dev)
+        for link in sorted(os.listdir(bp_dir)):
+            full = os.path.join(bp_dir, link)
+            try:
+                if os.path.realpath(full) == target:
+                    return full
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return dev
+
+def _find_touchscreen():
+    for dev in sorted(glob.glob('/dev/input/event*')):
+        ok, name = _device_is_touchscreen(dev)
+        if ok:
+            return _prefer_by_path(dev), name
+    return None, None
+
+def resolve_touch_device(configured):
+    """A configured path that really is a touchscreen wins (mapped to its
+    stable by-path symlink); otherwise auto-detect, so a moved eventN or wrong
+    --touch corrects itself."""
+    if configured and os.path.exists(configured):
+        ok, _name = _device_is_touchscreen(configured)
+        if ok:
+            return _prefer_by_path(configured)
+        log(f"Configured touch device {configured} is not a touchscreen — auto-detecting")
+    elif configured:
+        log(f"Configured touch device {configured} not found — auto-detecting")
+    found, name = _find_touchscreen()
+    if found:
+        log(f"Auto-detected touchscreen: {found}" + (f" ({name})" if name else ""))
+        return found
+    log(f"No touchscreen auto-detected; falling back to {configured!r}")
+    return configured
 
 # ── Display backends ───────────────────────────────────────────────
 
@@ -428,7 +529,16 @@ class TouchInput:
 
     def _open(self):
         try:
-            self.fd = os.open(self.device, os.O_WRONLY)
+            last_err = None
+            for flags in (os.O_RDWR, os.O_WRONLY):
+                try:
+                    self.fd = os.open(self.device, flags)
+                    last_err = None
+                    break
+                except OSError as e:
+                    last_err = e
+            if last_err is not None:
+                raise last_err
             self._get_abs_info()
             log(f"Touch device: {self.device}, range: {self.touch_max_x}x{self.touch_max_y}")
         except OSError as e:
@@ -611,7 +721,7 @@ def main():
     parser.add_argument('--drm-device', default=None,
                         help='DRM device path (e.g. /dev/dri/card1)')
     parser.add_argument('--fb', default='/dev/fb0', help='Framebuffer device (fbdev mode)')
-    parser.add_argument('--touch', default='/dev/input/event0', help='Touch input device')
+    parser.add_argument('--touch', default='', help='Touch input device (blank = auto-detect the touchscreen)')
     parser.add_argument('--html-dir', default=default_html_dir, help='Path to HTML directory')
     args = parser.parse_args()
 
@@ -642,7 +752,7 @@ def main():
     if fb is None:
         fb = Framebuffer(args.fb)
 
-    touch = TouchInput(args.touch, fb.width, fb.height)
+    touch = TouchInput(resolve_touch_device(args.touch), fb.width, fb.height)
 
     ScreenHandler.framebuffer = fb
     ScreenHandler.touch_input = touch
