@@ -1098,6 +1098,26 @@ class RemoteDisplay:
                 "view-only", resolved, e, hint)
             self._touch = None
 
+        handler_cls = _make_handler(
+            self._fb, self._touch, self.stream_fps, self.logger)
+        try:
+            self._server = ThreadingHTTPServer(
+                (self.bind, self.port), handler_cls)
+            self._server.daemon_threads = True
+            self._thread = threading.Thread(
+                target=self._server.serve_forever, daemon=True)
+            self._thread.start()
+            self.logger.info(
+                "Remote display server on http://%s:%d",
+                self.bind, self.port)
+            self.logger.info(
+                "  Mainsail/Fluidd camera URL: "
+                "http://<host>:%d/stream.mjpg", self.port)
+            self.logger.info(
+                "  Viewer with touch: http://<host>:%d/", self.port)
+        except Exception as e:
+            self.logger.error("Failed to start HTTP server: %s", e)
+
     def _resolve_touch_device(self):
         """Pick the touch device. A configured path that really is a
         touchscreen wins (mapped to its stable by-path symlink); otherwise
@@ -1123,25 +1143,6 @@ class RemoteDisplay:
         self.logger.warning(
             "No touchscreen auto-detected; falling back to %s", configured)
         return configured
-        handler_cls = _make_handler(
-            self._fb, self._touch, self.stream_fps, self.logger)
-        try:
-            self._server = ThreadingHTTPServer(
-                (self.bind, self.port), handler_cls)
-            self._server.daemon_threads = True
-            self._thread = threading.Thread(
-                target=self._server.serve_forever, daemon=True)
-            self._thread.start()
-            self.logger.info(
-                "Remote display server on http://%s:%d",
-                self.bind, self.port)
-            self.logger.info(
-                "  Mainsail/Fluidd camera URL: "
-                "http://<host>:%d/stream.mjpg", self.port)
-            self.logger.info(
-                "  Viewer with touch: http://<host>:%d/", self.port)
-        except Exception as e:
-            self.logger.error("Failed to start HTTP server: %s", e)
 
     def _handle_disconnect(self):
         if self._server:
