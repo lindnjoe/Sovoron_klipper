@@ -8,7 +8,7 @@
             "buffer": null,
             "buffer_status": null,
             "lane": 1,
-            "map": "T0",
+            "map": "T4",
             "load": true,
             "prep": true,
             "tool_loaded": true,
@@ -131,10 +131,10 @@
             "buffer": "FPS_buffer2",
             "buffer_status": "Neutral",
             "lane": 1,
-            "map": "T4",
+            "map": "T0",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
+            "tool_loaded": true,
             "loaded_to_hub": true,
             "material": "TPU for AMS",
             "density": 1.02,
@@ -143,13 +143,13 @@
             "remember_spool": false,
             "spool_id": 50,
             "color": "#000000",
-            "weight": 949.3215106039194,
+            "weight": 949.1743073531445,
             "extruder_temp": 220,
             "bed_temp": 35,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -224,7 +224,7 @@
             "map": "T7",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -237,8 +237,8 @@
             "extruder_temp": 0,
             "bed_temp": 0,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
@@ -391,7 +391,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane4",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -409,7 +409,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane7"
+                "lane_loaded": "lane4"
             },
             "extruder5": {
                 "lane_loaded": null
