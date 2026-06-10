@@ -96,21 +96,7 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {
-        "external_spool": {
-          "assigned": true,
-          "bed_temp": 35,
-          "brand": "Inland",
-          "color_rgb": 0,
-          "material": "TPU for AMS",
-          "nozzle_temp_max": 0,
-          "nozzle_temp_min": 0,
-          "remaining_weight_g": 929.2339477539063,
-          "spool_name": "Inland TPU for AMS - Black ",
-          "spoolman_id": 50,
-          "total_weight_g": 1000.0
-        }
-      },
+      "filament": {},
       "filament_sensors": {
         "sensors": null
       },
@@ -182,7 +168,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-10T03:38:33Z"
+          "timestamp": "2026-06-10T05:30:17Z"
         },
         "optional": []
       },
