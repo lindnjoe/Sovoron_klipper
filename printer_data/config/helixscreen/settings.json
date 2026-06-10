@@ -105,7 +105,7 @@
           "material": "TPU for AMS",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 949.17431640625,
+          "remaining_weight_g": 929.2339477539063,
           "spool_name": "Inland TPU for AMS - Black ",
           "spoolman_id": 50,
           "total_weight_g": 1000.0
@@ -182,7 +182,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-10T03:19:12Z"
+          "timestamp": "2026-06-10T03:38:33Z"
         },
         "optional": []
       },
