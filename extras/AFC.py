@@ -189,6 +189,12 @@ class afc:
         # CHOICES
         self.park_pre_load:bool     = config.getboolean("park_pre_load", False)
         self.park_pre_load_cmd:str  = config.get("park_pre_load_cmd", None)
+        # Macro to run if a load FAILS after park_pre_load_cmd already ran. For
+        # dock-purge setups park_pre_load_cmd docks the tool before loading, so
+        # a mid-load failure leaves the tool stranded in its dock. Point this at
+        # your pickup macro (e.g. CTC_DOCK_PICKUP) to bring the tool back onto
+        # the shuttle so the machine is recoverable. None = leave as-is.
+        self.park_pre_load_error_cmd = config.get("park_pre_load_error_cmd", None)
         self.park                   = config.getboolean("park", False)              # Set to True to enable parking during unload
         self.park_cmd               = config.get('park_cmd', None)                  # Macro to use when parking. Change macro name if you would like to use your own park macro
         self.kick                   = config.getboolean("kick", False)              # Set to True to enable poop kicking after lane loads
@@ -1403,6 +1409,16 @@ class afc:
                     # Run the load sequence, which may include custom gcode commands.
                     success = self.load_sequence(cur_lane, cur_hub, cur_extruder)
                     if not success:
+                        # park_pre_load_cmd may have docked the tool before this
+                        # failed load (dock-purge setups). Run the recovery macro
+                        # to pick it back up so the toolchanger isn't left with
+                        # the tool stranded in its dock, which is hard to recover.
+                        if self.park_pre_load and self.park_pre_load_error_cmd is not None:
+                            try:
+                                self.gcode.run_script_from_command(self.park_pre_load_error_cmd)
+                            except Exception as e:
+                                self.logger.error(
+                                    "park_pre_load_error_cmd failed: {}".format(e))
                         return success
 
                     # Activate the tool-loaded LED and handle filament operations if enabled.
