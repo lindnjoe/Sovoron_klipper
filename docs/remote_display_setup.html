@@ -66,32 +66,39 @@ li{margin:4px 0}
 <p>Add this to your <code>printer.cfg</code> (or an included cfg file):</p>
 <pre><code>[remote_display]
 port: 8092
-touch_device: /dev/input/event0
+#touch_device:           # blank = auto-detect the touchscreen
 #display_backend: auto
 #drm_device:
 #framebuffer_device: /dev/fb0
 #stream_fps: 5
 #bind: 0.0.0.0</code></pre>
-<p class="note">Commented-out lines show defaults. Only <code>touch_device</code> typically needs to be changed.</p>
+<p class="note">Commented-out lines show defaults. Leave <code>touch_device</code> blank and the
+module auto-detects the touchscreen by capability &mdash; it self-heals if the
+<code>eventN</code> number changes. Only set it manually if auto-detect picks the wrong device
+(see Step 2).</p>
 </div>
 
 <!-- ─── Step 2 ────────────────────────────────────────── -->
 
-<h2><span class="step-num">2</span> Find Your Touch Device</h2>
+<h2><span class="step-num">2</span> Touch Device (Optional &mdash; Auto-Detected)</h2>
 
 <div class="step">
-<p>List all input devices:</p>
+<p>By default you don't need to set anything: the module scans <code>/dev/input/event*</code>
+and picks the touchscreen by its capabilities (a direct touch surface with X/Y axes and
+<code>BTN_TOUCH</code>). It also prefers the stable <code>/dev/input/by-path/</code> symlink, so
+the device survives <code>eventN</code> renumbering across reboots. Run <code>REMOTE_DISPLAY_STATUS</code>
+&mdash; the <code>Touch:</code> line shows the resolved device path.</p>
+
+<p>Only set <code>touch_device</code> manually if auto-detect chose the wrong device. List inputs:</p>
 <pre><code>cat /proc/bus/input/devices</code></pre>
 
-<p>Look for your touchscreen &mdash; it will have <code>ABS</code> in its handlers. Example:</p>
-<pre><code>I: Bus=0003 Vendor=222a Product=0001 Name="ILITEK ILITEK-TP"
-H: Handlers=event3</code></pre>
-
-<p>The <code>eventN</code> number is your touch device. Set it in config:</p>
-<pre><code>touch_device: /dev/input/event3</code></pre>
+<p>Find your touchscreen &mdash; it has <code>ABS</code> capabilities and usually <code>PROP=2</code>
+(direct). Note its <code>Handlers=eventN</code>, then prefer the stable by-path form:</p>
+<pre><code>ls -l /dev/input/by-path/        # find the *-event symlink to your eventN
+touch_device: /dev/input/by-path/platform-XXXX.i2c-event</code></pre>
 
 <h4>Quick shortcut</h4>
-<p>Find touch devices automatically:</p>
+<p>List candidate touch devices:</p>
 <pre><code>grep -B5 'ABS' /proc/bus/input/devices | grep -E 'Name|Handlers'</code></pre>
 </div>
 
@@ -252,7 +259,7 @@ aspect_ratio: 800:480</code></pre>
 <tr><td><code>display_backend</code></td><td><code>auto</code></td><td><code>auto</code>, <code>drm</code>, or <code>fbdev</code></td></tr>
 <tr><td><code>drm_device</code></td><td><em>(auto-detect)</em></td><td>DRM card path, e.g. <code>/dev/dri/card1</code></td></tr>
 <tr><td><code>framebuffer_device</code></td><td><code>/dev/fb0</code></td><td>Framebuffer device (fbdev mode only)</td></tr>
-<tr><td><code>touch_device</code></td><td><code>/dev/input/event0</code></td><td>Touch input device path</td></tr>
+<tr><td><code>touch_device</code></td><td><em>(auto-detect)</em></td><td>Touch input device path; blank = auto-detect by capability</td></tr>
 <tr><td><code>stream_fps</code></td><td><code>5</code></td><td>MJPEG stream frame rate</td></tr>
 </table>
 
