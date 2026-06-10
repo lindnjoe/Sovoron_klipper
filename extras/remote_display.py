@@ -9,11 +9,16 @@
 #   display_backend: auto          # auto, drm, or fbdev
 #   drm_device:                    # auto-detect, or e.g. /dev/dri/card2
 #   framebuffer_device: /dev/fb0   # only used when backend is fbdev
-#   touch_device: /dev/input/event3
+#   touch_device:                  # blank = auto-detect the touchscreen by
+#                                  # capability (recommended). Override with a
+#                                  # stable path if needed, e.g.
+#                                  # /dev/input/by-path/platform-XXXX.i2c-event
+#                                  # (a bare /dev/input/eventN can renumber).
 #   stream_fps: 5
 
 import ctypes
 import fcntl
+import glob
 import hashlib
 import logging
 import mmap
@@ -41,6 +46,96 @@ ABS_MT_POSITION_X = 0x35
 ABS_MT_POSITION_Y = 0x36
 
 MJPEG_BOUNDARY = b"frameboundary"
+
+# ── Touchscreen auto-detection (self-healing device resolution) ──────
+# Query evdev capabilities so we can find the touchscreen by what it IS,
+# not by a hardcoded eventN that can renumber across reboots/driver loads.
+INPUT_PROP_DIRECT = 0x01
+
+def _eviocgbit(ev_type, length):
+    # EVIOCGBIT(ev_type, len): read the code bitmap for an event type.
+    return (2 << 30) | (length << 16) | (0x45 << 8) | (0x20 + ev_type)
+
+def _eviocgprop(length):
+    # EVIOCGPROP(len): read the INPUT_PROP_* bitmap.
+    return (2 << 30) | (length << 16) | (0x45 << 8) | 0x09
+
+def _eviocgname(length):
+    # EVIOCGNAME(len): read the device name.
+    return (2 << 30) | (length << 16) | (0x45 << 8) | 0x06
+
+def _test_bit(bitmap, bit):
+    idx = bit // 8
+    return idx < len(bitmap) and bool(bitmap[idx] & (1 << (bit % 8)))
+
+def _device_is_touchscreen(path):
+    """Return (is_touchscreen, name_str) by querying evdev capabilities."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return False, None
+    try:
+        name = None
+        try:
+            buf = bytearray(256)
+            fcntl.ioctl(fd, _eviocgname(len(buf)), buf)
+            name = bytes(buf).split(b'\x00', 1)[0].decode('utf-8', 'replace')
+        except OSError:
+            pass
+        abs_bits = bytearray(8)   # ABS_CNT (0x40) bits
+        try:
+            fcntl.ioctl(fd, _eviocgbit(EV_ABS, len(abs_bits)), abs_bits)
+        except OSError:
+            return False, name
+        has_xy = (_test_bit(abs_bits, ABS_MT_POSITION_X)
+                  or (_test_bit(abs_bits, ABS_X) and _test_bit(abs_bits, ABS_Y)))
+        if not has_xy:
+            return False, name
+        # Confirm it's a touch surface, not a joystick/tablet: BTN_TOUCH or
+        # INPUT_PROP_DIRECT.
+        key_bits = bytearray(96)
+        has_touch = False
+        try:
+            fcntl.ioctl(fd, _eviocgbit(EV_KEY, len(key_bits)), key_bits)
+            has_touch = _test_bit(key_bits, BTN_TOUCH)
+        except OSError:
+            pass
+        prop_bits = bytearray(4)
+        is_direct = False
+        try:
+            fcntl.ioctl(fd, _eviocgprop(len(prop_bits)), prop_bits)
+            is_direct = _test_bit(prop_bits, INPUT_PROP_DIRECT)
+        except OSError:
+            pass
+        return (has_touch or is_direct), name
+    finally:
+        os.close(fd)
+
+def _prefer_by_path(dev):
+    """Return a stable /dev/input/by-path symlink for dev, if one exists, so
+    the resolved path survives eventN renumbering."""
+    bp_dir = '/dev/input/by-path'
+    try:
+        target = os.path.realpath(dev)
+        for link in sorted(os.listdir(bp_dir)):
+            full = os.path.join(bp_dir, link)
+            try:
+                if os.path.realpath(full) == target:
+                    return full
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return dev
+
+def _find_touchscreen():
+    """Scan /dev/input/event* for a touchscreen; return (stable_path, name)
+    or (None, None)."""
+    for dev in sorted(glob.glob('/dev/input/event*')):
+        ok, name = _device_is_touchscreen(dev)
+        if ok:
+            return _prefer_by_path(dev), name
+    return None, None
 
 # ── DRM/KMS constants ──────────────────────────────────────────────
 
@@ -483,7 +578,17 @@ class TouchInput:
         self.touch_max_y = fb_height
 
     def open(self):
-        self.fd = os.open(self.device, os.O_WRONLY)
+        # Prefer O_RDWR (some stacks want it), fall back to O_WRONLY.
+        last_err = None
+        for flags in (os.O_RDWR, os.O_WRONLY):
+            try:
+                self.fd = os.open(self.device, flags)
+                last_err = None
+                break
+            except OSError as e:
+                last_err = e
+        if last_err is not None:
+            raise last_err
         self._detect_range()
 
     def _detect_range(self):
@@ -894,7 +999,9 @@ class RemoteDisplay:
         self.display_backend = config.get('display_backend', 'auto')
         self.fb_device = config.get('framebuffer_device', '/dev/fb0')
         self.drm_device = config.get('drm_device', '')
-        self.touch_device = config.get('touch_device', '/dev/input/event0')
+        # Blank by default: auto-detect the touchscreen by capability. A
+        # configured path still wins if it really is a touchscreen.
+        self.touch_device = config.get('touch_device', '').strip()
         self.stream_fps = config.getint('stream_fps', 5)
         self._server = None
         self._thread = None
@@ -969,19 +1076,53 @@ class RemoteDisplay:
         except Exception as e:
             self.logger.error("Failed to open display: %s", e)
             return
+        # Resolve the touch device: honor a valid configured path, otherwise
+        # auto-detect the touchscreen by capability so a renumbered eventN (or
+        # a stale config) self-heals.
+        resolved = self._resolve_touch_device()
         try:
             self._touch = TouchInput(
-                self.touch_device, self._fb.width, self._fb.height)
+                resolved, self._fb.width, self._fb.height)
             self._touch.open()
+            self.touch_device = resolved
             self.logger.info(
                 "Touch input: %s (range %dx%d)",
-                self.touch_device,
-                self._touch.touch_max_x, self._touch.touch_max_y)
+                resolved, self._touch.touch_max_x, self._touch.touch_max_y)
         except Exception as e:
+            hint = ""
+            if isinstance(e, PermissionError):
+                hint = (" — Klipper's user lacks write access; add it to the "
+                        "'input' group or add a udev rule for the touchscreen")
             self.logger.warning(
-                "Touch input unavailable (%s): %s — "
-                "display will be view-only", self.touch_device, e)
+                "Touch input unavailable (%s): %s%s — display will be "
+                "view-only", resolved, e, hint)
             self._touch = None
+
+    def _resolve_touch_device(self):
+        """Pick the touch device. A configured path that really is a
+        touchscreen wins (mapped to its stable by-path symlink); otherwise
+        auto-detect, so a moved eventN or wrong config corrects itself."""
+        configured = self.touch_device
+        if configured and os.path.exists(configured):
+            ok, _name = _device_is_touchscreen(configured)
+            if ok:
+                return _prefer_by_path(configured)
+            self.logger.warning(
+                "Configured touch_device %s is not a touchscreen — "
+                "auto-detecting", configured)
+        elif configured:
+            self.logger.warning(
+                "Configured touch_device %s not found — auto-detecting",
+                configured)
+        found, name = _find_touchscreen()
+        if found:
+            self.logger.info(
+                "Auto-detected touchscreen: %s%s",
+                found, (" (%s)" % name) if name else "")
+            return found
+        self.logger.warning(
+            "No touchscreen auto-detected; falling back to %s", configured)
+        return configured
         handler_cls = _make_handler(
             self._fb, self._touch, self.stream_fps, self.logger)
         try:
@@ -1022,7 +1163,7 @@ class RemoteDisplay:
                 f"Backend: {backend} ({device})\n"
                 f"Resolution: {self._fb.width}x{self._fb.height} "
                 f"@ {self._fb.bpp}bpp\n"
-                f"Touch: {'available' if self._touch and self._touch.fd else 'unavailable'}\n"
+                f"Touch: {('available (' + self._touch.device + ')') if self._touch and self._touch.fd else 'unavailable'}\n"
                 f"MJPEG stream: /stream.mjpg ({self.stream_fps} fps)\n"
                 f"Snapshot: /snapshot.jpg or /snapshot.png\n"
                 f"Viewer: /")
