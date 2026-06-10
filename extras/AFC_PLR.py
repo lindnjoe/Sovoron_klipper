@@ -52,11 +52,26 @@
 #   resume_z_hop: 5.0                # mm to raise Z during resume
 #   pre_resume_purge_length: 30      # mm of filament to purge on resume
 #   pre_resume_purge_speed: 3        # mm/s purge extrusion speed
+#   resume_x_offset: 0.0             # mm X trim applied on every resume via
+#   resume_y_offset: 0.0             # mm Y trim — see "XY recovery offset"
 #   save_file: <auto>                # Path to state file (auto = printer_data
 #                                    # root, OUTSIDE the config dir so frequent
 #                                    # rewrites don't clutter Mainsail). A
 #                                    # '.static' companion holds the bed mesh
 #
+# ── XY recovery offset (resume_x_offset / resume_y_offset) ───────────
+#
+# A resume always re-homes XY (G28 X Y) from scratch, which can land a tiny,
+# *consistent* amount off from where the original print's home was — enough to
+# shift the resumed layers sideways from the work already on the bed. These two
+# values are a fixed XY trim applied on EVERY resume via
+#   SET_GCODE_OFFSET X_ADJUST=<x> Y_ADJUST=<y> MOVE=0
+# (after homing, before the Z reference is set), to cancel that shift. Leave
+# both 0 unless you can see a seam/step between the pre- and post-resume
+# layers. To dial in: do a test resume, measure how far the new layers are
+# offset from the old (in mm, per axis), set resume_x/y_offset to the negative
+# of that, and re-test. Independent of the Z trims (z_home_offset is the
+# corner-vs-center Z delta; these are the XY home-repeatability delta).
 # ── Exclude-object recovery ──────────────────────────────────────────
 #
 # exclude_object state (the per-object definitions plus which objects the
