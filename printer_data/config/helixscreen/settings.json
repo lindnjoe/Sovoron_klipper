@@ -45,7 +45,7 @@
   },
   "log_path": "/tmp/helixscreen.log",
   "motion": {
-    "jog_mode": 0
+    "jog_mode": 1
   },
   "plugin_install_declined": true,
   "print_start_history": {
@@ -168,7 +168,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-10T05:30:17Z"
+          "timestamp": "2026-06-11T00:20:57Z"
         },
         "optional": []
       },
