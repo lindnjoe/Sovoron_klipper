@@ -633,10 +633,10 @@ class AFC_moonraker:
         if diameter is not None: data["diameter"] = diameter
         if color_hex is not None: data["color_hex"] = color_hex.lstrip("#")
         # Multi-colour spools: Spoolman stores a comma-separated list of hexes
-        # plus a direction ("coaxial" = coextruded, or "longitudinal"). When
-        # multi is set, color_hex is omitted (Spoolman uses one or the other).
+        # plus a direction ("coaxial" = coextruded, or "longitudinal"). We keep
+        # color_hex (the primary colour) set as well, so single-colour UIs like
+        # the AFC spool picker show a swatch instead of black.
         if multi_color_hexes:
-            data.pop("color_hex", None)
             data["multi_color_hexes"] = ",".join(
                 c.lstrip("#") for c in multi_color_hexes) \
                 if isinstance(multi_color_hexes, (list, tuple)) \
