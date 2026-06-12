@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 import json
+import re
 from typing import TYPE_CHECKING
 from urllib.request import Request
 from urllib.parse import urljoin, quote
@@ -125,6 +126,53 @@ class SpoolmanClient:
         if remaining_weight is not None: data["remaining_weight"] = remaining_weight
         if spool_weight is not None: data["spool_weight"] = spool_weight
         return self._spoolman_proxy("POST", "/v1/spool", body=json.dumps(data))
+
+    # ── Flow-K storage (autoflow) ────────────────────────────────────
+    # K is persisted per-spool in Spoolman's comment field as an
+    # "afc_flow_k=<value>" tag, so it follows the physical spool.
+    SPOOLMAN_FLOW_K_TAG = "afc_flow_k"
+
+    def get_spool(self, spool_id):
+        """Read a spool dict from Spoolman (delegated to the live moonraker,
+        which already has get_spool)."""
+        return self._mr.get_spool(spool_id)
+
+    def update_spool_comment_tag(self, spool_id, tag, value):
+        """Upsert a ``tag=value`` pair in a spool's comment field (replacing an
+        existing tag in place, else appending)."""
+        existing = self.get_spool(spool_id)
+        if existing is None:
+            return None
+        comment = existing.get("comment") or ""
+        pattern = r'\b' + re.escape(tag) + r'=\S*'
+        new_tag = f"{tag}={value}"
+        if re.search(pattern, comment):
+            comment = re.sub(pattern, new_tag, comment)
+        elif comment:
+            comment = comment.rstrip() + " " + new_tag
+        else:
+            comment = new_tag
+        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}",
+                                    body={"comment": comment})
+
+    def read_flow_k(self, spool_id):
+        """Parse afc_flow_k=<value> from a spool's comment; None if absent."""
+        spool = self.get_spool(spool_id)
+        if not spool:
+            return None
+        m = re.search(r'\b' + self.SPOOLMAN_FLOW_K_TAG + r'=([\d.]+)',
+                      spool.get("comment") or "")
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                return None
+        return None
+
+    def write_flow_k(self, spool_id, k):
+        """Persist a calibrated flow K to the spool's comment."""
+        return self.update_spool_comment_tag(
+            spool_id, self.SPOOLMAN_FLOW_K_TAG, f"{float(k):.6f}")
 
 # Max RGB Euclidean distance for two spool colours to be the SAME filament.
 # 0.0 = exact hex match (different colours -> different spools). Raise a little
