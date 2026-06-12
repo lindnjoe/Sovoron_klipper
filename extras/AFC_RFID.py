@@ -9,10 +9,122 @@
 # Implementation-specific readers (U1, ACE) import from here.
 
 from __future__ import annotations
+import json
 from typing import TYPE_CHECKING
+from urllib.request import Request
+from urllib.parse import urljoin, quote
 
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
+
+
+class SpoolmanClient:
+    """Spoolman write-client for the RFID sync path.
+
+    The upstream AFC_moonraker only exposes read helpers (get_spool, GET
+    _get_results) — none of the create/search methods our RFID needs. Rather
+    than edit the frozen upstream AFC_utils, this wraps the live moonraker
+    object (reusing its host + GET plumbing) and adds the Spoolman write API.
+    """
+
+    def __init__(self, moonraker):
+        self._mr = moonraker
+        self.host = moonraker.host
+        self.logger = moonraker.logger
+
+    def _get_results(self, url_string, print_error=True):
+        return self._mr._get_results(url_string, print_error)
+
+    def _spoolman_proxy(self, method, path, body=None, print_error=True):
+        """Spoolman API call via moonraker's proxy endpoint."""
+        payload = {"request_method": method, "path": path}
+        if body is not None:
+            # Moonraker's proxy needs body as a JSON object so it sets
+            # Content-Type: application/json upstream (a raw string body is
+            # forwarded without that header and Spoolman 422s).
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except (ValueError, TypeError):
+                    pass
+            payload["body"] = body
+        url = urljoin(self.host, 'server/spoolman/proxy')
+        req = Request(url, json.dumps(payload).encode('utf-8'),
+                      headers={"Content-Type": "application/json"})
+        result = self._get_results(req, print_error)
+        if result is None and method != "GET":
+            self.logger.error(
+                f"Spoolman {method} {path} failed; request body: "
+                f"{json.dumps(body) if body is not None else '(none)'}")
+        return result
+
+    def search_filaments(self, article_number=None, vendor_name=None, material=None):
+        parts = []
+        if article_number:
+            parts.append(f"article_number={quote(str(article_number))}")
+        if vendor_name:
+            parts.append(f"vendor.name={quote(str(vendor_name))}")
+        if material:
+            parts.append(f"material={quote(str(material))}")
+        query = "&".join(parts)
+        path = f"/v1/filament?{query}" if query else "/v1/filament"
+        resp = self._spoolman_proxy("GET", path, print_error=False)
+        return resp if isinstance(resp, list) else []
+
+    def search_spools(self, filament_id=None):
+        parts = []
+        if filament_id is not None:
+            parts.append(f"filament.id={filament_id}")
+        query = "&".join(parts)
+        path = f"/v1/spool?{query}" if query else "/v1/spool"
+        resp = self._spoolman_proxy("GET", path, print_error=False)
+        return resp if isinstance(resp, list) else []
+
+    def get_or_create_vendor(self, name):
+        resp = self._spoolman_proxy(
+            "GET", f"/v1/vendor?name={quote(str(name))}", print_error=False)
+        if isinstance(resp, list) and resp:
+            for v in resp:
+                if v.get("name", "").strip().lower() == name.strip().lower():
+                    return v
+            return resp[0]
+        return self._spoolman_proxy("POST", "/v1/vendor",
+                                    body=json.dumps({"name": name}))
+
+    def create_filament(self, name, vendor_id=None, material=None, density=None,
+                        diameter=None, color_hex=None, settings_extruder_temp=None,
+                        settings_bed_temp=None, weight=None, spool_weight=None,
+                        article_number=None, multi_color_hexes=None,
+                        multi_color_direction=None):
+        data = {"name": name}
+        if vendor_id is not None: data["vendor_id"] = vendor_id
+        if material is not None: data["material"] = material
+        if density is not None: data["density"] = density
+        if diameter is not None: data["diameter"] = diameter
+        if color_hex is not None: data["color_hex"] = color_hex.lstrip("#")
+        # Multi-colour spools use multi_color_hexes (+ direction); Spoolman
+        # accepts only one of color_hex / multi_color_hexes, so drop color_hex.
+        if multi_color_hexes:
+            data.pop("color_hex", None)
+            data["multi_color_hexes"] = ",".join(
+                c.lstrip("#") for c in multi_color_hexes) \
+                if isinstance(multi_color_hexes, (list, tuple)) \
+                else multi_color_hexes
+            data["multi_color_direction"] = multi_color_direction or "coaxial"
+        if settings_extruder_temp is not None: data["settings_extruder_temp"] = settings_extruder_temp
+        if settings_bed_temp is not None: data["settings_bed_temp"] = settings_bed_temp
+        if weight is not None: data["weight"] = weight
+        if spool_weight is not None: data["spool_weight"] = spool_weight
+        if article_number is not None: data["article_number"] = article_number
+        return self._spoolman_proxy("POST", "/v1/filament", body=json.dumps(data))
+
+    def create_spool(self, filament_id, initial_weight=None, remaining_weight=None,
+                     spool_weight=None):
+        data = {"filament_id": filament_id}
+        if initial_weight is not None: data["initial_weight"] = initial_weight
+        if remaining_weight is not None: data["remaining_weight"] = remaining_weight
+        if spool_weight is not None: data["spool_weight"] = spool_weight
+        return self._spoolman_proxy("POST", "/v1/spool", body=json.dumps(data))
 
 # Max RGB Euclidean distance for two spool colours to be the SAME filament.
 # 0.0 = exact hex match (different colours -> different spools). Raise a little
@@ -500,7 +612,9 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
     if not sku and not material:
         return
 
-    moonraker = afc.moonraker
+    # Wrap the live moonraker with our Spoolman write-client (upstream's
+    # AFC_moonraker has only read helpers). Reuses its host + GET plumbing.
+    moonraker = SpoolmanClient(afc.moonraker)
 
     try:
         filament = None
