@@ -98,8 +98,15 @@ def _patch_afc_hub_virtual_state():
 
 
 def _patch_afc_unload_shared_phase():
-    """4. AFC.unload_sequence: run the shared toolhead phase before a custom
-    (ACE/OpenAMS) unload, which upstream's custom_unload_cmd branch skips."""
+    """4. AFC.load_sequence / unload_sequence: run the shared toolhead ops that
+    upstream's custom_load_cmd / custom_unload_cmd branches skip.
+
+    Upstream treats a custom command as a complete replacement: the unload
+    branch skips heat/cut/park/form_tip (+post_unload_macro), and the load
+    branch skips _check_extruder_temp. Our serial units (ACE/OpenAMS) set those
+    commands to just the hardware transport and rely on the shared phase (as our
+    two-phase load/unload did) — otherwise the transport / post-load purge hits
+    a cold extruder and park/form_tip/exit-bin never fire."""
     try:
         from extras import AFC as _afc_mod
     except Exception:
@@ -108,6 +115,7 @@ def _patch_afc_unload_shared_phase():
     if AFCcls is None or getattr(AFCcls, '_afc_custom_unload_phase_patched', False):
         return
     _orig_unload = AFCcls.unload_sequence
+    _orig_load = AFCcls.load_sequence
 
     def _afc_shared_toolhead_unload(self, cur_lane, cur_extruder):
         # lane_unloading: LED + (ACE/OpenAMS) follower/assist stop.
@@ -154,8 +162,21 @@ def _patch_afc_unload_shared_phase():
                 self.logger.error("AFC post_unload_macro error: %s" % e)
         return result
 
+    def _wrapped_load(self, cur_lane, cur_hub, cur_extruder):
+        # Upstream's custom_load_cmd branch skips _check_extruder_temp (only the
+        # stepper branch heats), so the post-load poop/purge runs cold. Heat
+        # (and wait) here before the custom transport.
+        if cur_lane.custom_load_cmd:
+            try:
+                if self._check_extruder_temp(cur_lane):
+                    self.afcDeltaTime.log_with_time("Done heating toolhead")
+            except Exception as e:
+                self.logger.error("AFC custom-load heat error: %s" % e)
+        return _orig_load(self, cur_lane, cur_hub, cur_extruder)
+
     AFCcls._afc_shared_toolhead_unload = _afc_shared_toolhead_unload
     AFCcls.unload_sequence = _wrapped_unload
+    AFCcls.load_sequence = _wrapped_load
     AFCcls._afc_custom_unload_phase_patched = True
 
 
