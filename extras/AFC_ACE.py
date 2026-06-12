@@ -1264,6 +1264,22 @@ class afcACE(afcUnit):
         afc.afcDeltaTime.log_with_time("ACE load transport complete")
         return True
 
+    def lane_unloading(self, lane):
+        """Unload-start hook the upstream core actually calls.
+
+        Upstream's unload sequence invokes ``lane_unloading`` (for LEDs) but
+        never ``prepare_unload``, so we trigger the ACE feed-assist stop here as
+        well. Keeps the watchdog from fighting the retract on the upstream core.
+        """
+        super().lane_unloading(lane)
+        try:
+            self.prepare_unload(lane, getattr(lane, 'hub_obj', None),
+                                getattr(lane, 'extruder_obj', None))
+        except Exception as e:
+            self.logger.warning(
+                "ACE: lane_unloading assist-stop error for %s: %s"
+                % (getattr(lane, 'name', '?'), e))
+
     def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
         """Stop ACE feed assist during filament tip forming.
 
