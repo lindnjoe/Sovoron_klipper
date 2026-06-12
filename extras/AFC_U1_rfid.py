@@ -114,10 +114,11 @@ class AFC_U1_RFID:
             return
         self.logger = self.afc.logger
         for lane_name, channel in self._cfg_channels.items():
-            lane = self.afc.lanes.get(lane_name)
+            lane = self._resolve_lane(lane_name)
             if lane is None:
                 self.logger.warning(
-                    f"U1 RFID: configured lane '{lane_name}' not found in AFC")
+                    f"U1 RFID: configured lane '{lane_name}' not found in AFC "
+                    f"(neither a lane name nor a single-lane extruder)")
                 continue
             if lane_name in self._cfg_scanners:
                 # Mark the lane so any scanner-aware code (incl. bridge hooks
@@ -134,6 +135,28 @@ class AFC_U1_RFID:
             self._last_uid[channel] = None
             self._consecutive_failures[channel] = 0
         self.start()
+
+    def _resolve_lane(self, name):
+        """Resolve a configured name to a lane object.
+
+        Tries the AFC lane registry first (lane name). For individual-extruder
+        tool setups the name is often the *extruder* name, so fall back to the
+        single lane driving that extruder. Returns None if it can't be resolved
+        unambiguously.
+        """
+        lane = self.afc.lanes.get(name)
+        if lane is not None:
+            return lane
+        matches = [l for l in self.afc.lanes.values()
+                   if getattr(getattr(l, 'extruder_obj', None), 'name', None)
+                   == name]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            self.logger.warning(
+                f"U1 RFID: '{name}' matches {len(matches)} lanes on that "
+                f"extruder — use the specific lane name instead")
+        return None
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel.
