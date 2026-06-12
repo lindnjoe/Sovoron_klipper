@@ -68,7 +68,7 @@ class AFCSpool:
                 # SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=3 COLORS=123456,654321 COLOR_NUMS=2 MULTI_MODE=1
                 from extras.print_task_config import DEFAULT_PRINT_TASK_CONFIG
                 extruder_num = 0 if lane.extruder_obj.name == "extruder" else lane.extruder_obj.name[-1]
-                extruder_num = 0 if not extruder_num.isdigit() else int(extruder_num)
+                extruder_num = 0 if not str(extruder_num).isdigit() else int(extruder_num)
                 
                 tmp_print_task_config = copy.deepcopy(self.print_task_config_obj.print_task_config)
 
