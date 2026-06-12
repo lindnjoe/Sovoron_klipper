@@ -136,13 +136,23 @@ def _patch_afc_unload_shared_phase():
                 self.gcode.run_script_from_command(self.form_tip_cmd)
 
     def _wrapped_unload(self, cur_lane, cur_hub, cur_extruder):
-        if cur_lane.custom_unload_cmd:
+        is_custom = bool(cur_lane.custom_unload_cmd)
+        if is_custom:
             try:
                 self._afc_shared_toolhead_unload(cur_lane, cur_extruder)
             except Exception as e:
                 self.logger.error(
                     "AFC shared toolhead unload phase error: %s" % e)
-        return _orig_unload(self, cur_lane, cur_hub, cur_extruder)
+        result = _orig_unload(self, cur_lane, cur_hub, cur_extruder)
+        # Upstream runs post_unload_macro only in the stepper branch, so a custom
+        # unload skips it (e.g. SNAPMAKER_EXIT_DISCARD_BIN). Run it here, after
+        # the transport. (The load side already runs post_load_macro for both.)
+        if is_custom and self.post_unload_macro is not None:
+            try:
+                self.gcode.run_script_from_command(self.post_unload_macro)
+            except Exception as e:
+                self.logger.error("AFC post_unload_macro error: %s" % e)
+        return result
 
     AFCcls._afc_shared_toolhead_unload = _afc_shared_toolhead_unload
     AFCcls.unload_sequence = _wrapped_unload
