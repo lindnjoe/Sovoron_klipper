@@ -70,6 +70,36 @@ def _patch_afc_lane_virtual_hub():
 _patch_afc_lane_virtual_hub()
 
 
+# ── Compat: skip buffer fault detection for steppermless lanes ─────
+# Upstream AFC_buffer's fault timer (extruder_pos_update_event) measures
+# extruder-stepper movement to detect filament problems. ACE/OpenAMS lanes are
+# [AFC_lane ...] (AFCLane, no extruder_stepper) so there's no movement to
+# measure and it would false-fault. Guard the timer to skip those lanes
+# (jimmy's AFC_buffer had this). Idempotent; also applied from ACE.
+def _patch_afc_buffer_steppermless():
+    try:
+        from extras import AFC_buffer as _buf_mod
+    except Exception:
+        return
+    BufCls = getattr(_buf_mod, 'AFCTrigger', None)
+    if BufCls is None or getattr(BufCls, '_afc_steppermless_patched', False):
+        return
+    _timeout = getattr(_buf_mod, 'CHECK_RUNOUT_TIMEOUT', 0.5)
+    _orig = BufCls.extruder_pos_update_event
+
+    def _guarded(self, eventtime):
+        cur = self.current_lane
+        if cur is not None and getattr(cur, 'extruder_stepper', None) is None:
+            return eventtime + _timeout  # no stepper to track; skip fault check
+        return _orig(self, eventtime)
+
+    BufCls.extruder_pos_update_event = _guarded
+    BufCls._afc_steppermless_patched = True
+
+
+_patch_afc_buffer_steppermless()
+
+
 # ── Support classes used by external oams.py module ────────────────
 
 class AMSEventBus:
