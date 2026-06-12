@@ -455,17 +455,15 @@ class AFC_moonraker:
         if material:
             body["material"] = material
         # Multi-colour spools store a comma-separated hex list plus a direction
-        # ("coaxial" = coextruded, or "longitudinal"). We still set color_hex to
-        # the primary colour as well, so single-colour UIs (e.g. the AFC spool
-        # picker, which reads color_hex) show a swatch instead of black.
+        # ("coaxial" = coextruded, or "longitudinal"); color_hex is omitted then.
         if multi_color_hexes:
             body["multi_color_hexes"] = ",".join(
                 c.lstrip("#") for c in multi_color_hexes) \
                 if isinstance(multi_color_hexes, (list, tuple)) \
                 else multi_color_hexes
             body["multi_color_direction"] = multi_color_direction or "coaxial"
-        if color_hex:
-            body["color_hex"] = color_hex.lstrip("#")
+        elif color_hex:
+            body["color_hex"] = color_hex
         if settings_extruder_temp is not None:
             body["settings_extruder_temp"] = settings_extruder_temp
         if settings_bed_temp is not None:
