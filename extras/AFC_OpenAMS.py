@@ -100,6 +100,41 @@ def _patch_afc_buffer_steppermless():
 _patch_afc_buffer_steppermless()
 
 
+# ── Compat: virtual-hub state from the driven hub HES, not lane F1S ─
+# Upstream AFC_hub.state, for a virtual hub, returns any(lane.raw_load_state) —
+# which for OpenAMS is the F1S/feed sensor, NOT the hub HES. ACE/OpenAMS drive
+# the real hub HES via switch_pin_callback (-> hub._state), so a hub that has
+# been driven should report _state. Hubs never driven (vivid-style: load
+# sensors ARE the hub) keep the original behavior. (loaded_to_hub is a position
+# and is unrelated to this sensor state.) Idempotent; also applied from ACE.
+def _patch_afc_hub_virtual_state():
+    try:
+        from extras import AFC_hub as _hub_mod
+    except Exception:
+        return
+    HubCls = getattr(_hub_mod, 'afc_hub', None)
+    if HubCls is None or getattr(HubCls, '_afc_virtual_state_patched', False):
+        return
+    _orig_prop = HubCls.state
+    _orig_cb = HubCls.switch_pin_callback
+
+    def _state_getter(self):
+        if self.is_virtual_pin() and getattr(self, '_state_driven', False):
+            return bool(self._state)
+        return _orig_prop.fget(self)
+
+    def _cb(self, eventtime, state):
+        self._state_driven = True
+        return _orig_cb(self, eventtime, state)
+
+    HubCls.state = property(_state_getter)
+    HubCls.switch_pin_callback = _cb
+    HubCls._afc_virtual_state_patched = True
+
+
+_patch_afc_hub_virtual_state()
+
+
 # ── Support classes used by external oams.py module ────────────────
 
 class AMSEventBus:
