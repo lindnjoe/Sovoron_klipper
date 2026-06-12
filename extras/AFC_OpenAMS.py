@@ -135,6 +135,68 @@ def _patch_afc_hub_virtual_state():
 _patch_afc_hub_virtual_state()
 
 
+# ── Compat: run the shared toolhead phase for custom unloads ───────
+# Upstream's unload_sequence treats custom_unload_cmd as a COMPLETE replacement
+# and skips the shared toolhead phase (heat / quick-pull / cut / park /
+# form_tip / lane_unloading). Our serial units (ACE/OpenAMS) set
+# custom_unload_cmd to just the hardware transport and rely on that phase
+# running first (as our two-phase unload did) — otherwise the OAMS/ACE retract
+# hits a cold extruder and park/form_tip never fire. Restore it: before a
+# custom unload, run the same toolhead ops upstream runs for stepper unloads,
+# then let the original run the transport. Idempotent; also applied from ACE.
+def _patch_afc_unload_shared_phase():
+    try:
+        from extras import AFC as _afc_mod
+    except Exception:
+        return
+    AFCcls = getattr(_afc_mod, 'afc', None)
+    if AFCcls is None or getattr(AFCcls, '_afc_custom_unload_phase_patched', False):
+        return
+    _orig_unload = AFCcls.unload_sequence
+
+    def _afc_shared_toolhead_unload(self, cur_lane, cur_extruder):
+        # lane_unloading: LED + (ACE/OpenAMS) follower/assist stop.
+        cur_lane.unit_obj.lane_unloading(cur_lane)
+        if self._check_extruder_temp(cur_lane):
+            self.afcDeltaTime.log_with_time("Done heating toolhead")
+        self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull",
+                        wait_tool=False)
+        cur_lane.disable_buffer()
+        cur_lane.sync_to_extruder()
+        cur_lane.select_lane()
+        if self.tool_cut:
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            self.gcode.run_script_from_command(
+                "{} EXTRUDER={}".format(self.tool_cut_cmd, cur_extruder.name))
+            if self.park:
+                self.gcode.run_script_from_command(
+                    "{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+        if self.form_tip:
+            if self.park:
+                self.gcode.run_script_from_command(
+                    "{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+            if self.form_tip_cmd == "AFC":
+                self.printer.lookup_object('AFC_form_tip').tip_form()
+            else:
+                self.gcode.run_script_from_command(self.form_tip_cmd)
+
+    def _wrapped_unload(self, cur_lane, cur_hub, cur_extruder):
+        if cur_lane.custom_unload_cmd:
+            try:
+                self._afc_shared_toolhead_unload(cur_lane, cur_extruder)
+            except Exception as e:
+                self.logger.error(
+                    "AFC shared toolhead unload phase error: %s" % e)
+        return _orig_unload(self, cur_lane, cur_hub, cur_extruder)
+
+    AFCcls._afc_shared_toolhead_unload = _afc_shared_toolhead_unload
+    AFCcls.unload_sequence = _wrapped_unload
+    AFCcls._afc_custom_unload_phase_patched = True
+
+
+_patch_afc_unload_shared_phase()
+
+
 # ── Support classes used by external oams.py module ────────────────
 
 class AMSEventBus:
