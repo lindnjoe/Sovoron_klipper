@@ -336,6 +336,23 @@ class AFC_U1_RFID:
         "HUB Loading",
     })
 
+    def _send_lane_data(self, lane):
+        """Push lane data to moonraker, guarded.
+
+        Upstream AFCLane.send_lane_data() dereferences self.afc.moonraker with
+        no None check. A tag can be read before moonraker finishes connecting
+        (it connects async after klippy:ready), so skip the push until it's up —
+        the data is re-sent on the next read / save_vars.
+        """
+        if getattr(self.afc, 'moonraker', None) is None:
+            return
+        try:
+            lane.send_lane_data()
+        except Exception as e:
+            self.logger.debug(
+                f"U1 RFID: send_lane_data skipped for "
+                f"{getattr(lane, 'name', '?')}: {e}")
+
     def _check_channel(self, lane_name: str, channel: int, info: dict = None):
         """Check a single channel for new or changed RFID data.
 
@@ -420,7 +437,7 @@ class AFC_U1_RFID:
             allow_create=allow_create)
         self._notify_scan(brand, material, color, slot_info,
                           lane_name=lane_name)
-        lane.send_lane_data()
+        self._send_lane_data(lane)
         self.afc.save_vars()
         if getattr(lane, 'tool_loaded', False):
             self.printer.send_event("afc:tool_loaded", lane)
@@ -440,7 +457,7 @@ class AFC_U1_RFID:
             except Exception as e:
                 self.logger.warning(
                     f"U1 RFID: failed to clear spool_id on {lane_name}: {e}")
-        lane.send_lane_data()
+        self._send_lane_data(lane)
         self.afc.save_vars()
 
     def _get_channel_info(self, channel: int) -> Optional[dict]:
