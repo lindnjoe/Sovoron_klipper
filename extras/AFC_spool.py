@@ -76,16 +76,18 @@ class AFCSpool:
                 tmp_print_task_config['filament_type'][extruder_num] = lane.material
                 tmp_print_task_config['filament_sub_type'][extruder_num] = "None"
 
-                tmp_print_task_config['filament_color'][extruder_num] = int(lane.color.replace('#', ''), 16) | 0xFF000000
-                tmp_print_task_config['filament_color_rgba'][extruder_num] = lane.color.replace('#', '') + "FF"
-                if lane.multi_color:
-                    tmp_print_task_config['filament_color_multi'][extruder_num]["nums"] = len(lane.multi_color)
-                    tmp_print_task_config['filament_color_multi'][extruder_num]["colors"] = lane.multi_color
-                    tmp_print_task_config['filament_color_multi'][extruder_num]["mode"] = 1
-                else:
-                    tmp_print_task_config['filament_color_multi'][extruder_num]["colors"] = [f"{lane.color.replace('#', '')}"]
-                    tmp_print_task_config['filament_color_multi'][extruder_num]["mode"] = 0
-                    tmp_print_task_config['filament_color_multi'][extruder_num]["nums"] = 1
+                color_hex = lane.color.replace('#', '') if lane.color else ""
+                if color_hex:
+                    tmp_print_task_config['filament_color'][extruder_num] = int(color_hex, 16) | 0xFF000000
+                    tmp_print_task_config['filament_color_rgba'][extruder_num] = color_hex + "FF"
+                    if lane.multi_color:
+                        tmp_print_task_config['filament_color_multi'][extruder_num]["nums"] = len(lane.multi_color)
+                        tmp_print_task_config['filament_color_multi'][extruder_num]["colors"] = lane.multi_color
+                        tmp_print_task_config['filament_color_multi'][extruder_num]["mode"] = 1
+                    else:
+                        tmp_print_task_config['filament_color_multi'][extruder_num]["colors"] = [color_hex]
+                        tmp_print_task_config['filament_color_multi'][extruder_num]["mode"] = 0
+                        tmp_print_task_config['filament_color_multi'][extruder_num]["nums"] = 1
                 self.print_task_config_obj.print_task_config = tmp_print_task_config
                 self.printer.update_snapmaker_config_file(self.print_task_config_obj.config_path,
                                                           self.print_task_config_obj.print_task_config,

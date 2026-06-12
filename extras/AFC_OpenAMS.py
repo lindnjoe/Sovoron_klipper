@@ -1129,6 +1129,27 @@ class afcAMS(afcUnit):
                 self._get_monitor_state(), self.oams, 0, 0,
                 "stop before unload", force=True)
 
+    def form_tip_follower_feed(self, lane, enable):
+        """Drive the follower FORWARD during the form-tip purge so the spool
+        feeds it, then STOP it again afterward (before the hardware unload
+        reverses). Called by the compat shared-unload phase around form_tip.
+        enable=True -> forward feed; enable=False -> stop.
+        """
+        if not self._follower:
+            return
+        try:
+            if enable:
+                self._follower.enable_follower(
+                    self._get_monitor_state(), self.oams, 1,
+                    "form_tip purge feed", force=True)
+            else:
+                self._follower.set_follower_state(
+                    self._get_monitor_state(), self.oams, 0, 0,
+                    "stop after form_tip", force=True)
+        except Exception as e:
+            self.logger.warning(
+                "OAMS form_tip follower control error: %s" % e)
+
     def _oams_unload_inner(self, cur_lane, cur_extruder) -> bool:
         """OAMS custom unload — filament transport only.
 
