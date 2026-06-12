@@ -57,23 +57,48 @@ class AFC_U1_RFID:
         # neither, so the reader owns its config and lifecycle (fully decoupled
         # from the core and the U1 bridge).
         #   [AFC_U1_rfid]
-        #   channels: lane0:0, lane1:1, lane2:2, lane3:3
-        #   scanner_lanes: lane3
-        self._cfg_channels: Dict[str, int] = {}
-        for pair in config.get('channels', '').split(','):
+        #   lane_channels: lane4:1, lane5:2, lane6:3   # tag -> assign to lane
+        #   scanner_channels: 0                         # tag -> stage next spool
+        #   scanner_auto_create: True
+        # lane_channels: a loadable AFC lane reads its RFID channel and the tag
+        # is assigned to THAT lane. (Legacy alias: 'channels'.)
+        self._cfg_channels: Dict[str, int] = {}        # lane_name -> channel
+        lane_chan_str = config.get('lane_channels', None)
+        if lane_chan_str is None:
+            lane_chan_str = config.get('channels', '')
+        for pair in lane_chan_str.split(','):
             pair = pair.strip()
             if not pair:
                 continue
             name, sep, ch = pair.partition(':')
             if not sep:
                 raise config.error(
-                    "AFC_U1_rfid: 'channels' entries must be 'lane:channel', "
-                    "got '%s'" % pair)
+                    "AFC_U1_rfid: 'lane_channels' entries must be "
+                    "'lane:channel', got '%s'" % pair)
             try:
                 self._cfg_channels[name.strip()] = int(ch.strip())
             except ValueError:
                 raise config.error(
                     "AFC_U1_rfid: bad channel number in '%s'" % pair)
+        # scanner_channels: standalone spool-scanner RFID channels with NO lane.
+        # Scanning one stages the spool as next_spool_id for whatever lane loads
+        # next — so a scanner is never tied to (and can't collide with) a lane
+        # name like an OpenAMS 'lane0'.
+        self._cfg_scanner_channels: set = set()
+        for ch in config.get('scanner_channels', '').split(','):
+            ch = ch.strip()
+            if not ch:
+                continue
+            try:
+                self._cfg_scanner_channels.add(int(ch))
+            except ValueError:
+                raise config.error(
+                    "AFC_U1_rfid: bad scanner channel '%s'" % ch)
+        # Auto-create scanned spools in Spoolman (scanner channels have no lane,
+        # so the lane-based auto-create lookup doesn't apply).
+        self._scanner_auto_create = config.getboolean(
+            'scanner_auto_create', True)
+        # scanner_lanes: a loadable lane that ALSO acts as a scanner (rare).
         self._cfg_scanners: set = {s.strip() for s in
                                    config.get('scanner_lanes', '').split(',')
                                    if s.strip()}
@@ -102,6 +127,12 @@ class AFC_U1_RFID:
                 except Exception:
                     pass
             self.register_lane(lane, channel)
+        # Standalone scanner channels: no lane to resolve — register the channel
+        # directly with a None lane so the poll/callback path handles it.
+        for channel in self._cfg_scanner_channels:
+            self._channel_to_lane[channel] = None
+            self._last_uid[channel] = None
+            self._consecutive_failures[channel] = 0
         self.start()
 
     def register_lane(self, lane: AFCLane, channel: int):
@@ -122,19 +153,26 @@ class AFC_U1_RFID:
 
         :return: None
         """
-        if not self._lane_channel_map:
+        if not self._lane_channel_map and not self._cfg_scanner_channels:
             return
         self._gcode = self.afc.gcode
         channels = list(self._lane_channel_map.items())
         self._scanner_channels = {ch for name, ch in channels
                                    if name in self._cfg_scanners}
-        self.logger.info(
-            f"U1 RFID: monitoring {len(channels)} channel(s): "
-            + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
-        if self._scanner_channels:
-            scanner_names = [name for name, ch in channels
-                             if ch in self._scanner_channels]
-            self.logger.info(f"U1 RFID: spool scanner active on: {', '.join(scanner_names)}")
+        self._scanner_channels |= self._cfg_scanner_channels
+        if channels:
+            self.logger.info(
+                f"U1 RFID: monitoring {len(channels)} lane channel(s): "
+                + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
+        if self._cfg_scanner_channels:
+            self.logger.info(
+                "U1 RFID: standalone spool scanner channel(s): "
+                + ", ".join(f"ch{ch}" for ch in sorted(self._cfg_scanner_channels)))
+        lane_scanner_names = [name for name, ch in channels
+                              if ch in self._scanner_channels]
+        if lane_scanner_names:
+            self.logger.info(
+                f"U1 RFID: lane-attached scanner(s): {', '.join(lane_scanner_names)}")
         self._try_attach_filament_detect()
         self._poll_timer = self.reactor.register_timer(
             self._poll_cb, self.reactor.monotonic() + POLL_INTERVAL)
@@ -168,8 +206,10 @@ class AFC_U1_RFID:
         if len(args) >= 2 and isinstance(args[0], int) and isinstance(args[1], dict):
             channel = args[0]
             info = args[1]
-            lane_name = self._channel_to_lane.get(channel)
-            if lane_name is not None:
+            # Registered channels map to a lane name, or None for standalone
+            # scanner channels — both are valid; dispatch on membership.
+            if channel in self._channel_to_lane:
+                lane_name = self._channel_to_lane.get(channel)
                 try:
                     self._check_channel(lane_name, channel, info=info)
                 except Exception as e:
@@ -290,8 +330,11 @@ class AFC_U1_RFID:
 
         if info is None:
             info = self._get_channel_info(channel)
-        lane = self._lane_objects.get(lane_name)
-        is_scanner = lane is not None and getattr(lane, 'spool_scanner', False)
+        # Standalone scanner channel: no lane; the scan stages next_spool_id.
+        scanner_only = channel in self._cfg_scanner_channels
+        lane = None if scanner_only else self._lane_objects.get(lane_name)
+        is_scanner = scanner_only or (
+            lane is not None and getattr(lane, 'spool_scanner', False))
 
         if info is None:
             return
@@ -308,7 +351,7 @@ class AFC_U1_RFID:
         if card_uid == self._last_uid.get(channel):
             return
 
-        if lane is None:
+        if not scanner_only and lane is None:
             return
 
         if not is_scanner and getattr(lane, "status", "") in self._LOCKED_STATES:
@@ -332,12 +375,16 @@ class AFC_U1_RFID:
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
-            allow_create = get_auto_spoolman_create(lane)
+            # Scanner channels have no lane, so the lane-based auto-create
+            # lookup doesn't apply — use the configured scanner default.
+            allow_create = (self._scanner_auto_create if scanner_only
+                            else get_auto_spoolman_create(lane))
             sync_rfid_to_spoolman(
                 self.afc, lane, slot_info, self.logger, "U1 RFID",
                 allow_create=allow_create, set_next=True)
             self._notify_scan(brand, material, color, slot_info,
-                              lane_name=lane_name, is_scanner=True)
+                              lane_name=(lane_name or f"scanner-ch{channel}"),
+                              is_scanner=True)
             return
 
         self.logger.info(f"U1 RFID: tag detected on {lane_name} — {tag_desc}")
