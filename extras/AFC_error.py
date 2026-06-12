@@ -218,11 +218,6 @@ class afcError:
             self.logger.debug("AFC_RESUME: Printer not paused, not executing resume code")
             return
 
-        self.printer.send_event("afc:pre_resume")
-
-        if self.afc.pre_resume_cmd is not None:
-            self.afc.gcode.run_script_from_command(self.afc.pre_resume_cmd)
-
         # Save current pause state
         temp_is_paused = self.afc.function.is_paused()
 
@@ -299,10 +294,7 @@ class afcError:
 
     handle_lane_failure_help = "Get load errors, stop stepper and respond error"
     def handle_lane_failure(self, cur_lane, message, pause=True):
-        try:
-            cur_lane.unit_obj.abort_load(cur_lane)
-        except Exception:
-            pass
+        # Disable the stepper for this lane
         cur_lane.do_enable(False)
         cur_lane.status = AFCLaneState.ERROR
         msg = "{} {}".format(cur_lane.name, message)

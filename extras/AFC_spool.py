@@ -3,9 +3,18 @@
 # Copyright (C) 2024-2026 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
 
+from typing import TYPE_CHECKING
+import copy
+import traceback
+
+if TYPE_CHECKING:
+    from extras.AFC import afc
+    from extras.AFC_lane import AFCLane
 
 class AFCSpool:
+    SNAPMAKER_SET_PRINT_FILAMENT_CONFIG = "SET_PRINT_FILAMENT_CONFIG"
     def __init__(self, config):
         self.printer = config.get_printer()
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
@@ -13,21 +22,19 @@ class AFCSpool:
 
         # Temporary status variables
         self.next_spool_id      = None
-        self.next_spool_info    = None
 
     def handle_connect(self):
         """
         Handle the connection event.
         This function is called when the printer connects. It looks up the AFC object
         and assigns it to the instance variable `self.AFC`.
-
-        :return: None
         """
-        self.afc        = self.printer.lookup_object('AFC')
+        self.afc: afc   = self.printer.lookup_object('AFC')
         self.error      = self.afc.error
         self.reactor    = self.afc.reactor
         self.gcode      = self.afc.gcode
         self.logger     = self.afc.logger
+        self.print_task_config_obj = self.printer.lookup_object('print_task_config', None)
 
         self.disable_weight_check = self.afc.disable_weight_check
 
@@ -35,12 +42,9 @@ class AFCSpool:
         self.printer.register_event_handler("afc_stepper:register_macros",self.register_lane_macros)
 
         self.gcode.register_command("RESET_AFC_MAPPING", self.cmd_RESET_AFC_MAPPING, desc=self.cmd_RESET_AFC_MAPPING_help)
-        self.gcode.register_command("SET_TOOL_REDIRECT", self.cmd_SET_TOOL_REDIRECT, desc=self.cmd_SET_TOOL_REDIRECT_help)
-        self.gcode.register_command("CLEAR_TOOL_REDIRECTS", self.cmd_CLEAR_TOOL_REDIRECTS, desc=self.cmd_CLEAR_TOOL_REDIRECTS_help)
-        self.gcode.register_command("SHOW_MAP", self.cmd_SHOW_MAP, desc=self.cmd_SHOW_MAP_help)
         self.gcode.register_command("SET_NEXT_SPOOL_ID", self.cmd_SET_NEXT_SPOOL_ID, desc=self.cmd_SET_NEXT_SPOOL_ID_help)
 
-    def register_lane_macros(self, lane_obj):
+    def register_lane_macros(self, lane_obj: AFCLane):
         """
         Callback function to register macros with proper lane names so that klipper errors out correctly when users supply lanes that
         are not valid
@@ -53,8 +57,42 @@ class AFCSpool:
         self.gcode.register_mux_command('SET_SPOOL_ID',         "LANE", lane_obj.name, self.cmd_SET_SPOOL_ID,           desc=self.cmd_SET_SPOOL_ID_help)
         self.gcode.register_mux_command('SET_RUNOUT',           "LANE", lane_obj.name, self.cmd_SET_RUNOUT,             desc=self.cmd_SET_RUNOUT_help)
         self.gcode.register_mux_command('SET_MAP',              "LANE", lane_obj.name, self.cmd_SET_MAP,                desc=self.cmd_SET_MAP_help)
-        self.gcode.register_mux_command('SET_REDIRECT',         "LANE", lane_obj.name, self.cmd_SET_REDIRECT,           desc=self.cmd_SET_REDIRECT_help)
         self.gcode.register_mux_command('AFC_SET_SPOOL_TEMP',   "LANE", lane_obj.name, self.cmd_AFC_SET_SPOOL_TEMP,     desc=self.cmd_AFC_SET_SPOOL_TEMP_help)
+
+    def set_snapmaker_filament_params(self, lane: AFCLane):
+        if (self.afc.snapmaker_printer
+            and lane.tool_loaded
+            and lane.name == lane.extruder_obj.lane_loaded):
+            try:
+                # Below could also be done with the following macro for multi color spools
+                # SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=3 COLORS=123456,654321 COLOR_NUMS=2 MULTI_MODE=1
+                from extras.print_task_config import DEFAULT_PRINT_TASK_CONFIG
+                extruder_num = 0 if lane.extruder_obj.name == "extruder" else lane.extruder_obj.name[-1]
+                extruder_num = 0 if not extruder_num.isdigit() else int(extruder_num)
+                
+                tmp_print_task_config = copy.deepcopy(self.print_task_config_obj.print_task_config)
+
+                tmp_print_task_config['filament_vendor'][extruder_num] = "Generic"
+                tmp_print_task_config['filament_type'][extruder_num] = lane.material
+                tmp_print_task_config['filament_sub_type'][extruder_num] = "None"
+
+                tmp_print_task_config['filament_color'][extruder_num] = int(lane.color.replace('#', ''), 16) | 0xFF000000
+                tmp_print_task_config['filament_color_rgba'][extruder_num] = lane.color.replace('#', '') + "FF"
+                if lane.multi_color:
+                    tmp_print_task_config['filament_color_multi'][extruder_num]["nums"] = len(lane.multi_color)
+                    tmp_print_task_config['filament_color_multi'][extruder_num]["colors"] = lane.multi_color
+                    tmp_print_task_config['filament_color_multi'][extruder_num]["mode"] = 1
+                else:
+                    tmp_print_task_config['filament_color_multi'][extruder_num]["colors"] = [f"{lane.color.replace('#', '')}"]
+                    tmp_print_task_config['filament_color_multi'][extruder_num]["mode"] = 0
+                    tmp_print_task_config['filament_color_multi'][extruder_num]["nums"] = 1
+                self.print_task_config_obj.print_task_config = tmp_print_task_config
+                self.printer.update_snapmaker_config_file(self.print_task_config_obj.config_path,
+                                                          self.print_task_config_obj.print_task_config,
+                                                          DEFAULT_PRINT_TASK_CONFIG)
+            except Exception as e:
+                self.logger.error("Error when trying to update colors for snapmaker print_task_config")
+                self.logger.debug(traceback.format_exc())
 
     cmd_AFC_SET_SPOOL_TEMP_help = "Set spool temperatures for a lane"
     def cmd_AFC_SET_SPOOL_TEMP(self, gcmd):
@@ -87,8 +125,7 @@ class AFCSpool:
     cmd_SET_MAP_help = "Changes T(n) mapping for a lane"
     def cmd_SET_MAP(self, gcmd):
         """
-        Performs a 1:1 swap of tool mapping between the specified lane
-        and the lane currently holding the target tool command.
+        This function handles changing the GCODE tool change command for a Lane.
 
         Usage
         -----
@@ -97,7 +134,7 @@ class AFCSpool:
         Example
         -----
         ```
-        SET_MAP LANE=lane0 MAP=T2
+        SET_MAP LANE=lane1 MAP=T1
         ```
         """
         lane = gcmd.get('LANE', None)
@@ -106,6 +143,7 @@ class AFCSpool:
             return
 
         map_cmd = gcmd.get('MAP', None)
+
         if map_cmd is None:
             self.logger.info("No MAP parameter provided, please specify a valid MAP parameter.")
             return
@@ -114,245 +152,24 @@ class AFCSpool:
 
         if map_cmd not in self.afc.tool_cmds:
             self.logger.error("Invalid map command: {}".format(map_cmd))
-            return
-
-        if lane not in self.afc.lanes:
-            self.logger.info('{} Unknown'.format(lane))
-            return
-
-        cur_lane = self.afc.lanes[lane]
-
-        if cur_lane.map == map_cmd:
-            self.logger.info(f"{lane} is already mapped to {map_cmd}")
             return
 
         lane_switch = self.afc.tool_cmds[map_cmd]
-        sw_lane = self.afc.lanes[lane_switch]
-        map_switch = cur_lane.map
-
-        self.afc.tool_cmds[map_cmd] = lane
-        cur_lane.map = map_cmd
-        cur_lane.send_lane_data()
-
-        self.afc.tool_cmds[map_switch] = lane_switch
-        sw_lane.map = map_switch
-        sw_lane.send_lane_data()
-
-        self.afc.save_vars()
-
-    cmd_SET_REDIRECT_help = "Redirect a lane's tool command to a different tool"
-    def cmd_SET_REDIRECT(self, gcmd):
-        """
-        Redirects a lane's tool command so it resolves to a different
-        tool's lane at runtime. Multiple lanes can redirect to the same
-        target, allowing a multi-color print to run on fewer physical
-        lanes. The lane's display in Mainsail updates to show the
-        redirected tool.
-
-        Redirects are session-only, cleared by RESET_AFC_MAPPING or
-        CLEAR_TOOL_REDIRECTS. Requires allow_tool_redirect: True in
-        [AFC] config.
-
-        Usage
-        -----
-        `SET_REDIRECT LANE=<lane> MAP=<T#>`
-
-        Example
-        -----
-        ```
-        SET_REDIRECT LANE=lane0 MAP=T2
-        ```
-        This makes lane0's tool command resolve to T2's lane.
-        """
-        if not self.afc.allow_tool_redirect:
-            self.logger.info("Tool redirect is disabled. Set allow_tool_redirect: True in [AFC] config.")
-            return
-
-        lane = gcmd.get('LANE', None)
-        if lane is None:
-            self.logger.info("No LANE parameter provided, please specify a valid LANE parameter.")
-            return
-
-        map_cmd = gcmd.get('MAP', None)
-        if map_cmd is None:
-            self.logger.info("No MAP parameter provided, please specify a valid MAP parameter.")
-            return
-
-        map_cmd = map_cmd.upper()
-
-        if map_cmd not in self.afc.tool_cmds:
-            self.logger.error("Invalid map command: {}".format(map_cmd))
-            return
-
+        self.logger.debug("lane to switch is {}".format(lane_switch))
         if lane not in self.afc.lanes:
             self.logger.info('{} Unknown'.format(lane))
             return
-
         cur_lane = self.afc.lanes[lane]
-
-        source_cmd = None
-        for tcmd, lname in self.afc.tool_cmds.items():
-            if lname == lane:
-                source_cmd = tcmd
-                break
-        if source_cmd is None:
-            self.logger.error(f"Cannot find tool command for {lane}")
-            return
-        if source_cmd == map_cmd:
-            return
-
-        if source_cmd in self.afc.tool_redirects.values():
-            self.logger.info(
-                f"Cannot redirect {source_cmd} — it is already a redirect target")
-            return
-
-        self.afc.tool_redirects[source_cmd] = map_cmd
+        self.afc.tool_cmds[map_cmd]=lane
+        map_switch = cur_lane.map
         cur_lane.map = map_cmd
         cur_lane.send_lane_data()
-        target_lane = self.afc.tool_cmds.get(map_cmd, "?")
-        self.logger.info(
-            f"Redirected {source_cmd} ({lane}) -> {map_cmd} ({target_lane})")
 
-    cmd_SET_TOOL_REDIRECT_help = "Redirect one or more tool commands to a target tool"
-    def cmd_SET_TOOL_REDIRECT(self, gcmd):
-        """
-        Redirects one or more T# commands to a target T# command so that
-        multiple tools from a print all resolve to the same lane. This
-        allows a multi-color print to run on fewer physical lanes.
-
-        Redirects are session-only and cleared on restart or by
-        RESET_AFC_MAPPING / CLEAR_TOOL_REDIRECTS. Requires
-        allow_tool_redirect: True in [AFC] config.
-
-        Usage
-        -----
-        `SET_TOOL_REDIRECT SOURCE=<T#[,T#,...]> TARGET=<T#>`
-
-        Example
-        -----
-        ```
-        SET_TOOL_REDIRECT SOURCE=T0,T4 TARGET=T6
-        ```
-        This makes T0 and T4 both resolve to T6's lane.
-        """
-        if not self.afc.allow_tool_redirect:
-            self.logger.info("Tool redirect is disabled. Set allow_tool_redirect: True in [AFC] config.")
-            return
-
-        source = gcmd.get('SOURCE', None)
-        target = gcmd.get('TARGET', None)
-
-        if source is None:
-            self.logger.info("No SOURCE parameter provided")
-            return
-        if target is None:
-            self.logger.info("No TARGET parameter provided")
-            return
-
-        target = target.upper()
-        if target not in self.afc.tool_cmds:
-            self.logger.error(f"TARGET {target} is not a valid tool command")
-            return
-
-        sources = [s.strip().upper() for s in source.split(',') if s.strip()]
-        if not sources:
-            self.logger.info("No valid SOURCE tools provided")
-            return
-
-        redirected = []
-        for src in sources:
-            if src == target:
-                continue
-            if src not in self.afc.tool_cmds:
-                self.logger.warning(f"SOURCE {src} is not a registered tool, skipping")
-                continue
-            self.afc.tool_redirects[src] = target
-            src_lane_name = self.afc.tool_cmds.get(src)
-            if src_lane_name:
-                src_lane = self.afc.lanes.get(src_lane_name)
-                if src_lane:
-                    src_lane.map = target
-                    src_lane.send_lane_data()
-            redirected.append(src)
-
-        if redirected:
-            target_lane = self.afc.tool_cmds.get(target, "?")
-            self.logger.info(
-                f"Redirected {','.join(redirected)} -> {target} ({target_lane})")
-
-    cmd_CLEAR_TOOL_REDIRECTS_help = "Clear all tool redirects"
-    def cmd_CLEAR_TOOL_REDIRECTS(self, gcmd):
-        """
-        Clears all tool redirects and restores lane display mappings.
-        Requires allow_tool_redirect: True in [AFC] config.
-
-        Usage
-        -----
-        `CLEAR_TOOL_REDIRECTS`
-        """
-        if not self.afc.allow_tool_redirect:
-            self.logger.info("Tool redirect is disabled. Set allow_tool_redirect: True in [AFC] config.")
-            return
-
-        count = len(self.afc.tool_redirects)
-        # Restore display mappings for redirected lanes
-        for source_cmd in list(self.afc.tool_redirects.keys()):
-            src_lane_name = self.afc.tool_cmds.get(source_cmd)
-            if src_lane_name:
-                src_lane = self.afc.lanes.get(src_lane_name)
-                if src_lane:
-                    src_lane.map = source_cmd
-                    src_lane.send_lane_data()
-        self.afc.tool_redirects.clear()
-        self.logger.info(f"Cleared {count} tool redirect(s)")
-
-    cmd_SHOW_MAP_help = "Show current lane-to-tool mappings and redirects"
-    def cmd_SHOW_MAP(self, gcmd):
-        """
-        Displays the current lane names, their tool mappings, material,
-        and any active redirects in a formatted table.
-
-        Usage
-        -----
-        `SHOW_MAP`
-        """
-        lines = []
-        lines.append("AFC Tool Mapping")
-        lines.append("-" * 52)
-        lines.append(f"{'Lane':<14} {'Tool':<6} {'Material':<10} {'Redirect'}")
-        lines.append("-" * 52)
-
-        # Build reverse redirect lookup: source_cmd -> target_cmd
-        redirects = self.afc.tool_redirects if self.afc.allow_tool_redirect else {}
-
-        for unit_name, unit in self.afc.units.items():
-            for lane in unit.lanes.values():
-                # Find this lane's original tool from tool_cmds
-                orig_cmd = None
-                for tcmd, lname in self.afc.tool_cmds.items():
-                    if lname == lane.name:
-                        orig_cmd = tcmd
-                        break
-                orig_cmd = orig_cmd or "?"
-
-                material = lane.material or ""
-
-                redirect_str = ""
-                if orig_cmd in redirects:
-                    target = redirects[orig_cmd]
-                    target_lane = self.afc.tool_cmds.get(target, "?")
-                    redirect_str = f"-> {target} ({target_lane})"
-
-                lines.append(f"{lane.name:<14} {orig_cmd:<6} {material:<10} {redirect_str}")
-
-        lines.append("-" * 52)
-
-        if redirects:
-            lines.append(f"Active redirects: {len(redirects)}")
-        else:
-            lines.append("No active redirects")
-
-        self.gcode.respond_info("\n".join(lines))
+        sw_lane = self.afc.lanes[lane_switch]
+        self.afc.tool_cmds[map_switch] = lane_switch
+        sw_lane.map = map_switch
+        sw_lane.send_lane_data()
+        self.afc.save_vars()
 
     cmd_SET_COLOR_help = "Set filaments color for a lane"
     def cmd_SET_COLOR(self, gcmd):
@@ -387,6 +204,7 @@ class AFCSpool:
             unit = cur_lane.unit_obj
             self.afc.function.afc_led(unit._get_lane_color(cur_lane, cur_lane.led_ready), cur_lane.led_index)
         self.afc.save_vars()
+        self.set_snapmaker_filament_params(cur_lane)
 
     cmd_SET_WEIGHT_help = "Sets filaments weight for a lane"
     def cmd_SET_WEIGHT(self, gcmd):
@@ -464,14 +282,9 @@ class AFCSpool:
 
         cur_lane.send_lane_data()
         self.afc.save_vars()
+        self.set_snapmaker_filament_params(cur_lane)
 
     def set_active_spool(self, ID):
-        """
-        Set the active spool in Spoolman via a remote webhook call.
-
-        :param ID: Spool ID to set as active
-        :return: None
-        """
         webhooks = self.printer.lookup_object('webhooks')
         if self.afc.spoolman is not None:
             if ID and ID is not None:
@@ -549,9 +362,6 @@ class AFCSpool:
     def _set_values(self, cur_lane):
         """
         Helper function for setting lane spool values
-
-        :param cur_lane: AFCLane object whose spool values are being set
-        :return: None
         """
         # Always reset debounce on spool change
         cur_lane.auto_switch_triggered = False
@@ -563,57 +373,26 @@ class AFCSpool:
             cur_lane.material = self.afc.default_material_type
             cur_lane.weight = 1000 # Defaulting weight to 1000 upon load
 
-        # Only apply staged next_spool during a genuine fresh-spool load,
-        # not when a lane sensor re-triggers mid tool swap.
-        mid_swap = self.afc.current_state in (
-            "Loading", "Unloading", "Tool swap")
-        if not mid_swap:
-            if self.afc.spoolman is not None and self.next_spool_id is not None:
-                spool_id = self.next_spool_id
-                self.next_spool_id = None
-                self.set_spoolID(cur_lane, spool_id)
-            elif cur_lane.spool_id is None and self.next_spool_info is not None:
-                info = self.next_spool_info
-                self.next_spool_info = None
-                self.next_spool_id = None
-                if info.get("material"):
-                    cur_lane.material = info["material"]
-                color_hex = info.get("color_hex", "")
-                if color_hex:
-                    cur_lane.color = f"#{color_hex}"
-                if info.get("extruder_temp"):
-                    cur_lane.extruder_temp = float(info["extruder_temp"])
-                if info.get("bed_temp"):
-                    cur_lane.bed_temp = float(info["bed_temp"])
-                if not getattr(cur_lane, "weight", 0):
-                    cur_lane.weight = 1000
+        if self.afc.spoolman is not None and self.next_spool_id is not None:
+            spool_id = self.next_spool_id
+            self.next_spool_id = None
+            self.set_spoolID(cur_lane, spool_id)
 
     def clear_values(self, cur_lane):
         """
         Helper function for clearing out lane spool values
-
-        :param cur_lane: AFCLane object whose spool values are being cleared
-        :return: None
         """
         cur_lane.spool_id = None
         cur_lane.material = ''
         cur_lane.color = ''
+        cur_lane.multi_color = []
         cur_lane.weight = 0
         cur_lane.auto_switch_triggered = False
         cur_lane.extruder_temp = None
         cur_lane.bed_temp = None
-        self.next_spool_info = None
         cur_lane.clear_lane_data()
 
     def set_spoolID(self, cur_lane, SpoolID, save_vars=True):
-        """
-        Set the spool ID for a lane and update its values from Spoolman.
-
-        :param cur_lane: AFCLane object to assign the spool to
-        :param SpoolID: Spool ID to assign to the lane
-        :param save_vars: Whether to persist variables after setting (default True)
-        :return: None
-        """
         if self.afc.spoolman is not None:
             if SpoolID not in ('', None):
                 try:
@@ -629,8 +408,7 @@ class AFCSpool:
                     cur_lane.filament_diameter  = self._get_filament_values(result['filament'], 'diameter')
                     cur_lane.empty_spool_weight = self._get_filament_values(result, 'spool_weight', default=190)
                     cur_lane.weight             = self._get_filament_values(result, 'remaining_weight')
-                    if hasattr(cur_lane, 'espooler'):
-                        cur_lane.espooler.espooler_values.full_weight = self._get_filament_values(result, 'initial_weight', default=1000)
+                    cur_lane.espooler.espooler_values.full_weight = self._get_filament_values(result, 'initial_weight', default=1000)
 
                     weight_check = self.disable_weight_check
 
@@ -649,8 +427,10 @@ class AFCSpool:
                     # Once support for multicolor is added this needs to be updated
                     if "multi_color_hexes" in result['filament']:
                         cur_lane.color = '#{}'.format(self._get_filament_values(result['filament'], 'multi_color_hexes').split(",")[0])
+                        cur_lane.multi_color = self._get_filament_values(result['filament'], 'multi_color_hexes').split(",")
                     else:
                         cur_lane.color = '#{}'.format(self._get_filament_values(result['filament'], 'color_hex'))
+                        cur_lane.multi_color = []
 
                     cur_lane.send_lane_data()
                     # Refresh LED only if filament is loaded — empty lanes keep their state color
@@ -666,6 +446,9 @@ class AFCSpool:
             # Clears out values if users are not using spoolman and lane isn't set to remember spool, this is to cover this function being called from LANE UNLOAD and clearing out
             # Manually entered information
             self.clear_values(cur_lane)
+
+        self.set_snapmaker_filament_params(cur_lane)
+
         if save_vars: self.afc.save_vars()
 
     cmd_SET_RUNOUT_help = "Set runout lane"
@@ -727,20 +510,17 @@ class AFCSpool:
         ```
         """
 
-        # Gather all tool commands from tool_cmds (never modified in redirect
-        # mode) and original config (_map).  Using lane.map would collapse
-        # duplicates created by redirects.
-        all_cmds = set(self.afc.tool_cmds.keys())
-        for lane in self.afc.lanes.values():
-            if lane._map is not None:
-                all_cmds.add(lane._map)
-        # Build pool of auto-assignable commands (not manually configured)
-        manually_assigned = {lane._map for lane in self.afc.lanes.values() if lane._map is not None}
-        existing_cmds = sorted(
-            all_cmds - manually_assigned,
-            key=lambda x: int("".join([i for i in x if i.isdigit()])))
+        # Gathering existing lane mapping and add to list
+        existing_cmds = [lane.map for lane in self.afc.lanes.values()]
+        # Gather manually assigned mappings and add to list
+        manually_assigned = [ lane._map for lane in self.afc.lanes.values()]
+        # Remove manually assigned mappings from auto assigned mappings
+        existing_cmds = list(set(existing_cmds) - set(manually_assigned))
+        # Sort list in numerical order
+        existing_cmds = sorted(existing_cmds, key=lambda x: int("".join([i for i in x if i.isdigit()])))
         for key, unit in self.afc.units.items():
             for lane in unit.lanes.values():
+                # Reassigning manually assigned mapping to lane
                 if lane._map is not None:
                     map_cmd = lane._map
                 else:
@@ -748,17 +528,12 @@ class AFCSpool:
 
                 self.afc.tool_cmds[map_cmd] = lane.name
                 self.afc.lanes[lane.name].map = map_cmd
-                lane.send_lane_data()
 
         # Resetting runout lanes to None
         runout_opt = gcmd.get('RUNOUT', 'yes').lower()
         if runout_opt != 'no':
             for lane in self.afc.lanes.values():
                 lane.runout_lane = None
-
-        # Clear any session-only tool redirects and print usage
-        self.afc.tool_redirects.clear()
-        self.afc.print_used_tools = None
 
         self.afc.save_vars()
         self.logger.info("Tool mappings reset" + ("" if runout_opt == "no" else " and runout lanes reset"))

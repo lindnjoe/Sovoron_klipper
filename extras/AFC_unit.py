@@ -73,9 +73,6 @@ class afcUnit:
         self.buffer_name                 = config.get('buffer', None)                                        # Buffer name(AFC_buffer) that belongs to this unit, can be overridden in AFC_stepper section
 
         self.remember_spool              = config.get('remember_spool', False)                               # Turns on/off ability to remember last ejected spool values for all lanes in this unit, can be overridden in AFC_stepper section
-        self.auto_spoolman_create        = config.getboolean('auto_spoolman_create', False)
-        self.spoolman_flow_sync          = config.getboolean('spoolman_flow_sync', False)
-        self.auto_insert_flow_cal        = config.getboolean('auto_insert_flow_cal', False)
         # LED SETTINGS
         # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
         self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane
@@ -108,7 +105,7 @@ class afcUnit:
         self.rev_long_moves_speed_factor = config.getfloat("rev_long_moves_speed_factor", self.afc.rev_long_moves_speed_factor)
         self.extruder_clear_dis          = config.getfloat("extruder_clear_dis", 50)                        # Amount to move to clear extruder gears when ejecting filament
         self.enable_buffer_tool_check    = config.getboolean("enable_buffer_tool_check", False)
-        self.tool_max_unload_attempts    = config.getint('tool_max_unload_attempts', self.afc.tool_max_unload_attempts) # Max number of attempts to unload filament from toolhead when using buffer as ramming sensor
+        self.tool_max_unload_attempts    = config.getint('tool_max_unload_attempts', self.afc.tool_max_unload_attempts, minval=0) # Max number of attempts to unload filament from toolhead when using buffer as ramming sensor
 
         # Espooler defines
         # Time in seconds to wait between breaking n20 motors(nSleep/FWD/RWD all 1) and then releasing the break to allow coasting. Setting value here overrides values set in AFC.cfg file
@@ -291,7 +288,7 @@ class afcUnit:
 
         direct_hubs = any( lane.is_direct_dist() for lane in self.lanes.values())
         lanes_loaded = any( (lane.load_state and not getattr(lane.hub_obj, "use_dist_hub", False)) and not lane.is_direct_hub() for lane in self.lanes.values())
-        any_lane_has_td1_ids = any( lane.td1_device_id for lane in self.lanes.values())
+        any_lane_has_td1_ids = any( lane.td1_device_id is not None for lane in self.lanes.values())
 
         if not direct_hubs or lanes_loaded:
             buttons.append(("Calibrate afc_bowden_length", "UNIT_BOW_CALIBRATION UNIT={}".format(self.name), "secondary"))
@@ -344,7 +341,8 @@ class afcUnit:
                 and not lane.tool_loaded):
                 button_label = "{}".format(lane)
                 # Do a bowden length calibration for direct hubs, dist_hub length gets set properly this way
-                if lane.is_direct_hub():
+                if (lane.is_direct_hub()
+                    or getattr(lane.hub_obj, "use_dist_hub", False)):
                     button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
                 else:
                     button_command = "CALIBRATE_AFC LANE={}".format(lane)
@@ -401,7 +399,8 @@ class afcUnit:
 
         for lane in self.lanes.values():
             if (lane.load_state
-                and not lane.is_direct_hub()):
+                and not lane.is_direct_hub()
+                and not getattr(lane.hub_obj, "use_dist_hub", False)):
                 # Create a button for each lane
                 button_label = "{}".format(lane)
                 button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
@@ -489,35 +488,6 @@ class afcUnit:
             led_color = self.afc.function.HexToLedString(color.replace("#", ""))
             self.afc.function.afc_led( led_color, self.led_logo_index )
 
-    def _stop_led_effects(self):
-        try:
-            self.gcode.run_script_from_command("STOP_LED_EFFECTS")
-        except Exception:
-            pass
-
-    def _trigger_led_state(self, lane: AFCLane, static_color, effect_suffix=None):
-        """
-        Smart LED Dispatcher: 
-        1. Always kills existing effects to reset the state.
-        2. Always sets the AFC static status color as the base.
-        3. If a dynamic effect is requested, it overlays it.
-        """
-        # 1. Clear any running effects
-        self._stop_led_effects()
-
-        # 2. Always apply the standard AFC static color first
-        if static_color is not None:
-            self.afc.function.afc_led(static_color, lane.led_index)
-
-        # 3. If an animation is requested, try to overlay it
-        if effect_suffix:
-            effect_name = f"{lane.name}_{effect_suffix}"
-            try:
-                self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
-            except Exception:
-                # If the effect doesn't exist, we just stay on the static color
-                pass
-
     def lane_not_ready(self, lane):
         """
         Common function for setting a lanes led when a lane is not ready
@@ -550,22 +520,10 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self._trigger_led_state(lane, lane.led_ready)
-        if lane.led_spool_index:
+        self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
+        # TODO: double check quattrobox led sets
+        if lane.led_spool_index is not None:
             self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
-
-    def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
-        """
-        Called before Phase 1 toolhead operations in unload_sequence.
-
-        Override in subclasses that need hardware setup (e.g. follower
-        reverse) before cut/park/tip runs.
-
-        :param cur_lane: AFCLane being unloaded
-        :param cur_hub: AFC_hub object for the lane's hub
-        :param cur_extruder: AFCExtruder object for the active extruder
-        """
-        pass
 
     def lane_unloading(self, lane):
         """
@@ -573,7 +531,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self._trigger_led_state(lane, lane.led_unloading, "unloading")
+        self.afc.function.afc_led(lane.led_unloading, lane.led_index)
 
     def lane_unloaded(self, lane: AFCLane):
         """
@@ -581,8 +539,8 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self._trigger_led_state(lane, lane.led_not_ready)
-        if lane.led_spool_index:
+        self.lane_not_ready(lane)
+        if lane.led_spool_index is not None:
             self.afc.function.afc_led(self.afc.led_off, lane.led_spool_index)
 
     def lane_loading(self, lane: AFCLane):
@@ -591,7 +549,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self._trigger_led_state(lane, lane.led_loading, "loading")
+        self.afc.function.afc_led(lane.led_loading, lane.led_index)
 
     def lane_tool_loaded(self, lane: AFCLane):
         """
@@ -600,7 +558,6 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self._stop_led_effects()
         self.afc.function.afc_led(lane.led_tool_loaded, lane.led_index)
         lane.extruder_obj.set_status_led(lane.led_tool_loaded)
 
@@ -611,7 +568,6 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self._stop_led_effects()
         self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
         lane.extruder_obj.set_status_led(lane.led_tool_unloaded)
 
@@ -623,7 +579,6 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self._stop_led_effects()
         color = self._get_lane_color(lane, lane.led_tool_loaded_idle)
         self.afc.function.afc_led(color, lane.led_index)
         # Extruder LED also shows filament color when tool is parked/idle —
@@ -646,7 +601,6 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self._stop_led_effects()
         self.afc.function.afc_led(lane.led_fault, lane.led_index)
 
     def select_lane( self, lane: AFCLane, sel_prep:bool=False ) -> tuple[bool, float|int]:
@@ -671,25 +625,6 @@ class afcUnit:
         Function to check if runout logic should be triggered, override in specific unit
         """
         return False
-
-    def on_filament_insert(self, lane):
-        """
-        Called by handle_load_runout after set_loaded() when filament is newly detected.
-        Fires ``afc:lane_inserted`` event. Override in unit subclasses for RFID sync,
-        prep_post_load, etc.
-
-        :param lane: AFCLane where filament was inserted
-        """
-        self.printer.send_event("afc:lane_inserted", lane)
-
-    def on_filament_remove(self, lane):
-        """
-        Called by handle_load_runout when filament removal is detected.
-        Override in unit subclasses for inventory cleanup, etc.
-
-        :param lane: AFCLane where filament was removed
-        """
-        pass
 
     # Functions are below are placeholders so the function exists for all units, override these function in your unit files
     def _print_function_not_defined(self, name):
@@ -726,83 +661,6 @@ class afcUnit:
 
     def calibration_lane_message(self) -> str:
         return ""
-
-    def abort_load(self, cur_lane):
-        """
-        Cancel any in-progress load operation on the hardware.
-        Override in subclass for hardware-specific cancellation (ACE, OpenAMS).
-
-        :param cur_lane: AFCLane with the in-progress load to cancel
-        """
-        pass
-
-    def lane_move(self, cur_lane, distance, speed_mode):
-        """
-        Move filament in a lane by the given distance.
-        Override in subclass for hardware-specific movement (ACE serial, OpenAMS).
-
-        :param cur_lane: AFCLane to move filament in
-        :param distance: Distance in mm to move (positive=forward, negative=retract)
-        :param speed_mode: Speed profile to use for the move
-        """
-        cur_lane.move_advanced(distance, speed_mode, assist_active=AssistActive.YES)
-
-    def lane_unload(self, cur_lane):
-        """
-        Custom lane unload for hardware-specific retract sequences.
-        Override in subclass. Return non-None to skip the default unload path.
-
-        :param cur_lane: AFCLane to unload
-        :return: Non-None to indicate custom unload was performed, None to use default
-        """
-        return None
-
-    def on_lane_unset_loaded(self, lane, extruder_name):
-        """
-        Called after a lane is manually unset from the toolhead via unset_lane_loaded.
-
-        :param lane: AFCLane that was unset
-        :param extruder_name: Name of the extruder the lane was unset from
-        """
-        pass
-
-    def prep_capture_td1(self, cur_lane):
-        """
-        Custom TD-1 data capture during prep. Override in subclass.
-
-        :param cur_lane: AFCLane to capture TD-1 data for
-        :return: Non-None to indicate custom capture was performed, None to use default
-        """
-        return None
-
-    def capture_td1_data(self, cur_lane):
-        """
-        Custom TD-1 data capture during load. Override in subclass.
-
-        :param cur_lane: AFCLane to capture TD-1 data for
-        :return: Non-None to indicate custom capture was performed, None to use default
-        """
-        return None
-
-    def get_lane_reset_command(self, lane, dis):
-        """
-        Custom lane reset GCode command. Override in subclass.
-
-        :param lane: AFCLane to generate reset command for
-        :param dis: Distance to reset, or None for default
-        :return str or None: Custom GCode command string, or None to use default
-        """
-        return None
-
-    def get_current_lane_fallback(self, tool_obj):
-        """
-        Provide a fallback lane name when on_shuttle() is False.
-        Override in subclass for units that track loaded state differently.
-
-        :param tool_obj: AFCExtruder object to find the lane for
-        :return str or None: Lane name, or None if no fallback available
-        """
-        return None
 
     def get_calibrated_lanes(self) -> Optional[list[str]]:
         """

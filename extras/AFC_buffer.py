@@ -229,9 +229,6 @@ class AFCTrigger:
         :param eventtime: Current event time from reactor
         :return float: Next scheduled event time (eventtime + CHECK_RUNOUT_TIMEOUT)
         """
-        cur_lane = self.current_lane
-        if cur_lane is not None and getattr(cur_lane, 'extruder_stepper', None) is None:
-            return eventtime + CHECK_RUNOUT_TIMEOUT
         extruder_pos = self.get_extruder_pos()
         # Check for filament problems
         if (self.afc.function.is_printing(check_movement=True)

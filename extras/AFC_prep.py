@@ -96,7 +96,6 @@ class afcPrep:
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 1)
 
         self._rename_macros()
-        self.afc.print_version(console_only=True)
 
         # Try and connect to moonraker
         self.afc.handle_moonraker_connect()
@@ -137,6 +136,9 @@ class afcPrep:
                   units["system"]["extruders"][extruder_obj.name]['lane_loaded']:
                     extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
 
+        self.afc.print_version(console_only=True)
+        if self.afc.snapmaker_printer:
+            self.logger.info("Snapmaker Printer Detected")
 
         for lane in self.afc.lanes.keys():
             cur_lane = self.afc.lanes[lane]
@@ -271,40 +273,6 @@ class afcPrep:
         error_str = self.afc.verify_macro_positions()
         if error_str:
             self.logger.error(error_str)
-
-        try:
-            self._start_u1_rfid()
-        except Exception as e:
-            self.logger.info(f"U1 RFID init error: {e}")
-
-    def _start_u1_rfid(self):
-        """Initialize U1 RFID polling if any lanes/extruders have u1_rfid_channel configured."""
-        from extras.AFC_U1_rfid import AFC_U1_RFID
-
-        old_rfid = getattr(self.afc, 'u1_rfid', None)
-        if old_rfid is not None:
-            old_rfid.stop()
-
-        rfid_sources = {}
-        for lane in self.afc.lanes.values():
-            channel = getattr(lane, "u1_rfid_channel", -1)
-            if channel >= 0:
-                rfid_sources[lane.name] = (lane, channel)
-
-        for ext in self.afc.tools.values():
-            tc_lane = getattr(ext, "tc_lane", None)
-            if tc_lane is not None and tc_lane.name not in rfid_sources:
-                channel = getattr(tc_lane, "u1_rfid_channel", -1)
-                if channel >= 0:
-                    rfid_sources[tc_lane.name] = (tc_lane, channel)
-
-        if not rfid_sources:
-            return
-        rfid = AFC_U1_RFID(self.afc)
-        for lane, channel in rfid_sources.values():
-            rfid.register_lane(lane, channel)
-        rfid.start()
-        self.afc.u1_rfid = rfid
 
 def load_config(config):
     return afcPrep(config)

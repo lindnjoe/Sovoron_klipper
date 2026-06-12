@@ -59,6 +59,7 @@ class afc_hub:
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switches as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
+        self.use_dist_hub           = config.getboolean("use_dist_hub", False)      # Value to indicate that lanes dist_hub variable should be used instead of afc_bowden_length value. Set true when setting hub up as a virtual hub
 
         if self.switch_pin.lower() != "virtual":
             buttons = self.printer.load_object(config, "buttons")
@@ -75,6 +76,13 @@ class afc_hub:
         return self.name
 
     def is_virtual_pin(self):
+        """
+        Helper method that returns true when switch_pin variable is set to "virtual", meaning
+        that all load switches in a unit is the hub switch. So if one load switch it triggered
+        then the "hub switch" is triggered.
+
+        :return boolean: Returns True when switch_pin variable equals virtual
+        """
         return self.switch_pin.lower() == "virtual"
 
     def handle_runout(self, eventtime):
@@ -110,7 +118,7 @@ class afc_hub:
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
-                if lane.load is None and lane.prep is not None:
+                if lane.load is None:
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
@@ -172,12 +180,7 @@ class afc_hub:
 
     def get_status(self, eventtime=None):
         self.response = {}
-        if self.is_virtual_pin():
-            self.response['state'] = any(
-                getattr(lane, 'tool_loaded', False) for lane in self.lanes.values()
-            )
-        else:
-            self.response['state'] = bool(self.state)
+        self.response['state'] = bool(self.state)
         self.response['cut'] = self.cut
         self.response['cut_cmd'] = self.cut_cmd
         self.response['cut_dist'] = self.cut_dist
