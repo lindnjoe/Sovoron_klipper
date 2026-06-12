@@ -39,6 +39,37 @@ except Exception:
     OAMSMonitor = None
 
 
+# ── Compat: guard upstream AFC_lane against virtual-hub homing endstops ──
+# Upstream AFC_lane sets up a homing endstop on the hub's switch_pin for ANY
+# hub, with no virtual-pin guard (our jimmy AFC_lane has it). A lane that
+# references a `switch_pin: virtual` hub (every ACE/OpenAMS lane) then calls
+# setup_pin('endstop', 'virtual') and Klipper config-errors at load. We can't
+# edit the frozen upstream AFC_lane, so wrap its _set_homing_endstop to skip
+# virtual pins. Idempotent (flag on the lane class) and safe to apply from
+# multiple units — ACE applies the same guard. Requires the unit section to be
+# loaded before its [AFC_lane ...] sections (the standard AFC config order).
+def _patch_afc_lane_virtual_hub():
+    try:
+        from extras import AFC_lane as _afc_lane_mod
+    except Exception:
+        return
+    LaneCls = getattr(_afc_lane_mod, 'AFCLane', None)
+    if LaneCls is None or getattr(LaneCls, '_afc_virtual_hub_patched', False):
+        return
+    _orig = LaneCls._set_homing_endstop
+
+    def _guarded(self, query_endstops, ppins, pin, name):
+        if pin is not None and str(pin).strip().lower() == "virtual":
+            return  # virtual hub has no physical pin; no homing endstop
+        return _orig(self, query_endstops, ppins, pin, name)
+
+    LaneCls._set_homing_endstop = _guarded
+    LaneCls._afc_virtual_hub_patched = True
+
+
+_patch_afc_lane_virtual_hub()
+
+
 # ── Support classes used by external oams.py module ────────────────
 
 class AMSEventBus:
