@@ -8,6 +8,7 @@
 # Klipper module and syncs to AFC lanes / Spoolman.
 
 from __future__ import annotations
+import logging
 import re
 from typing import TYPE_CHECKING, Optional, Dict
 
@@ -34,11 +35,11 @@ class AFC_U1_RFID:
     """Polls the Snapmaker U1 filament_detect Klipper object for RFID tag data
     and applies it to AFC lanes (material, color) and Spoolman."""
 
-    def __init__(self, afc_obj: afc):
-        self.afc = afc_obj
-        self.printer = afc_obj.printer
-        self.reactor = afc_obj.reactor
-        self.logger = afc_obj.logger
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
+        self.logger = logging.getLogger('AFC_U1_rfid')
+        self.afc = None
         self._filament_detect = None
         self._lane_channel_map: Dict[str, int] = {}
         self._lane_objects: Dict[str, AFCLane] = {}
@@ -49,6 +50,59 @@ class AFC_U1_RFID:
         self._consecutive_failures: Dict[int, int] = {}
         self._backed_off: bool = False
         self._backoff_cycles: int = 0
+        # Lane->channel map and scanner lanes are configured in THIS section.
+        # On our deviated core these were per-lane options (u1_rfid_channel /
+        # spool_scanner on [AFC_stepper ...]) read by AFC_lane, and the reader
+        # was wired up by AFC_prep. Upstream AFC_lane/AFC_prep are frozen and do
+        # neither, so the reader owns its config and lifecycle (fully decoupled
+        # from the core and the U1 bridge).
+        #   [AFC_U1_rfid]
+        #   channels: lane0:0, lane1:1, lane2:2, lane3:3
+        #   scanner_lanes: lane3
+        self._cfg_channels: Dict[str, int] = {}
+        for pair in config.get('channels', '').split(','):
+            pair = pair.strip()
+            if not pair:
+                continue
+            name, sep, ch = pair.partition(':')
+            if not sep:
+                raise config.error(
+                    "AFC_U1_rfid: 'channels' entries must be 'lane:channel', "
+                    "got '%s'" % pair)
+            try:
+                self._cfg_channels[name.strip()] = int(ch.strip())
+            except ValueError:
+                raise config.error(
+                    "AFC_U1_rfid: bad channel number in '%s'" % pair)
+        self._cfg_scanners: set = {s.strip() for s in
+                                   config.get('scanner_lanes', '').split(',')
+                                   if s.strip()}
+        self.printer.register_event_handler("klippy:ready", self._handle_ready)
+
+    def _handle_ready(self):
+        """Resolve configured lanes against AFC and start polling. Replaces the
+        old AFC_prep._init_u1_rfid wiring that lived in the (now upstream) core.
+        """
+        self.afc = self.printer.lookup_object('AFC', None)
+        if self.afc is None:
+            self.logger.warning("AFC_U1_rfid: AFC not loaded; reader disabled")
+            return
+        self.logger = self.afc.logger
+        for lane_name, channel in self._cfg_channels.items():
+            lane = self.afc.lanes.get(lane_name)
+            if lane is None:
+                self.logger.warning(
+                    f"U1 RFID: configured lane '{lane_name}' not found in AFC")
+                continue
+            if lane_name in self._cfg_scanners:
+                # Mark the lane so any scanner-aware code (incl. bridge hooks
+                # that read lane.spool_scanner) sees it.
+                try:
+                    lane.spool_scanner = True
+                except Exception:
+                    pass
+            self.register_lane(lane, channel)
+        self.start()
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel.
@@ -73,7 +127,7 @@ class AFC_U1_RFID:
         self._gcode = self.afc.gcode
         channels = list(self._lane_channel_map.items())
         self._scanner_channels = {ch for name, ch in channels
-                                   if getattr(self._lane_objects.get(name), 'spool_scanner', False)}
+                                   if name in self._cfg_scanners}
         self.logger.info(
             f"U1 RFID: monitoring {len(channels)} channel(s): "
             + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
@@ -523,3 +577,7 @@ class AFC_U1_RFID:
             self.reactor.pause(
                 self.reactor.monotonic() + _FORCE_READ_POLL_STEP)
         self._check_channel(lane_name, channel)
+
+
+def load_config(config):
+    return AFC_U1_RFID(config)
