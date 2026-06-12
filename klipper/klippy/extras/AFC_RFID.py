@@ -600,11 +600,8 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                 material=material or None,
                 density=density_for_material(material),
                 diameter=diameter,
-                # Always store the primary colour. Dual/multi spools also store
-                # the full set in multi_color_hexes (used for identity matching),
-                # but keeping color_hex set means the AFC spool picker shows the
-                # primary colour instead of black for multi-colour spools.
-                color_hex=color_hex,
+                # Single -> color_hex; dual/multi -> multi_color_hexes (coaxial).
+                color_hex=color_hex if not is_multi else None,
                 multi_color_hexes=scanned_colors if is_multi else None,
                 settings_extruder_temp=ext_temp,
                 settings_bed_temp=bed_temp,
