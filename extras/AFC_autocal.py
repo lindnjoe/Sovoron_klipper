@@ -4,34 +4,34 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
-# AFC AutoCal — per-spool flow calibration (K) management.
+# AFC AutoCal — per-spool flow calibration (K), all-or-nothing.
 #
 # Decoupled from any RFID reader and from the U1 bridge: it keys purely off a
 # lane's spool_id, so it works no matter how the spool was identified (RFID,
-# scanner, or manual SET_SPOOL_ID). Responsibilities:
-#   * read a spool's stored flow K from Spoolman (comment tag afc_flow_k=...)
-#   * cache it per-lane (validated against the spool_id it was stored for)
-#   * apply it to the active extruder via the flow_calibrator module
-#   * re-apply after events that reset pressure advance (tool load, homing,
-#     extruder activation)
-#   * optionally run a calibration (FLOW_CALIBRATE) and persist the new K
+# scanner, or manual SET_SPOOL_ID).
 #
-# The heavy calibration *mechanics* (discard-bin extrusion, print_task_config
-# sync) live in the flow_calibrator / U1 bridge; this module just invokes
-# FLOW_CALIBRATE and stores the result.
+# Behaviour when ``enabled``: on every tool load, for ANY lane —
+#   * if the spool already has a stored K in Spoolman  -> apply it
+#   * otherwise                                        -> run a calibration,
+#                                                         then store the K on
+#                                                         the Spoolman spool
+# It also re-applies the current lane's K after events that reset pressure
+# advance (homing, extruder activation). When disabled it does nothing.
+#
+# K is persisted per-spool in Spoolman's comment field (afc_flow_k=<value>),
+# read/written via the shared SpoolmanClient. The actual measurement is the
+# ``calibrate_gcode`` command (default FLOW_CALIBRATE) — point it at a macro
+# that handles any purge/discard-bin mechanics if needed.
 #
 # ── Configuration ───────────────────────────────────────────────────
 #   [AFC_autocal]
-#   flow_sync_lanes:  lane0, lane4, lane5   # lanes that sync K to/from Spoolman
-#   auto_calibrate_lanes:                   # lanes to auto-run FLOW_CALIBRATE on
-#                                           # when loaded with no stored K (opt)
+#   enabled: True                 # master on/off for all lanes
+#   calibrate_gcode: FLOW_CALIBRATE   # command run to measure K (default)
 
 from __future__ import annotations
 import logging
 
 from extras.AFC_RFID import SpoolmanClient
-
-SPOOLMAN_FLOW_K_TAG = "afc_flow_k"
 
 
 class AFC_autocal:
@@ -43,12 +43,8 @@ class AFC_autocal:
         self.afc = None
         self._lane_flow_k = {}   # lane_name -> (spool_id, k)
 
-        self._flow_sync_lanes = {s.strip() for s in
-                                 config.get('flow_sync_lanes', '').split(',')
-                                 if s.strip()}
-        self._auto_cal_lanes = {s.strip() for s in
-                                config.get('auto_calibrate_lanes', '').split(',')
-                                if s.strip()}
+        self.enabled = config.getboolean('enabled', False)
+        self.calibrate_gcode = config.get('calibrate_gcode', 'FLOW_CALIBRATE')
 
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.printer.register_event_handler('afc:tool_loaded',
@@ -90,12 +86,6 @@ class AFC_autocal:
             return int(sid)
         except (ValueError, TypeError):
             return None
-
-    def _flow_sync_enabled(self, lane) -> bool:
-        if lane.name in self._flow_sync_lanes:
-            return True
-        unit = getattr(lane, 'unit_obj', None)
-        return bool(getattr(unit, 'spoolman_flow_sync', False)) if unit else False
 
     def _set_lane_k(self, lane, k):
         self._lane_flow_k[lane.name] = (
@@ -149,13 +139,40 @@ class AFC_autocal:
         return msg
 
     def _ensure_k_loaded(self, lane):
-        """Return K for a lane: cached, else from Spoolman (if sync on)."""
+        """Return K for a lane: cached, else from Spoolman. None if neither."""
         k = self._get_lane_k(lane)
-        if k is None and self._flow_sync_enabled(lane):
+        if k is None:
             k = self._read_k_from_spoolman(lane)
             if k is not None:
                 self._set_lane_k(lane, k)
         return k
+
+    def _calibrate(self, cur_lane, gcmd=None):
+        """Run the calibration command, then store/apply/persist the new K.
+
+        :return float or None: the measured K, or None if none produced.
+        """
+        flow_cal = self.printer.lookup_object('flow_calibrator', None)
+        if flow_cal is None:
+            (gcmd.error if gcmd else RuntimeError)(
+                "AFC_autocal: flow_calibrator not found")
+            return None
+        ext_name = cur_lane.extruder_obj.name
+        k_before = flow_cal._current_k.get(ext_name)
+        self.gcode.run_script_from_command(self.calibrate_gcode)
+        k_after = flow_cal._current_k.get(ext_name)
+        if k_after is None or k_after == k_before:
+            self.logger.info(
+                "AFC autocal: calibration produced no new K for %s"
+                % cur_lane.name)
+            return None
+        self._set_lane_k(cur_lane, k_after)
+        self._apply_lane_k(cur_lane.name)
+        self._write_k_to_spoolman(cur_lane, k_after)
+        self.logger.info(
+            "AFC autocal: calibrated and stored K=%.6f for %s"
+            % (k_after, cur_lane.name))
+        return k_after
 
     def _current_lane(self):
         if self.afc is None:
@@ -169,15 +186,20 @@ class AFC_autocal:
 
     def _handle_tool_loaded(self, cur_lane):
         try:
-            if self.afc is None or cur_lane is None:
+            if not self.enabled or self.afc is None or cur_lane is None:
                 return
+            # Already calibrated on the spool? apply it. Otherwise calibrate.
             if self._ensure_k_loaded(cur_lane) is not None:
                 self._apply_lane_k(cur_lane.name)
+            else:
+                self._calibrate(cur_lane)
         except Exception as e:
             self.logger.warning("AFC_autocal: tool_loaded error: %s" % e)
 
     def _reapply_current_k(self):
-        if self.afc is None or not getattr(self.afc, 'prep_done', False):
+        if not self.enabled or self.afc is None:
+            return
+        if not getattr(self.afc, 'prep_done', False):
             return
         state = getattr(self.afc, 'current_state', None)
         if state is not None and str(state).split('.')[-1].lower() != 'idle':
@@ -200,7 +222,7 @@ class AFC_autocal:
         except Exception as e:
             self.logger.warning("AFC_autocal: activate reapply error: %s" % e)
 
-    # ── GCode commands ──────────────────────────────────────────────
+    # ── GCode commands (manual overrides, work regardless of enabled) ─
 
     def cmd_APPLY_LANE_FLOW_K(self, gcmd):
         cur_lane = self._current_lane()
@@ -217,20 +239,10 @@ class AFC_autocal:
         if cur_lane is None:
             gcmd.respond_info("AFC_autocal: no current lane")
             return
-        flow_cal = self.printer.lookup_object('flow_calibrator', None)
-        if flow_cal is None:
-            raise gcmd.error("AFC_autocal: flow_calibrator not found")
-        ext_name = cur_lane.extruder_obj.name
-        k_before = flow_cal._current_k.get(ext_name)
-        self.gcode.run_script_from_command("FLOW_CALIBRATE")
-        k_after = flow_cal._current_k.get(ext_name)
-        if k_after is not None and k_after != k_before:
-            self._set_lane_k(cur_lane, k_after)
-            self._apply_lane_k(cur_lane.name)
-            if self._flow_sync_enabled(cur_lane):
-                self._write_k_to_spoolman(cur_lane, k_after)
+        k = self._calibrate(cur_lane, gcmd=gcmd)
+        if k is not None:
             gcmd.respond_info(
-                "AFC_autocal: stored K=%.6f for %s" % (k_after, cur_lane.name))
+                "AFC_autocal: stored K=%.6f for %s" % (k, cur_lane.name))
         else:
             gcmd.respond_info("AFC_autocal: calibration produced no new K")
 
