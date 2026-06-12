@@ -10,13 +10,13 @@
 # lane's spool_id, so it works no matter how the spool was identified (RFID,
 # scanner, or manual SET_SPOOL_ID).
 #
-# Behaviour when ``enabled``: on every tool load, for ANY lane —
-#   * if the spool already has a stored K in Spoolman  -> apply it
-#   * otherwise                                        -> run a calibration,
-#                                                         then store the K on
-#                                                         the Spoolman spool
-# It also re-applies the current lane's K after events that reset pressure
-# advance (homing, extruder activation). When disabled it does nothing.
+# Two independent toggles, applied to ANY lane on every tool load:
+#   apply_stored_k -> if the spool has a stored K in Spoolman, apply it (and
+#                     re-apply after homing / extruder activation).
+#   auto_calibrate -> if the spool has NO stored K, run a calibration and store
+#                     the result on the Spoolman spool.
+# Use apply_stored_k alone to apply saved K without ever auto-calibrating.
+# With both off the module does nothing.
 #
 # K is persisted per-spool in Spoolman's comment field (afc_flow_k=<value>),
 # read/written via the shared SpoolmanClient. The actual measurement is the
@@ -25,7 +25,9 @@
 #
 # ── Configuration ───────────────────────────────────────────────────
 #   [AFC_autocal]
-#   enabled: True                 # master on/off for all lanes
+#   apply_stored_k: True              # apply a spool's saved K on load
+#   auto_calibrate: False             # calibrate + store when no saved K exists
+#   # enabled: True                   # back-compat master: turns BOTH on
 #   calibrate_gcode: FLOW_CALIBRATE   # command run to measure K (default)
 
 from __future__ import annotations
@@ -43,7 +45,14 @@ class AFC_autocal:
         self.afc = None
         self._lane_flow_k = {}   # lane_name -> (spool_id, k)
 
-        self.enabled = config.getboolean('enabled', False)
+        # Two independent toggles. 'enabled' is a back-compat master that
+        # defaults BOTH on when set.
+        #   apply_stored_k - apply a spool's saved K on load + re-apply on homing
+        #   auto_calibrate - if a loaded spool has NO saved K, calibrate & store
+        master = config.getboolean('enabled', None)
+        dflt = master if master is not None else False
+        self.apply_stored_k = config.getboolean('apply_stored_k', dflt)
+        self.auto_calibrate = config.getboolean('auto_calibrate', dflt)
         self.calibrate_gcode = config.get('calibrate_gcode', 'FLOW_CALIBRATE')
 
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
@@ -186,18 +195,25 @@ class AFC_autocal:
 
     def _handle_tool_loaded(self, cur_lane):
         try:
-            if not self.enabled or self.afc is None or cur_lane is None:
+            if self.afc is None or cur_lane is None:
                 return
-            # Already calibrated on the spool? apply it. Otherwise calibrate.
+            if not (self.apply_stored_k or self.auto_calibrate):
+                return
+            # Spool already has a stored K? apply it (if applying is on) and
+            # skip calibration — it's already calibrated.
             if self._ensure_k_loaded(cur_lane) is not None:
-                self._apply_lane_k(cur_lane.name)
-            else:
+                if self.apply_stored_k:
+                    self._apply_lane_k(cur_lane.name)
+                return
+            # No stored K — optionally calibrate (which stores + applies).
+            if self.auto_calibrate:
                 self._calibrate(cur_lane)
         except Exception as e:
             self.logger.warning("AFC_autocal: tool_loaded error: %s" % e)
 
     def _reapply_current_k(self):
-        if not self.enabled or self.afc is None:
+        # Re-applying only matters when we apply stored K.
+        if not self.apply_stored_k or self.afc is None:
             return
         if not getattr(self.afc, 'prep_done', False):
             return
