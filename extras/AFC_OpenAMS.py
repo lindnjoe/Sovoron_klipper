@@ -1094,6 +1094,23 @@ class afcAMS(afcUnit):
             self._operation_active = False
             self._prev_states_stale = True
 
+    def lane_unloading(self, lane):
+        """Unload-start hook the upstream core actually calls.
+
+        Upstream's unload invokes ``lane_unloading`` (for LEDs) but never
+        ``prepare_unload``, so stop the OAMS follower here too — otherwise it
+        keeps feeding forward against the cut/park/tip before the hardware
+        unload reverses it.
+        """
+        super().lane_unloading(lane)
+        try:
+            self.prepare_unload(lane, getattr(lane, 'hub_obj', None),
+                                getattr(lane, 'extruder_obj', None))
+        except Exception as e:
+            self.logger.warning(
+                "OAMS: lane_unloading follower-stop error for %s: %s"
+                % (getattr(lane, 'name', '?'), e))
+
     def prepare_unload(self, cur_lane, cur_hub, cur_extruder):
         """Stop the OAMS follower before AFC's unload begins.
 
