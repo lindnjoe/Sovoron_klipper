@@ -248,8 +248,8 @@ class AFC_U1_RFID:
         register_cb_2_update_filament_info() is the PROVEN path — our working
         pre-refactor forks used exactly this, paired with FILAMENT_DT_UPDATE to
         trigger the read. Fall back to appending to the raw _notify_data_update_cb
-        list (where print_task_config's RFID callback lives; see
-        AFC_bridge_U1._patch_scanner_rfid_update) for other firmware revs.
+        list (where print_task_config's own RFID callback lives) for other
+        firmware revs.
         """
         if self._fd_cb_registered:
             return
