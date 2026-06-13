@@ -729,25 +729,29 @@ def main():
     backend = args.backend
 
     if backend == 'auto':
-        for attempt in range(15):
-            try:
-                result = subprocess.run(['pgrep', 'helix-screen'],
-                                        capture_output=True, timeout=2)
-                if result.returncode == 0:
-                    log("helix-screen detected, using DRM backend")
-                    backend = 'drm'
-                    break
-            except Exception:
-                pass
-            if attempt < 14:
-                log(f"Waiting for helix-screen ({attempt + 1}/15)...")
-                time.sleep(2)
-        if backend == 'auto':
-            log("helix-screen not detected after 30s, using fbdev")
+        # The U1's on-screen UI (the native Snapmaker UI, or helixscreen if it's
+        # running) renders through DRM/KMS, which leaves fbdev (/dev/fb0) black.
+        # So prefer DRM whenever there's an active DRM display — don't gate on a
+        # specific process name (pgrep 'helix-screen' missed the native UI and
+        # any differently-named or not-yet-started helixscreen, falling back to
+        # a black fbdev). Fall back to fbdev only when no usable DRM CRTC found.
+        try:
+            fb = DRMFramebuffer(args.drm_device)
+            log("Auto: active DRM display found, using DRM backend")
+            backend = 'drm'
+        except Exception as e:
+            log(f"Auto: no usable DRM display ({e}); using fbdev")
+            fb = None
             backend = 'fbdev'
 
-    if backend == 'drm':
-        fb = DRMFramebuffer(args.drm_device)
+    if backend == 'drm' and fb is None:
+        # Explicit --backend drm: still fall back to fbdev on failure rather
+        # than crashing the server (which leaves Mainsail's box empty).
+        try:
+            fb = DRMFramebuffer(args.drm_device)
+        except Exception as e:
+            log(f"DRM backend failed ({e}); falling back to fbdev")
+            fb = None
 
     if fb is None:
         fb = Framebuffer(args.fb)
