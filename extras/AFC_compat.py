@@ -34,7 +34,10 @@
 #                     gate on serial types, route runout via the unit handler).
 #   7. afcUnit       - base on_filament_insert/on_filament_remove hooks our
 #                     serial units call via super() (insert fires afc:lane_inserted).
-#   8. AFC_spool     - guard set_snapmaker_filament_params against int.isdigit()
+#   8. afc_hub.handle_connect - a virtual hub only needs a lane's load sensor
+#                     when that lane also has a prep sensor (fully sensorless
+#                     serial lanes are valid; upstream rejects any missing load).
+#   9. AFC_spool     - guard set_snapmaker_filament_params against int.isdigit()
 #                     on the int-0 'extruder' index and int('',16) on no colour.
 
 from __future__ import annotations
@@ -384,6 +387,49 @@ def _patch_afc_unit_filament_hooks():
     UnitCls._afc_filament_hooks_patched = True
 
 
+def _patch_afc_hub_virtual_load_check():
+    """9. afc_hub.handle_connect: a virtual hub only needs a lane's load sensor
+    when that lane also has a prep sensor.
+
+    Upstream rejects ANY lane without a `load:` pin on a `switch_pin: virtual`
+    hub ("...need load sensors for virtual hub sensor to work correctly"). Our
+    serial lanes (OpenAMS/ACE) are fully sensorless — no load AND no prep, their
+    load state is driven by the unit poller — so they're valid on a virtual hub.
+    Relax the check to error only when load is None AND prep is not None (a lane
+    that has a prep switch but no load switch genuinely can't drive the virtual
+    hub). This also makes the check order-independent: upstream only passed when
+    a hub's handle_connect happened to run before its lanes registered."""
+    try:
+        from extras import AFC_hub as _hub_mod
+    except Exception:
+        return
+    HubCls = getattr(_hub_mod, 'afc_hub', None)
+    if HubCls is None or getattr(HubCls, '_afc_virtual_load_check_patched', False):
+        return
+    _config_error = getattr(_hub_mod, 'config_error', None)
+
+    def handle_connect(self):
+        self.gcode = self.afc.gcode
+        self.reactor = self.afc.reactor
+        self.printer.send_event("afc_hub:register_macros", self)
+        if self.is_virtual_pin():
+            msg = ("The following lanes need load sensors for virtual hub "
+                   "sensor to work correctly:")
+            report_error = False
+            for lane in self.lanes.values():
+                # Only a lane that HAS a prep switch but NO load switch breaks a
+                # virtual hub; fully sensorless serial lanes are fine.
+                if lane.load is None and lane.prep is not None:
+                    report_error = True
+                    msg += "\n%s" % lane.fullname
+            if report_error:
+                err = _config_error or self.printer.config_error
+                raise err(msg)
+
+    HubCls.handle_connect = handle_connect
+    HubCls._afc_virtual_load_check_patched = True
+
+
 def _patch_afc_spool_snapmaker():
     """5. AFC_spool.set_snapmaker_filament_params: two upstream bugs — int.isdigit()
     on the int-0 'extruder' index, and int('',16) when a spool has no colour.
@@ -451,4 +497,5 @@ def apply_compat_patches():
     _patch_afc_bowden_serial_unit()
     _patch_afc_lane_load_runout()
     _patch_afc_unit_filament_hooks()
+    _patch_afc_hub_virtual_load_check()
     _patch_afc_spool_snapmaker()
