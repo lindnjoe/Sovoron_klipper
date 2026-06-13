@@ -50,6 +50,7 @@ class AFC_U1_RFID:
         self._consecutive_failures: Dict[int, int] = {}
         self._backed_off: bool = False
         self._backoff_cycles: int = 0
+        self._fd_cb_registered: bool = False
         # Lane->channel map and scanner lanes are configured in THIS section.
         # On our deviated core these were per-lane options (u1_rfid_channel /
         # spool_scanner on [AFC_stepper ...]) read by AFC_lane, and the reader
@@ -211,14 +212,52 @@ class AFC_U1_RFID:
         if fd is None:
             return False
         self._filament_detect = fd
-        self.logger.info("U1 RFID: filament_detect attached")
+        # Log the actual API surface once — RFID integration breakages are
+        # almost always a method-name mismatch against the U1's filament_detect.
+        known = ('_notify_data_update_cb', 'register_cb_2_update_filament_info',
+                 'get_a_filament_info', 'get_all_filament_info', 'get_status',
+                 'update_filament_info', 'request_update')
+        present = [n for n in known if hasattr(fd, n)]
+        self.logger.info(
+            "U1 RFID: filament_detect attached (api: %s)"
+            % (", ".join(present) or "none recognized"))
+        self._register_fd_callback(fd)
+        return True
+
+    def _register_fd_callback(self, fd) -> None:
+        """Register our push callback with filament_detect.
+
+        The U1's real push registry is a plain list ``_notify_data_update_cb``
+        whose entries are invoked as ``cb(channel, info, is_clear)`` — this is
+        where print_task_config's own RFID callback lives (see
+        AFC_bridge_U1._patch_scanner_rfid_update). Prefer appending to it; fall
+        back to register_cb_2_update_filament_info() for other firmware revs.
+        """
+        if self._fd_cb_registered:
+            return
+        cb_list = getattr(fd, '_notify_data_update_cb', None)
+        if isinstance(cb_list, list):
+            if self._on_filament_info_update not in cb_list:
+                cb_list.append(self._on_filament_info_update)
+            self._fd_cb_registered = True
+            self.logger.info(
+                "U1 RFID: push callback registered via _notify_data_update_cb")
+            return
         if hasattr(fd, 'register_cb_2_update_filament_info'):
             try:
                 fd.register_cb_2_update_filament_info(
                     self._on_filament_info_update)
+                self._fd_cb_registered = True
+                self.logger.info(
+                    "U1 RFID: push callback registered via "
+                    "register_cb_2_update_filament_info")
+                return
             except Exception as e:
-                self.logger.warning(f"U1 RFID: failed to register info callback: {e}")
-        return True
+                self.logger.warning(
+                    f"U1 RFID: failed to register info callback: {e}")
+        self.logger.warning(
+            "U1 RFID: no recognized filament_detect push-callback API; "
+            "scanner will rely on polling only")
 
     def _on_filament_info_update(self, *args):
         """Callback fired by filament_detect with (channel, info_dict, official).
