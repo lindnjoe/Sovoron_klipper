@@ -103,23 +103,24 @@ class AFC_U1_RFID:
         self._cfg_scanners: set = {s.strip() for s in
                                    config.get('scanner_lanes', '').split(',')
                                    if s.strip()}
-        # openrfid_webhook: when True, the OpenRFID daemon pushes the FULL tag
-        # data (incl. the complete multi-colour list) straight to us via a
-        # webhook, instead of us reading the colour-lossy filament_detect dict
-        # (which only carries the primary colour). Requires a matching
-        # [webhook_exporter] in the OpenRFID config POSTing to
-        # /printer/afc/u1_rfid. When enabled, the webhook is the authoritative
-        # RFID source and the filament_detect read path is used only to trigger
-        # reads (FILAMENT_DT_UPDATE), not to process tag identity/colour.
-        self._use_webhook = config.getboolean('openrfid_webhook', False)
-        if self._use_webhook:
-            try:
-                webhooks = self.printer.lookup_object('webhooks')
-                webhooks.register_endpoint('afc/u1_rfid',
-                                           self._handle_webhook_scan)
-            except Exception as e:
-                self.logger.warning(
-                    f"AFC_U1_rfid: failed to register webhook endpoint: {e}")
+        # OpenRFID full-colour webhook. The filament_detect dict only carries
+        # the primary colour (the daemon's success_exporter serialises just
+        # RGB_1), so dual/gradient spools lose their real second colour. If the
+        # OpenRFID config POSTs the full GenericFilament to /printer/afc/u1_rfid
+        # (a [webhook_exporter] block), we use that complete colour list. No
+        # separate enable flag — configuring [AFC_U1_rfid] is the opt-in, and we
+        # auto-detect per channel whether the daemon is pushing: the first
+        # webhook on a channel makes the webhook authoritative for it, and until
+        # then (or if never configured) the filament_detect read path is used.
+        # filament_detect still owns tag-removal/clear (the daemon's
+        # tag_not_present event only goes there), so that keeps working too.
+        self._webhook_channels_seen: set = set()
+        try:
+            webhooks = self.printer.lookup_object('webhooks')
+            webhooks.register_endpoint('afc/u1_rfid', self._handle_webhook_scan)
+        except Exception as e:
+            self.logger.warning(
+                f"AFC_U1_rfid: failed to register webhook endpoint: {e}")
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
@@ -467,6 +468,13 @@ class AFC_U1_RFID:
                 info['RGB_%d' % idx] = int(c)
             except (ValueError, TypeError):
                 continue
+        # First webhook on this channel: the daemon IS pushing full data, so
+        # make the webhook authoritative for it from now on. Drop any uid a
+        # pre-webhook filament_detect read may have latched, so this richer read
+        # isn't suppressed by the dedup.
+        if channel not in self._webhook_channels_seen:
+            self._webhook_channels_seen.add(channel)
+            self._last_uid[channel] = None
         lane_name = self._channel_to_lane.get(channel)
         try:
             self._check_channel(lane_name, channel, info=info, source='webhook')
@@ -488,12 +496,6 @@ class AFC_U1_RFID:
         :param source: 'poll'/'push' (filament_detect) or 'webhook'.
         :return: None
         """
-        # In webhook mode the OpenRFID daemon is the source of truth for tag
-        # identity/colour (full multi-colour); the filament_detect read path
-        # only triggers reads, so ignore its colour-lossy data here.
-        if self._use_webhook and source != 'webhook':
-            return
-
         if info is None:
             if self._filament_detect is None:
                 return
@@ -518,6 +520,13 @@ class AFC_U1_RFID:
                 # scan: reading a spool stages its next_spool_id, so the same
                 # spool must NOT re-fire while/after it's presented. A different
                 # spool (new uid) still triggers via the dedup check below.
+            return
+
+        # A tag is present. Once the OpenRFID daemon has pushed a webhook for
+        # this channel, the webhook is the authoritative (full-colour) source —
+        # ignore the colour-lossy filament_detect read here. (Removal/clear
+        # above still runs, since that only arrives via filament_detect.)
+        if source != 'webhook' and channel in self._webhook_channels_seen:
             return
 
         if card_uid == self._last_uid.get(channel):
