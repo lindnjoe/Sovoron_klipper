@@ -23,8 +23,14 @@
 #                     (no extruder_stepper -> no movement to measure -> false fault).
 #   3. AFC_hub      - virtual-hub state from the driven hub HES (switch_pin_callback),
 #                     not the lane F1S/load sensor (any(lane.raw_load_state)).
-#   4. AFC.unload_sequence - run the shared toolhead phase (heat/cut/park/form_tip)
-#                     before a custom_unload_cmd unload, which upstream skips.
+#   4. AFC.load/unload_sequence - run the shared toolhead phase (heat/cut/park/
+#                     form_tip + post_unload_macro) around a custom_(un)load_cmd,
+#                     which upstream skips for custom commands.
+#   5. afcFunction.cmd_CALIBRATE_AFC - let steppermless serial units run their
+#                     self-contained bowden/PTFE calibration (upstream's BOWDEN=
+#                     guard requires a tool_start sensor and aborts otherwise).
+#   6. AFC_spool     - guard set_snapmaker_filament_params against int.isdigit()
+#                     on the int-0 'extruder' index and int('',16) on no colour.
 
 from __future__ import annotations
 
@@ -191,6 +197,58 @@ def _patch_afc_unload_shared_phase():
     AFCcls._afc_custom_unload_phase_patched = True
 
 
+def _patch_afc_bowden_serial_unit():
+    """6. afcFunction.cmd_CALIBRATE_AFC: let steppermless serial units (ACE,
+    OpenAMS) run their self-contained bowden / PTFE-length calibration.
+
+    Upstream's BOWDEN= branch insists on a tool_start sensor (or a tool_end +
+    turtleneck-buffer pair) and otherwise aborts with:
+
+        "Cannot calibrate with only post extruder sensor and no turtleneck
+         buffer defined in config"
+
+    Our serial lanes have no extruder_stepper and no tool_start — their
+    calibrate_bowden is driven by the unit firmware (e.g. ACE feed-to-toolhead-
+    sensor, OpenAMS OAMS_CALIBRATE_PTFE_LENGTH), so the toolhead-sensor guard
+    doesn't apply to them. For such a BOWDEN lane, temporarily satisfy the guard
+    (a tool_start sentinel) so upstream proceeds straight to
+    unit.calibrate_bowden(), then restore tool_start. This reproduces the
+    custom-calibration bypass our deviated fork carried, without editing
+    upstream. The guard value is never consumed past the check on this path, and
+    our serial calibrate_bowden implementations ignore tool_start entirely."""
+    try:
+        from extras import AFC_functions as _fn_mod
+    except Exception:
+        return
+    FnCls = getattr(_fn_mod, 'afcFunction', None)
+    if FnCls is None or getattr(FnCls, '_afc_bowden_serial_patched', False):
+        return
+    _orig = FnCls.cmd_CALIBRATE_AFC
+    _SENTINEL = "__afc_compat_serial_cal__"
+
+    def _wrapped(self, gcmd):
+        afc_bl = gcmd.get('BOWDEN', None)
+        cur_lane = self.afc.lanes.get(afc_bl) if afc_bl is not None else None
+        # Only step in for a steppermless serial lane whose extruder has no
+        # tool_start sensor (the exact case upstream wrongly rejects).
+        bypass = (cur_lane is not None
+                  and getattr(cur_lane, 'extruder_stepper', None) is None
+                  and getattr(cur_lane.extruder_obj, 'tool_start', None) is None)
+        if not bypass:
+            return _orig(self, gcmd)
+        ext = cur_lane.extruder_obj
+        ext.tool_start = _SENTINEL  # skip upstream's tool_start guard block
+        try:
+            return _orig(self, gcmd)
+        finally:
+            # Upstream never touches tool_start on this path; restore our None.
+            if ext.tool_start == _SENTINEL:
+                ext.tool_start = None
+
+    FnCls.cmd_CALIBRATE_AFC = _wrapped
+    FnCls._afc_bowden_serial_patched = True
+
+
 def _patch_afc_spool_snapmaker():
     """5. AFC_spool.set_snapmaker_filament_params: two upstream bugs — int.isdigit()
     on the int-0 'extruder' index, and int('',16) when a spool has no colour.
@@ -255,4 +313,5 @@ def apply_compat_patches():
     _patch_afc_buffer_steppermless()
     _patch_afc_hub_virtual_state()
     _patch_afc_unload_shared_phase()
+    _patch_afc_bowden_serial_unit()
     _patch_afc_spool_snapmaker()
