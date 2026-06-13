@@ -227,21 +227,13 @@ class AFC_U1_RFID:
     def _register_fd_callback(self, fd) -> None:
         """Register our push callback with filament_detect.
 
-        The U1's real push registry is a plain list ``_notify_data_update_cb``
-        whose entries are invoked as ``cb(channel, info, is_clear)`` — this is
-        where print_task_config's own RFID callback lives (see
-        AFC_bridge_U1._patch_scanner_rfid_update). Prefer appending to it; fall
-        back to register_cb_2_update_filament_info() for other firmware revs.
+        register_cb_2_update_filament_info() is the PROVEN path — our working
+        pre-refactor forks used exactly this, paired with FILAMENT_DT_UPDATE to
+        trigger the read. Fall back to appending to the raw _notify_data_update_cb
+        list (where print_task_config's RFID callback lives; see
+        AFC_bridge_U1._patch_scanner_rfid_update) for other firmware revs.
         """
         if self._fd_cb_registered:
-            return
-        cb_list = getattr(fd, '_notify_data_update_cb', None)
-        if isinstance(cb_list, list):
-            if self._on_filament_info_update not in cb_list:
-                cb_list.append(self._on_filament_info_update)
-            self._fd_cb_registered = True
-            self.logger.info(
-                "U1 RFID: push callback registered via _notify_data_update_cb")
             return
         if hasattr(fd, 'register_cb_2_update_filament_info'):
             try:
@@ -255,6 +247,14 @@ class AFC_U1_RFID:
             except Exception as e:
                 self.logger.warning(
                     f"U1 RFID: failed to register info callback: {e}")
+        cb_list = getattr(fd, '_notify_data_update_cb', None)
+        if isinstance(cb_list, list):
+            if self._on_filament_info_update not in cb_list:
+                cb_list.append(self._on_filament_info_update)
+            self._fd_cb_registered = True
+            self.logger.info(
+                "U1 RFID: push callback registered via _notify_data_update_cb")
+            return
         self.logger.warning(
             "U1 RFID: no recognized filament_detect push-callback API; "
             "scanner will rely on polling only")
@@ -303,6 +303,19 @@ class AFC_U1_RFID:
         fd = self._filament_detect
         if fd is None:
             return False
+        # FILAMENT_DT_UPDATE is the PROVEN trigger (our pre-refactor forks used
+        # exactly this for scanner channels): it makes the U1 read the channel
+        # AND fire the registered notify callback, which is how a scan reaches
+        # _on_filament_info_update -> _check_channel. Prefer it over
+        # fd.update_filament_info(), which on this firmware refreshes internal
+        # state WITHOUT notifying, so the read is silently dropped.
+        try:
+            self._gcode.run_script_from_command(
+                f"FILAMENT_DT_UPDATE CHANNEL={channel}")
+            return True
+        except Exception as e:
+            self.logger.warning(
+                f"U1 RFID: FILAMENT_DT_UPDATE failed ch{channel}: {e}")
         if hasattr(fd, 'update_filament_info'):
             try:
                 fd.update_filament_info(channel)
@@ -315,14 +328,7 @@ class AFC_U1_RFID:
                 return True
             except Exception:
                 pass
-        try:
-            self._gcode.run_script_from_command(
-                f"FILAMENT_DT_UPDATE CHANNEL={channel}")
-            return True
-        except Exception as e:
-            self.logger.warning(
-                f"U1 RFID: FILAMENT_DT_UPDATE failed ch{channel}: {e}")
-            return False
+        return False
 
     def _poll_cb(self, eventtime):
         """Periodic check for new RFID data on registered channels.
