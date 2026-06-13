@@ -6,9 +6,9 @@
 #
 # AFC AutoCal — per-spool flow calibration (K), all-or-nothing.
 #
-# Decoupled from any RFID reader and from the U1 bridge: it keys purely off a
-# lane's spool_id, so it works no matter how the spool was identified (RFID,
-# scanner, or manual SET_SPOOL_ID).
+# Decoupled from any RFID reader: it keys purely off a lane's spool_id, so it
+# works no matter how the spool was identified (RFID, scanner, or manual
+# SET_SPOOL_ID).
 #
 # Two independent toggles, applied to ANY lane on every tool load:
 #   apply_stored_k -> if the spool has a stored K in Spoolman, apply it (and

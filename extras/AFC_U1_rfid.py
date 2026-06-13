@@ -56,7 +56,7 @@ class AFC_U1_RFID:
         # spool_scanner on [AFC_stepper ...]) read by AFC_lane, and the reader
         # was wired up by AFC_prep. Upstream AFC_lane/AFC_prep are frozen and do
         # neither, so the reader owns its config and lifecycle (fully decoupled
-        # from the core and the U1 bridge).
+        # from the core).
         #   [AFC_U1_rfid]
         #   lane_channels: lane4:1, lane5:2, lane6:3   # tag -> assign to lane
         #   scanner_channels: 0                         # tag -> stage next spool

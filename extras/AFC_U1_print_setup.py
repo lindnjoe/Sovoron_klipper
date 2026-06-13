@@ -6,15 +6,15 @@
 #
 # AFC U1 Print Setup — Snapmaker U1 pre-print orchestration for AFC.
 #
-# Extracted from the old AFC_bridge_U1 as a focused module: it only does the
-# print-start setup (build the U1 extruder map from AFC's tool assignments,
-# push filament info to print_task_config, and run the pre-print calibration
-# sequence). Everything else the bridge used to do now lives elsewhere:
+# A focused module that does only the U1 print-start setup: build the U1
+# extruder map from AFC's tool assignments, push filament info to
+# print_task_config, and run the pre-print calibration sequence. Related
+# concerns live in their own modules:
 #   - flow-K / auto-calibration .......... AFC_autocal.py (+ SpoolmanClient)
 #   - RFID -> Spoolman sync / scanner .... AFC_U1_rfid.py / AFC_RFID.py
 #   - snapmaker filament colour .......... AFC_spool.set_snapmaker_filament_params
 #   - steppermless feed / unload phase ... AFC_OpenAMS / AFC_ACE / AFC_compat
-#   - pause/resume + temp restore ........ upstream (no longer needed here)
+#   - pause/resume + temp restore ........ upstream
 #
 # This module delegates all flow-K storage/apply to [AFC_autocal]: it runs the
 # U1 FLOW_CALIBRATE orchestration but calls AFC_autocal to read/store/persist K

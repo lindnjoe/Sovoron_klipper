@@ -356,10 +356,10 @@ def _patch_afc_unit_filament_hooks():
     methods our serial units' overrides call via super().
 
     Our ACE / OpenAMS on_filament_insert() end with super().on_filament_insert(),
-    expecting the base unit to fire the ``afc:lane_inserted`` event (consumed by
-    the U1 bridge). Upstream's afcUnit has no such method, so the super() call
-    AttributeErrors when a spool is inserted into an empty lane. Add the base
-    hooks (insert -> send event, remove -> no-op) when upstream lacks them."""
+    expecting the base unit to fire the ``afc:lane_inserted`` event. Upstream's
+    afcUnit has no such method, so the super() call AttributeErrors when a spool
+    is inserted into an empty lane. Add the base hooks (insert -> send event,
+    remove -> no-op) when upstream lacks them."""
     try:
         from extras import AFC_unit as _unit_mod
     except Exception:
