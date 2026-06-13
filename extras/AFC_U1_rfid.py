@@ -706,7 +706,7 @@ class AFC_U1_RFID:
                     multi_color.append(hx)
             _src = "no tag count field; white-sentinel heuristic"
         color_hex = multi_color[0] if multi_color else ""
-        self.logger.info(
+        self.logger.debug(
             f"U1 RFID: parsed {len(multi_color)} colour(s) {multi_color} "
             f"from RGB slots {[hx for _, hx in ordered]} ({_src})")
         ext_max = info.get("HOTEND_MAX_TEMP")
