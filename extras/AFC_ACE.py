@@ -286,6 +286,15 @@ class afcACE(afcUnit):
         return None
 
     def _handle_ready(self):
+        # Seed each lane's virtual hub with its real loaded state up front.
+        # Loadless serial lanes default _load_state=True upstream, so a virtual
+        # hub (state = any(raw_load_state)) reads "loaded" until something drives
+        # it — and if the ACE never connects (empty/offline unit) nothing ever
+        # does. Driving it here sets _state_driven so the hub reports its real
+        # state regardless of the hardware connection. No-op for physical hubs
+        # (their real switch_pin drives the state), so both setups work.
+        for lane in self.lanes.values():
+            self._set_hub_state(lane, lane.loaded_to_hub)
         self.afc.reactor.register_callback(self._deferred_ace_connect)
 
     def _deferred_ace_connect(self, eventtime):
