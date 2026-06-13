@@ -191,6 +191,63 @@ def _patch_afc_unload_shared_phase():
     AFCcls._afc_custom_unload_phase_patched = True
 
 
+def _patch_afc_spool_snapmaker():
+    """5. AFC_spool.set_snapmaker_filament_params: two upstream bugs — int.isdigit()
+    on the int-0 'extruder' index, and int('',16) when a spool has no colour.
+    Reproduced with the guards so AFC_spool stays byte-identical upstream."""
+    try:
+        from extras import AFC_spool as _spool_mod
+    except Exception:
+        return
+    SpoolCls = getattr(_spool_mod, 'AFCSpool', None)
+    if SpoolCls is None or getattr(SpoolCls, '_afc_snapmaker_params_patched', False):
+        return
+    import copy as _copy
+    import traceback as _tb
+
+    def set_snapmaker_filament_params(self, lane):
+        if (self.afc.snapmaker_printer
+                and lane.tool_loaded
+                and lane.name == lane.extruder_obj.lane_loaded):
+            try:
+                from extras.print_task_config import DEFAULT_PRINT_TASK_CONFIG
+                extruder_num = 0 if lane.extruder_obj.name == "extruder" \
+                    else lane.extruder_obj.name[-1]
+                # str() so an int 0 ('extruder') doesn't AttributeError.
+                extruder_num = 0 if not str(extruder_num).isdigit() \
+                    else int(extruder_num)
+                tmp = _copy.deepcopy(self.print_task_config_obj.print_task_config)
+                tmp['filament_vendor'][extruder_num] = "Generic"
+                tmp['filament_type'][extruder_num] = lane.material
+                tmp['filament_sub_type'][extruder_num] = "None"
+                # Guard empty colour (no colour -> int('',16) ValueError).
+                color_hex = lane.color.replace('#', '') if lane.color else ""
+                if color_hex:
+                    tmp['filament_color'][extruder_num] = \
+                        int(color_hex, 16) | 0xFF000000
+                    tmp['filament_color_rgba'][extruder_num] = color_hex + "FF"
+                    if lane.multi_color:
+                        tmp['filament_color_multi'][extruder_num]["nums"] = len(lane.multi_color)
+                        tmp['filament_color_multi'][extruder_num]["colors"] = lane.multi_color
+                        tmp['filament_color_multi'][extruder_num]["mode"] = 1
+                    else:
+                        tmp['filament_color_multi'][extruder_num]["colors"] = [color_hex]
+                        tmp['filament_color_multi'][extruder_num]["mode"] = 0
+                        tmp['filament_color_multi'][extruder_num]["nums"] = 1
+                self.print_task_config_obj.print_task_config = tmp
+                self.printer.update_snapmaker_config_file(
+                    self.print_task_config_obj.config_path,
+                    self.print_task_config_obj.print_task_config,
+                    DEFAULT_PRINT_TASK_CONFIG)
+            except Exception:
+                self.logger.error(
+                    "Error when trying to update colors for snapmaker print_task_config")
+                self.logger.debug(_tb.format_exc())
+
+    SpoolCls.set_snapmaker_filament_params = set_snapmaker_filament_params
+    SpoolCls._afc_snapmaker_params_patched = True
+
+
 def apply_compat_patches():
     """Apply all AFC compatibility shims. Idempotent; safe to call repeatedly
     and from multiple unit modules."""
@@ -198,3 +255,4 @@ def apply_compat_patches():
     _patch_afc_buffer_steppermless()
     _patch_afc_hub_virtual_state()
     _patch_afc_unload_shared_phase()
+    _patch_afc_spool_snapmaker()
