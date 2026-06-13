@@ -460,6 +460,10 @@ class AFC_U1_RFID:
 
         self._last_uid[channel] = card_uid
 
+        # Dump the raw tag dict so field-mapping issues (colour, temps, vendor)
+        # are diagnosable without guessing filament_detect's schema.
+        self.logger.debug(f"U1 RFID: ch{channel} raw tag info: {info}")
+
         main_type = info.get("MAIN_TYPE", "")
         if not main_type or main_type.upper() == "NONE":
             return
@@ -567,11 +571,14 @@ class AFC_U1_RFID:
         :param info: Raw RFID info dict from filament_detect.
         :return: Normalized slot info dict for AFC use.
         """
-        # Collect every colour the tag carries. Single-colour spools expose
-        # only RGB_1; dual / multi-colour spools also carry RGB_2 (RGB_3...).
-        # Black (0x000000) and white (0xFFFFFF) are valid, so a present field is
-        # never treated as "unset" — only an omitted/empty one is skipped. Mask
-        # any alpha byte (ARGB -> RGB) and keep distinct colours in tag order.
+        # Collect every colour the tag carries, in tag order (RGB_1, RGB_2...).
+        # The U1 fills UNUSED colour slots with ARGB white 0xFFFFFFFF as a
+        # sentinel (see AFC_bridge_U1._afc_color_to_u1), so a single-colour spool
+        # still exposes RGB_2.. = 0xFFFFFFFF. Treat that sentinel as "unset" for
+        # any slot past the primary, otherwise a single-colour spool gets a
+        # phantom white secondary and is mis-flagged dual-colour. The primary
+        # slot is always kept (a genuine white spool reads RGB_1 = white and must
+        # still come through as white). Mask the alpha byte (ARGB -> RGB).
         multi_color = []
         rgb_keys = sorted((k for k in info if re.fullmatch(r"RGB_\d+", str(k))),
                           key=lambda k: int(str(k).split("_")[1]))
@@ -580,9 +587,13 @@ class AFC_U1_RFID:
             if raw is None or raw == "":
                 continue
             try:
-                hx = f"{int(raw) & 0xFFFFFF:06x}"
+                raw_int = int(raw)
             except (ValueError, TypeError):
                 continue
+            # Skip the unused-slot white sentinel on secondary slots only.
+            if multi_color and raw_int == 0xFFFFFFFF:
+                continue
+            hx = f"{raw_int & 0xFFFFFF:06x}"
             if hx not in multi_color:
                 multi_color.append(hx)
         color_hex = multi_color[0] if multi_color else ""
