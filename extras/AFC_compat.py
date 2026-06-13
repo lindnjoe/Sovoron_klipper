@@ -32,7 +32,9 @@
 #   6. AFC_lane.handle_load_runout - generalize the load/runout callback for
 #                     serial-polled units (guard the optional physical switch,
 #                     gate on serial types, route runout via the unit handler).
-#   7. AFC_spool     - guard set_snapmaker_filament_params against int.isdigit()
+#   7. afcUnit       - base on_filament_insert/on_filament_remove hooks our
+#                     serial units call via super() (insert fires afc:lane_inserted).
+#   8. AFC_spool     - guard set_snapmaker_filament_params against int.isdigit()
 #                     on the int-0 'extruder' index and int('',16) on no colour.
 
 from __future__ import annotations
@@ -349,6 +351,39 @@ def _patch_afc_lane_load_runout():
     LaneCls._afc_load_runout_patched = True
 
 
+def _patch_afc_unit_filament_hooks():
+    """8. afcUnit.on_filament_insert / on_filament_remove: provide the base
+    methods our serial units' overrides call via super().
+
+    Our ACE / OpenAMS on_filament_insert() end with super().on_filament_insert(),
+    expecting the base unit to fire the ``afc:lane_inserted`` event (consumed by
+    the U1 bridge). Upstream's afcUnit has no such method, so the super() call
+    AttributeErrors when a spool is inserted into an empty lane. Add the base
+    hooks (insert -> send event, remove -> no-op) when upstream lacks them."""
+    try:
+        from extras import AFC_unit as _unit_mod
+    except Exception:
+        return
+    UnitCls = getattr(_unit_mod, 'afcUnit', None)
+    if UnitCls is None or getattr(UnitCls, '_afc_filament_hooks_patched', False):
+        return
+
+    if not hasattr(UnitCls, 'on_filament_insert'):
+        def on_filament_insert(self, lane):
+            # Fired after set_loaded() when filament is newly detected; the U1
+            # bridge listens for this. Subclasses override for RFID sync etc.
+            self.printer.send_event("afc:lane_inserted", lane)
+        UnitCls.on_filament_insert = on_filament_insert
+
+    if not hasattr(UnitCls, 'on_filament_remove'):
+        def on_filament_remove(self, lane):
+            # Base no-op; subclasses override for inventory cleanup.
+            pass
+        UnitCls.on_filament_remove = on_filament_remove
+
+    UnitCls._afc_filament_hooks_patched = True
+
+
 def _patch_afc_spool_snapmaker():
     """5. AFC_spool.set_snapmaker_filament_params: two upstream bugs — int.isdigit()
     on the int-0 'extruder' index, and int('',16) when a spool has no colour.
@@ -415,4 +450,5 @@ def apply_compat_patches():
     _patch_afc_unload_shared_phase()
     _patch_afc_bowden_serial_unit()
     _patch_afc_lane_load_runout()
+    _patch_afc_unit_filament_hooks()
     _patch_afc_spool_snapmaker()
