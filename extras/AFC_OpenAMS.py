@@ -1377,6 +1377,24 @@ class afcAMS(afcUnit):
         if self._monitor:
             self._monitor.stop()
 
+        # Drive the follower in REVERSE before retracting the extruder so it
+        # pulls filament back toward the spool IN SYNC with the retract. The
+        # follower was stopped by prepare_unload / the form-tip purge; left
+        # stopped (or feeding forward) it fights the extruder pull-back and
+        # shoves filament back into the gears. The brief pause lets the follower
+        # actually spin up reverse before the extruder pulls — an M400 wouldn't
+        # do this (it only waits on toolhead moves, not the follower MCU). The
+        # hardware unload (unload_spool, below) keeps driving it reverse.
+        if self._follower and self.oams:
+            try:
+                self._follower.enable_follower(
+                    self._get_monitor_state(), self.oams, 0,
+                    "reverse before unload retract", force=True)
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+            except Exception as e:
+                self.logger.warning(
+                    f"OAMS: follower reverse before unload retract failed: {e}")
+
         # Blocking pre-retract: clear filament from extruder gears before
         # OAMS hardware starts rewinding. Without this the hardware fights
         # against the extruder grip and can't pull the filament back.
