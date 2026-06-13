@@ -565,21 +565,35 @@ class AFC_U1_RFID:
                 pass
         return None
 
+    def _tag_color_count(self, info: dict) -> Optional[int]:
+        """Return the tag's declared colour count, or None if not present.
+
+        The U1's filament_detect schema isn't fully known here, so match any
+        key that means "colour count" (contains COLOR/COLOUR and COUNT/NUM/NUMS)
+        rather than hard-coding one name. The OpenRFID Bambu processor decodes
+        this as "Color Count", so the forwarded info dict should expose it.
+        """
+        for k, v in info.items():
+            ku = str(k).upper()
+            if (("COLOR" in ku or "COLOUR" in ku)
+                    and ("COUNT" in ku or "NUM" in ku)):
+                try:
+                    n = int(v)
+                except (ValueError, TypeError):
+                    continue
+                if n >= 1:
+                    return n
+        return None
+
     def _map_to_slot_info(self, info: dict) -> dict:
         """Map filament_detect fields to AFC RFID slot_info format.
 
         :param info: Raw RFID info dict from filament_detect.
         :return: Normalized slot info dict for AFC use.
         """
-        # Collect every colour the tag carries, in tag order (RGB_1, RGB_2...).
-        # The U1 fills UNUSED colour slots with ARGB white 0xFFFFFFFF as a
-        # sentinel (see AFC_bridge_U1._afc_color_to_u1), so a single-colour spool
-        # still exposes RGB_2.. = 0xFFFFFFFF. Treat that sentinel as "unset" for
-        # any slot past the primary, otherwise a single-colour spool gets a
-        # phantom white secondary and is mis-flagged dual-colour. The primary
-        # slot is always kept (a genuine white spool reads RGB_1 = white and must
-        # still come through as white). Mask the alpha byte (ARGB -> RGB).
-        multi_color = []
+        # Gather colours in tag order (RGB_1, RGB_2, ...), masking the ARGB
+        # alpha byte (-> RRGGBB).
+        ordered = []
         rgb_keys = sorted((k for k in info if re.fullmatch(r"RGB_\d+", str(k))),
                           key=lambda k: int(str(k).split("_")[1]))
         for key in rgb_keys:
@@ -590,13 +604,31 @@ class AFC_U1_RFID:
                 raw_int = int(raw)
             except (ValueError, TypeError):
                 continue
-            # Skip the unused-slot white sentinel on secondary slots only.
-            if multi_color and raw_int == 0xFFFFFFFF:
-                continue
-            hx = f"{raw_int & 0xFFFFFF:06x}"
-            if hx not in multi_color:
-                multi_color.append(hx)
+            ordered.append((raw_int, f"{raw_int & 0xFFFFFF:06x}"))
+
+        # How many colours does the tag actually carry? Prefer the tag's own
+        # colour-count field (authoritative — correctly handles e.g. a genuine
+        # white second colour). Only when it's absent do we fall back to dropping
+        # the U1's unused-slot white sentinel (0xFFFFFFFF) on secondary slots,
+        # which otherwise makes a single-colour spool look dual-colour.
+        color_count = self._tag_color_count(info)
+        multi_color = []
+        if color_count is not None and color_count >= 1:
+            for _raw_int, hx in ordered[:color_count]:
+                if hx not in multi_color:
+                    multi_color.append(hx)
+            _src = f"tag count={color_count}"
+        else:
+            for raw_int, hx in ordered:
+                if multi_color and raw_int == 0xFFFFFFFF:
+                    continue  # unused secondary slot, not a real colour
+                if hx not in multi_color:
+                    multi_color.append(hx)
+            _src = "no tag count field; white-sentinel heuristic"
         color_hex = multi_color[0] if multi_color else ""
+        self.logger.info(
+            f"U1 RFID: parsed {len(multi_color)} colour(s) {multi_color} "
+            f"from RGB slots {[hx for _, hx in ordered]} ({_src})")
         ext_max = info.get("HOTEND_MAX_TEMP")
         ext_min = info.get("HOTEND_MIN_TEMP")
         bed_max = info.get("BED_TEMP")
