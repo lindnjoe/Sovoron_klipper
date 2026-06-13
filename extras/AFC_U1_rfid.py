@@ -103,6 +103,23 @@ class AFC_U1_RFID:
         self._cfg_scanners: set = {s.strip() for s in
                                    config.get('scanner_lanes', '').split(',')
                                    if s.strip()}
+        # openrfid_webhook: when True, the OpenRFID daemon pushes the FULL tag
+        # data (incl. the complete multi-colour list) straight to us via a
+        # webhook, instead of us reading the colour-lossy filament_detect dict
+        # (which only carries the primary colour). Requires a matching
+        # [webhook_exporter] in the OpenRFID config POSTing to
+        # /printer/afc/u1_rfid. When enabled, the webhook is the authoritative
+        # RFID source and the filament_detect read path is used only to trigger
+        # reads (FILAMENT_DT_UPDATE), not to process tag identity/colour.
+        self._use_webhook = config.getboolean('openrfid_webhook', False)
+        if self._use_webhook:
+            try:
+                webhooks = self.printer.lookup_object('webhooks')
+                webhooks.register_endpoint('afc/u1_rfid',
+                                           self._handle_webhook_scan)
+            except Exception as e:
+                self.logger.warning(
+                    f"AFC_U1_rfid: failed to register webhook endpoint: {e}")
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
@@ -410,7 +427,55 @@ class AFC_U1_RFID:
                 f"U1 RFID: send_lane_data skipped for "
                 f"{getattr(lane, 'name', '?')}: {e}")
 
-    def _check_channel(self, lane_name: str, channel: int, info: dict = None):
+    def _handle_webhook_scan(self, web_request):
+        """Receive a full tag read pushed by the OpenRFID daemon.
+
+        The daemon's GenericFilament carries the COMPLETE colour list (e.g. a
+        dual-colour spool's real second colour), which filament_detect drops.
+        Re-pack it into the same info schema _map_to_slot_info expects — with
+        COLOR_NUMS = the true colour count and RGB_n = each ARGB colour — then
+        run it through the normal scan path as the authoritative source.
+
+        Expected JSON body (see the [webhook_exporter] config block):
+            {"channel": int, "manufacturer": str, "type": str,
+             "sub_type": str, "colors": [argb_int, ...],
+             "hotend_min_temp": int, "hotend_max_temp": int,
+             "bed_temp": int, "weight_grams": int, "card_uid": [int, ...]}
+        """
+        try:
+            channel = web_request.get_int('channel')
+        except Exception:
+            return
+        if channel not in self._channel_to_lane:
+            return  # not a channel we monitor
+        colors = web_request.get('colors', [])
+        if not isinstance(colors, (list, tuple)):
+            colors = []
+        info = {
+            'VENDOR': web_request.get('manufacturer', ''),
+            'MAIN_TYPE': web_request.get('type', ''),
+            'SUB_TYPE': web_request.get('sub_type', ''),
+            'HOTEND_MIN_TEMP': web_request.get_int('hotend_min_temp', 0),
+            'HOTEND_MAX_TEMP': web_request.get_int('hotend_max_temp', 0),
+            'BED_TEMP': web_request.get_int('bed_temp', 0),
+            'WEIGHT': web_request.get_int('weight_grams', 0),
+            'COLOR_NUMS': len(colors),
+            'CARD_UID': web_request.get('card_uid', None),
+        }
+        for idx, c in enumerate(colors, start=1):
+            try:
+                info['RGB_%d' % idx] = int(c)
+            except (ValueError, TypeError):
+                continue
+        lane_name = self._channel_to_lane.get(channel)
+        try:
+            self._check_channel(lane_name, channel, info=info, source='webhook')
+        except Exception as e:
+            self.logger.warning(
+                f"U1 RFID: webhook scan error ch{channel}: {e}")
+
+    def _check_channel(self, lane_name: str, channel: int, info: dict = None,
+                       source: str = 'poll'):
         """Check a single channel for new or changed RFID data.
 
         For spool_scanner lanes the spool is assigned directly to the lane
@@ -420,12 +485,18 @@ class AFC_U1_RFID:
         :param lane_name: AFC lane name mapped to this RFID channel.
         :param channel: U1 filament_detect channel index.
         :param info: Pre-fetched RFID info dict, or *None* to read live.
+        :param source: 'poll'/'push' (filament_detect) or 'webhook'.
         :return: None
         """
-        if self._filament_detect is None:
+        # In webhook mode the OpenRFID daemon is the source of truth for tag
+        # identity/colour (full multi-colour); the filament_detect read path
+        # only triggers reads, so ignore its colour-lossy data here.
+        if self._use_webhook and source != 'webhook':
             return
 
         if info is None:
+            if self._filament_detect is None:
+                return
             info = self._get_channel_info(channel)
         # Standalone scanner channel: no lane; the scan stages next_spool_id.
         scanner_only = channel in self._cfg_scanner_channels
