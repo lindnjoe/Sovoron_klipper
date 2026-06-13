@@ -306,6 +306,18 @@ class AFC_U1_RFID:
             else:
                 self._consecutive_failures[ch] = 0
 
+        # Standalone scanner channels (no lane) aren't in _lane_channel_map, so
+        # the lane loop below never reads them. Without a polling check here they
+        # depend entirely on filament_detect's push callback firing — which it
+        # may not for a held spool (only-on-change pushes, or update triggers
+        # that don't call back). Poll them directly so a scan is always read.
+        for ch in self._cfg_scanner_channels:
+            try:
+                self._check_channel(None, ch)
+            except Exception as e:
+                self.logger.warning(
+                    f"U1 RFID: poll error on scanner ch{ch}: {e}")
+
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
@@ -382,7 +394,12 @@ class AFC_U1_RFID:
         card_uid = info.get("CARD_UID")
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
-                if not is_scanner:
+                if is_scanner:
+                    # No lane to clear; reset so re-presenting the SAME spool
+                    # is treated as a fresh scan (otherwise the uid-dedup below
+                    # would suppress it forever).
+                    self._last_uid[channel] = None
+                else:
                     self._last_uid[channel] = 0
                     if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
                         self._clear_lane(lane, lane_name)
