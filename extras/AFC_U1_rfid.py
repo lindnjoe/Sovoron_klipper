@@ -394,15 +394,14 @@ class AFC_U1_RFID:
         card_uid = info.get("CARD_UID")
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
-                if is_scanner:
-                    # No lane to clear; reset so re-presenting the SAME spool
-                    # is treated as a fresh scan (otherwise the uid-dedup below
-                    # would suppress it forever).
-                    self._last_uid[channel] = None
-                else:
+                if not is_scanner:
                     self._last_uid[channel] = 0
                     if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
                         self._clear_lane(lane, lane_name)
+                # Scanner channels intentionally keep _last_uid set after a
+                # scan: reading a spool stages its next_spool_id, so the same
+                # spool must NOT re-fire while/after it's presented. A different
+                # spool (new uid) still triggers via the dedup check below.
             return
 
         if card_uid == self._last_uid.get(channel):
