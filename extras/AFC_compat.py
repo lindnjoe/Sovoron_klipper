@@ -152,21 +152,10 @@ def _patch_afc_unload_shared_phase():
             if self.park:
                 self.gcode.run_script_from_command(
                     "{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
-            # Feed the follower FORWARD during the form-tip purge so the spool
-            # supplies it (units that support it, e.g. OpenAMS); no-op for units
-            # without a follower (e.g. ACE). Stopped again right after, before
-            # the hardware unload reverses.
-            _ff = getattr(cur_lane.unit_obj, 'form_tip_follower_feed', None)
-            if _ff is not None:
-                _ff(cur_lane, True)
-            try:
-                if self.form_tip_cmd == "AFC":
-                    self.printer.lookup_object('AFC_form_tip').tip_form()
-                else:
-                    self.gcode.run_script_from_command(self.form_tip_cmd)
-            finally:
-                if _ff is not None:
-                    _ff(cur_lane, False)
+            if self.form_tip_cmd == "AFC":
+                self.printer.lookup_object('AFC_form_tip').tip_form()
+            else:
+                self.gcode.run_script_from_command(self.form_tip_cmd)
 
     def _wrapped_unload(self, cur_lane, cur_hub, cur_extruder):
         is_custom = bool(cur_lane.custom_unload_cmd)
