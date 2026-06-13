@@ -82,6 +82,46 @@ class _DrmModeFB(ctypes.Structure):
         ('pitch', ctypes.c_uint32), ('bpp', ctypes.c_uint32),
         ('depth', ctypes.c_uint32), ('handle', ctypes.c_uint32)]
 
+
+# drmModeGetFB2 — reads framebuffers created with drmModeAddFB2 (modern GPU
+# compositors like helixscreen), which legacy drmModeGetFB can't (it returns
+# bpp=0 / NULL). Layout matches libdrm's drmModeFB2 (uint64 modifier is
+# 8-byte-aligned right after the four leading uint32s, so no padding).
+class _DrmModeFB2(ctypes.Structure):
+    _fields_ = [
+        ('fb_id', ctypes.c_uint32),
+        ('width', ctypes.c_uint32), ('height', ctypes.c_uint32),
+        ('pixel_format', ctypes.c_uint32),   # fourcc
+        ('modifier', ctypes.c_uint64),
+        ('flags', ctypes.c_uint32),
+        ('handles', ctypes.c_uint32 * 4),
+        ('pitches', ctypes.c_uint32 * 4),
+        ('offsets', ctypes.c_uint32 * 4)]
+
+
+def _fourcc(s):
+    return ord(s[0]) | (ord(s[1]) << 8) | (ord(s[2]) << 16) | (ord(s[3]) << 24)
+
+# DRM fourcc -> bits per pixel (only the formats a display scans out).
+_DRM_FORMAT_BPP = {}
+for _f in ('RG16', 'BG16'):
+    _DRM_FORMAT_BPP[_fourcc(_f)] = 16
+for _f in ('XR24', 'AR24', 'XB24', 'AB24', 'RX24', 'RA24', 'BX24', 'BA24'):
+    _DRM_FORMAT_BPP[_fourcc(_f)] = 32
+
+_DRM_FORMAT_MOD_LINEAR = 0
+_DRM_FORMAT_MOD_INVALID = (1 << 56) - 1  # 0x00ffffffffffffff
+
+# DRM_FORMAT_* fourcc -> PIL 'raw' decoder mode (channel order, RRGGBB read).
+_DRM_FORMAT_RAWMODE = {
+    _fourcc('RG16'): ('RGB', 'BGR;16'),   # RGB565
+    _fourcc('BG16'): ('RGB', 'RGB;16'),
+    _fourcc('XR24'): ('RGBA', 'BGRA'),    # XRGB8888
+    _fourcc('AR24'): ('RGBA', 'BGRA'),    # ARGB8888
+    _fourcc('XB24'): ('RGBA', 'RGBA'),    # XBGR8888
+    _fourcc('AB24'): ('RGBA', 'RGBA'),    # ABGR8888
+}
+
 # ── fbdev structures ───────────────────────────────────────────────
 
 class FbVarScreeninfo(ctypes.Structure):
@@ -339,6 +379,7 @@ class DRMFramebuffer:
         self._crtc_id = None
         self._fb_cache = {}
         self._drm = None
+        self._fmt = 0          # DRM fourcc of the current FB (0 = unknown)
         self._cache_hash = None
         self._cache_png = None
         self._open()
@@ -380,6 +421,17 @@ class DRMFramebuffer:
         d.drmModeGetFB.restype = ctypes.POINTER(_DrmModeFB)
         d.drmModeGetFB.argtypes = [ctypes.c_int, ctypes.c_uint32]
         d.drmModeFreeFB.argtypes = [ctypes.c_void_p]
+        # Optional (newer libdrm): drmModeGetFB2 for addfb2/GPU buffers, and
+        # PRIME export to map GPU buffers that aren't dumb-mappable.
+        if hasattr(d, 'drmModeGetFB2'):
+            d.drmModeGetFB2.restype = ctypes.POINTER(_DrmModeFB2)
+            d.drmModeGetFB2.argtypes = [ctypes.c_int, ctypes.c_uint32]
+            d.drmModeFreeFB2.argtypes = [ctypes.c_void_p]
+        if hasattr(d, 'drmPrimeHandleToFD'):
+            d.drmPrimeHandleToFD.restype = ctypes.c_int
+            d.drmPrimeHandleToFD.argtypes = [
+                ctypes.c_int, ctypes.c_uint32, ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_int)]
 
     def _try_open(self, path):
         self.fd = os.open(path, os.O_RDWR)
@@ -397,18 +449,20 @@ class DRMFramebuffer:
                         self._crtc_id = crtc_id
                         self.width = crtc.contents.width
                         self.height = crtc.contents.height
-                        fb = self._drm.drmModeGetFB(
-                            self.fd, crtc.contents.buffer_id)
-                        if fb:
-                            self.bpp = fb.contents.bpp
-                            self.line_length = fb.contents.pitch
-                            if not fb.contents.handle:
-                                self._drm.drmModeFreeFB(fb)
-                                raise RuntimeError(
-                                    "DRM buffer handle not accessible. "
-                                    "Run with CAP_SYS_ADMIN or as root.")
-                            self._close_gem(fb.contents.handle)
-                            self._drm.drmModeFreeFB(fb)
+                        info = self._fb_info(crtc.contents.buffer_id)
+                        if info is None:
+                            raise RuntimeError(
+                                "DRM framebuffer not readable (need libdrm "
+                                "GetFB2 and/or run as root/CAP_SYS_ADMIN)")
+                        handle, pitch, bpp, _h, fmt = info
+                        if not handle:
+                            raise RuntimeError(
+                                "DRM buffer handle not accessible. "
+                                "Run with CAP_SYS_ADMIN or as root.")
+                        self.bpp = bpp
+                        self.line_length = pitch
+                        self._fmt = fmt
+                        self._close_gem(handle)
                         return
                 finally:
                     self._drm.drmModeFreeCrtc(crtc)
@@ -430,39 +484,98 @@ class DRMFramebuffer:
             entry = self._fb_cache[fb_id]
             self.line_length = entry[1]
             self.bpp = entry[2]
+            self._fmt = entry[5]
             return entry[0], entry[3]
-        fb = self._drm.drmModeGetFB(self.fd, fb_id)
-        if not fb:
+        info = self._fb_info(fb_id)
+        if info is None:
             raise RuntimeError("Failed to get FB")
+        handle, pitch, bpp, h, fmt = info
+        if not handle:
+            raise RuntimeError("DRM buffer handle=0 (no permission)")
+        size = pitch * h
+        mm = self._map_handle(handle, size)
+        if mm is None:
+            self._close_gem(handle)
+            raise RuntimeError("Failed to map DRM buffer (dumb + PRIME failed)")
+        self._fb_cache[fb_id] = (mm, pitch, bpp, size, handle, fmt)
+        self.line_length = pitch
+        self.bpp = bpp
+        self._fmt = fmt
+        if len(self._fb_cache) > 4:
+            old_id = next(iter(self._fb_cache))
+            old = self._fb_cache.pop(old_id)
+            try:
+                old[0].close()
+            except Exception:
+                pass
+            self._close_gem(old[4])
+        return mm, size
+
+    def _fb_info(self, fb_id):
+        """Return (handle, pitch, bpp, height, fourcc) for an FB id, or None.
+
+        Prefer drmModeGetFB2 — it reads framebuffers made with drmModeAddFB2
+        (GPU compositors), which legacy drmModeGetFB can't (bpp=0/NULL). Fall
+        back to legacy GetFB for plain dumb buffers."""
+        getfb2 = getattr(self._drm, 'drmModeGetFB2', None)
+        if getfb2 is not None:
+            fb2 = getfb2(self.fd, fb_id)
+            if fb2:
+                try:
+                    handle = fb2.contents.handles[0]
+                    pitch = fb2.contents.pitches[0]
+                    fmt = fb2.contents.pixel_format
+                    mod = fb2.contents.modifier
+                    height = fb2.contents.height
+                    bpp = _DRM_FORMAT_BPP.get(fmt, 0)
+                    if handle and pitch and bpp:
+                        if mod not in (_DRM_FORMAT_MOD_LINEAR,
+                                       _DRM_FORMAT_MOD_INVALID):
+                            log("DRM: FB %d non-linear modifier 0x%x — image "
+                                "may be garbled" % (fb_id, mod))
+                        return handle, pitch, bpp, height, fmt
+                finally:
+                    self._drm.drmModeFreeFB2(fb2)
+        fb = self._drm.drmModeGetFB(self.fd, fb_id)
+        if fb:
+            try:
+                handle = fb.contents.handle
+                pitch = fb.contents.pitch
+                bpp = fb.contents.bpp
+                height = fb.contents.height
+                if handle and pitch and bpp:
+                    return handle, pitch, bpp, height, 0
+            finally:
+                self._drm.drmModeFreeFB(fb)
+        return None
+
+    def _map_handle(self, handle, size):
+        """mmap a GEM handle for CPU read. Try MAP_DUMB (dumb buffers); on
+        failure fall back to PRIME export + dma-buf mmap (GPU buffers)."""
         try:
-            handle = fb.contents.handle
-            pitch = fb.contents.pitch
-            h = fb.contents.height
-            bpp = fb.contents.bpp
-            size = pitch * h
-            if not handle:
-                raise RuntimeError("DRM buffer handle=0 (no permission)")
             req = _DrmMapDumb()
             req.handle = handle
             req.pad = 0
             req.offset = 0
             fcntl.ioctl(self.fd, _DRM_IOCTL_MAP_DUMB, req)
-            mm = mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_READ,
-                           offset=req.offset)
-            self._fb_cache[fb_id] = (mm, pitch, bpp, size, handle)
-            self.line_length = pitch
-            self.bpp = bpp
-            if len(self._fb_cache) > 4:
-                old_id = next(iter(self._fb_cache))
-                old = self._fb_cache.pop(old_id)
+            return mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_READ,
+                             offset=req.offset)
+        except OSError:
+            pass
+        prime = getattr(self._drm, 'drmPrimeHandleToFD', None)
+        if prime is not None:
+            prime_fd = ctypes.c_int(-1)
+            # DRM_CLOEXEC (0x80000) | DRM_RDWR (0x8) so the dma-buf is mappable.
+            ret = prime(self.fd, handle, 0x80000 | 0x8, ctypes.byref(prime_fd))
+            if ret == 0 and prime_fd.value >= 0:
                 try:
-                    old[0].close()
-                except Exception:
-                    pass
-                self._close_gem(old[4])
-            return mm, size
-        finally:
-            self._drm.drmModeFreeFB(fb)
+                    return mmap.mmap(prime_fd.value, size, mmap.MAP_SHARED,
+                                     mmap.PROT_READ)
+                except OSError as e:
+                    log("DRM: PRIME mmap failed: %s" % e)
+                finally:
+                    os.close(prime_fd.value)
+        return None
 
     def _close_gem(self, handle):
         try:
@@ -479,6 +592,14 @@ class DRMFramebuffer:
         return mm.read(size)
 
     def _raw_to_image(self, raw):
+        # Prefer the exact DRM pixel format (correct channel order) when known;
+        # otherwise fall back to a bpp-based guess.
+        rawmode = _DRM_FORMAT_RAWMODE.get(self._fmt)
+        if rawmode is not None:
+            mode, decoder = rawmode
+            img = Image.frombytes(mode, (self.width, self.height), raw,
+                                  'raw', decoder, self.line_length)
+            return img.convert('RGB') if mode != 'RGB' else img
         if self.bpp == 32:
             img = Image.frombytes('RGBA', (self.width, self.height), raw,
                                   'raw', 'BGRA', self.line_length)
