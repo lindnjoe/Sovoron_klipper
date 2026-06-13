@@ -64,8 +64,6 @@ class AFCU1PrintSetup:
             "physical_extruders", PHYSICAL_EXTRUDER_NUM, minval=1)
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_connect)
-        self.printer.register_event_handler("klippy:ready",
-                                            self._handle_ready)
 
     @property
     def afc(self):
@@ -95,69 +93,6 @@ class AFCU1PrintSetup:
         )
         self._patch_filament_exist_update()
         self.logger.info("AFC_U1_print_setup initialized")
-
-    def _handle_ready(self):
-        """Stop scanner reads from clobbering the U1 display for their extruder."""
-        self._patch_scanner_rfid_update()
-
-    def _patch_scanner_rfid_update(self):
-        """Keep a spool-scanner read from overwriting the U1 display filament for
-        the extruder the antenna sits on.
-
-        The U1's native ``print_task_config._rfid_filament_info_update_cb``
-        blindly writes a scanned tag's data into print_task_config for the
-        reader's channel (and resets flow K), clobbering the AFC-loaded lane's
-        filament shown for that physical extruder. Each U1 reader/channel N is
-        physically extruder N, so for a scanner channel we re-assert the lane
-        actually loaded on that extruder instead of writing the scanned spool.
-
-        Scanner channels come from [AFC_U1_rfid]; runs after the U1 callback is
-        registered (klippy:ready).
-        """
-        ptc = self.printer.lookup_object("print_task_config", None)
-        fd = self.printer.lookup_object("filament_detect", None)
-        if ptc is None or fd is None:
-            return
-        if not hasattr(fd, "_notify_data_update_cb"):
-            return
-        original_cb = getattr(ptc, "_rfid_filament_info_update_cb", None)
-        if original_cb is None:
-            return
-        reader = self.printer.lookup_object("AFC_U1_rfid", None)
-        scanner_channels = set(getattr(reader, "_cfg_scanner_channels", set())) \
-            if reader is not None else set()
-        if not scanner_channels:
-            return
-        setup = self
-
-        def patched_rfid_cb(channel, info, is_clear=False):
-            if channel in scanner_channels:
-                # Reader channel N == physical extruder N on the U1. Re-assert
-                # the AFC lane loaded on that extruder rather than writing the
-                # scanned spool's data to the display.
-                phys = channel
-                ext_name = "extruder" if phys == 0 else "extruder%d" % phys
-                ext = setup.afc.tools.get(ext_name)
-                loaded_lane_name = getattr(ext, "lane_loaded", None) if ext else None
-                loaded_lane = (setup.afc.lanes.get(loaded_lane_name)
-                               if loaded_lane_name else None)
-                if loaded_lane is not None:
-                    setup._sync_filament_to_ptc(ptc, {phys: loaded_lane})
-                    setup.logger.debug(
-                        "Scanner ch%d: re-synced AFC data for %s"
-                        % (channel, loaded_lane_name))
-                return
-            original_cb(channel, info, is_clear)
-
-        for i, cb in enumerate(fd._notify_data_update_cb):
-            if cb == original_cb:
-                fd._notify_data_update_cb[i] = patched_rfid_cb
-                self.logger.info(
-                    "Patched RFID callback: protecting scanner channels %s"
-                    % sorted(scanner_channels))
-                return
-        self.logger.warning(
-            "Could not locate print_task_config RFID callback to patch")
 
     # ── Extruder map building ────────────────────────────────────────
 

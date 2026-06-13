@@ -154,6 +154,48 @@ class AFC_U1_RFID:
             self._last_uid[channel] = None
             self._consecutive_failures[channel] = 0
         self.start()
+        self._patch_scanner_rfid_update()
+
+    def _patch_scanner_rfid_update(self):
+        """Stop a spool-scanner read from overwriting the U1 display (and
+        resetting flow K) for the extruder the antenna sits on.
+
+        The U1's native ``print_task_config._rfid_filament_info_update_cb``
+        blindly writes a scanned tag into print_task_config for the reader's
+        channel and runs FLOW_RESET_K — clobbering the AFC-loaded lane's filament
+        shown for that physical extruder. For our standalone scanner channels we
+        suppress that callback, so the loaded lane's data (which AFC writes on
+        load) stays on the display and its flow K is preserved. Self-contained:
+        depends on nothing but the U1's own objects. No-ops on non-U1.
+        """
+        ptc = self.printer.lookup_object("print_task_config", None)
+        fd = self.printer.lookup_object("filament_detect", None)
+        if ptc is None or fd is None \
+                or not hasattr(fd, "_notify_data_update_cb"):
+            return
+        original_cb = getattr(ptc, "_rfid_filament_info_update_cb", None)
+        if original_cb is None:
+            return
+        scanner_channels = set(self._cfg_scanner_channels)
+        if not scanner_channels:
+            return
+
+        def patched_rfid_cb(channel, info, is_clear=False):
+            # Suppress the native write for scanner channels — keep the loaded
+            # lane's display + flow K; everything else passes through unchanged.
+            if channel in scanner_channels:
+                return
+            original_cb(channel, info, is_clear)
+
+        for i, cb in enumerate(fd._notify_data_update_cb):
+            if cb == original_cb:
+                fd._notify_data_update_cb[i] = patched_rfid_cb
+                self.logger.info(
+                    "U1 RFID: protecting scanner channels %s from U1 display "
+                    "overwrite" % sorted(scanner_channels))
+                return
+        self.logger.warning(
+            "U1 RFID: could not locate print_task_config RFID callback to patch")
 
     def _resolve_lane(self, name):
         """Resolve a configured name to a lane object.
