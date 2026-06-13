@@ -234,12 +234,26 @@ class AFCU1PrintSetup:
             argb, rgba_str = self._afc_color_to_u1(color)
             cfg["filament_color"][phys] = argb
             cfg["filament_color_rgba"][phys] = rgba_str
-            cfg["filament_color_multi"][phys] = {
-                "nums": 1,
-                "alpha": (argb >> 24) & 0xFF,
-                "mode": 0,
-                "colors": [rgba_str[:6]],
-            }
+            # filament_color / _rgba carry the primary colour; filament_color_multi
+            # carries the full list for dual/gradient spools. lane.multi_color is
+            # the spool's complete colour list (from RFID/Spoolman) — show all of
+            # them on the U1 when there's more than one, else just the primary.
+            multi = [c.lstrip("#").upper()
+                     for c in (getattr(lane, "multi_color", None) or []) if c]
+            if len(multi) > 1:
+                cfg["filament_color_multi"][phys] = {
+                    "nums": len(multi),
+                    "alpha": (argb >> 24) & 0xFF,
+                    "mode": 1,
+                    "colors": multi,
+                }
+            else:
+                cfg["filament_color_multi"][phys] = {
+                    "nums": 1,
+                    "alpha": (argb >> 24) & 0xFF,
+                    "mode": 0,
+                    "colors": [rgba_str[:6]],
+                }
 
             cfg["filament_official"][phys] = False
             cfg["filament_sku"][phys] = 0
