@@ -29,7 +29,10 @@
 #   5. afcFunction.cmd_CALIBRATE_AFC - let steppermless serial units run their
 #                     self-contained bowden/PTFE calibration (upstream's BOWDEN=
 #                     guard requires a tool_start sensor and aborts otherwise).
-#   6. AFC_spool     - guard set_snapmaker_filament_params against int.isdigit()
+#   6. AFC_lane.handle_load_runout - generalize the load/runout callback for
+#                     serial-polled units (guard the optional physical switch,
+#                     gate on serial types, route runout via the unit handler).
+#   7. AFC_spool     - guard set_snapmaker_filament_params against int.isdigit()
 #                     on the int-0 'extruder' index and int('',16) on no colour.
 
 from __future__ import annotations
@@ -249,6 +252,103 @@ def _patch_afc_bowden_serial_unit():
     FnCls._afc_bowden_serial_patched = True
 
 
+def _patch_afc_lane_load_runout():
+    """7. AFCLane.handle_load_runout: generalize the load/runout callback so the
+    serial-polled units (ACE, OpenAMS) can drive it without crashing.
+
+    Upstream's version is HTLF-only and assumes a physical load switch:
+      * it dereferences self.load_debounce_button (and, in the runout branch,
+        self.fila_load) which only exist when the lane has a `load:` pin. Our
+        serial lanes have neither, so polling F1S through handle_load_runout
+        AttributeErrors and shuts Klipper down the moment a spool is removed;
+      * it gates the load/insert/runout body on type == "HTLF", so AMS/ACE never
+        run their own insert/runout handling.
+
+    Reproduce our deviated fork's generalized callback: guard the optional
+    physical-switch objects, extend the gate to the serial unit types (and any
+    unit exposing the on_filament_* hooks), and route a runout through the unit's
+    own handler when it provides one (e.g. OAMS can't unload once F1S is empty).
+    Falls back to upstream's infinite-spool / pause behaviour otherwise. HTLF
+    lanes keep behaving exactly as before (button + fila_load present, hooks
+    guarded by hasattr)."""
+    try:
+        from extras import AFC_lane as _lane_mod
+    except Exception:
+        return
+    LaneCls = getattr(_lane_mod, 'AFCLane', None)
+    if LaneCls is None or getattr(LaneCls, '_afc_load_runout_patched', False):
+        return
+
+    # Units whose prep and load are the same (serial-polled) sensor.
+    _ONLY_LOAD_TYPES = ("HTLF", "Claymore", "OpenAMS", "ACE")
+
+    def handle_load_runout(self, eventtime, load_state):
+        # Register state with the physical filament switch if this lane has one;
+        # serial-polled AMS/ACE lanes have no load: pin, so no debounce button.
+        button = getattr(self, 'load_debounce_button', None)
+        if button is not None:
+            try:
+                button._old_note_filament_present(is_filament_present=load_state)
+            except Exception:
+                button._old_note_filament_present(eventtime, load_state)
+
+        unit = self.unit_obj
+        is_only_load = (unit.type in _ONLY_LOAD_TYPES
+                        or hasattr(unit, 'on_filament_remove'))
+        if (self.printer.state_message == 'Printer is ready'
+                and is_only_load
+                and self._afc_prep_done is True):
+            if load_state:
+                self.set_loaded()
+                # on_filament_insert only when this wasn't a suppressed
+                # (operation-driven) state change.
+                if not getattr(self, '_load_suppressed', False):
+                    if hasattr(unit, 'on_filament_insert'):
+                        unit.on_filament_insert(self)
+                self._load_suppressed = False
+
+                if self.td1_device_id and not self.tool_loaded:
+                    self._prep_capture_td1()
+
+                if self.hub == 'direct_load':  # TODO: is_direct_hub
+                    if self.afc.function.is_printing(check_movement=True):
+                        self.afc.error.AFC_error(
+                            "Cannot load spool to toolhead while printer is "
+                            "actively moving or homing", False)
+                    else:
+                        self.afc.TOOL_LOAD(self)
+
+                self._post_prep_user_macro()
+            else:
+                if hasattr(unit, 'on_filament_remove'):
+                    unit.on_filament_remove(self)
+                # Don't run if user disabled the sensor in the GUI.
+                fila_load = getattr(self, 'fila_load', None)
+                if (fila_load is not None
+                        and not fila_load.runout_helper.sensor_enabled
+                        and self.afc.function.is_printing()):
+                    self.logger.warning(
+                        "Load runout has been detected, but pause and runout "
+                        "detection has been disabled")
+                elif unit.check_runout(self):
+                    # Let the unit handle runout if it provides custom logic
+                    # (e.g. OAMS cannot unload once F1S is empty).
+                    handler = getattr(unit, 'handle_runout', None)
+                    if handler is not None and handler(self):
+                        pass
+                    elif self.runout_lane is not None:
+                        self._perform_infinite_runout()
+                    else:
+                        self._perform_pause_runout()
+                elif self.status != "calibrating":
+                    self.set_unloaded()
+
+        self.afc.save_vars()
+
+    LaneCls.handle_load_runout = handle_load_runout
+    LaneCls._afc_load_runout_patched = True
+
+
 def _patch_afc_spool_snapmaker():
     """5. AFC_spool.set_snapmaker_filament_params: two upstream bugs — int.isdigit()
     on the int-0 'extruder' index, and int('',16) when a spool has no colour.
@@ -314,4 +414,5 @@ def apply_compat_patches():
     _patch_afc_hub_virtual_state()
     _patch_afc_unload_shared_phase()
     _patch_afc_bowden_serial_unit()
+    _patch_afc_lane_load_runout()
     _patch_afc_spool_snapmaker()
