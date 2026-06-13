@@ -1381,10 +1381,10 @@ class afcAMS(afcUnit):
         # pulls filament back toward the spool IN SYNC with the retract. The
         # follower was stopped by prepare_unload / the form-tip purge; left
         # stopped (or feeding forward) it fights the extruder pull-back and
-        # shoves filament back into the gears. The brief pause lets the follower
-        # actually spin up reverse before the extruder pulls — an M400 wouldn't
-        # do this (it only waits on toolhead moves, not the follower MCU). The
-        # hardware unload (unload_spool, below) keeps driving it reverse.
+        # shoves filament back into the gears. The brief reactor pause lets the
+        # follower actually spin up reverse before the extruder pulls (an M400
+        # only waits on toolhead moves, not the follower MCU). The hardware
+        # unload (unload_spool, below) keeps driving it reverse.
         if self._follower and self.oams:
             try:
                 self._follower.enable_follower(
