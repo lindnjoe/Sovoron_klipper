@@ -9,9 +9,11 @@
 # add there and breaks the remote display until it's re-applied. This init script
 # lives outside HelixScreen's tree, so HelixScreen updates can't touch it.
 #
-# It sorts after HelixScreen's own S99fb-http ('r' > 'f'), so helix is already
-# rendering by the time we start; fb-http also has --drm-wait (60s) so it tolerates
-# starting before helix has an active CRTC. Reads the same DRM scanout (card0).
+# Boot timing: this runs early in rcS, BEFORE printer_data (where the Remote
+# Screen toggle lives) is mounted. So the real work is done in a detached worker
+# that waits for the config to appear before reading the toggle (fail-open if it
+# never does) and does NOT block boot. fb-http itself has --drm-wait so it
+# tolerates starting before helix has an active CRTC. Reads the same DRM scanout.
 #
 # Install (run on the U1 as root):
 #   cp bin/S99remote-screen /etc/init.d/S99remote-screen
@@ -22,40 +24,49 @@ BIN=/usr/local/bin/fb-http.py
 CFG=/home/lava/printer_data/config/extended/extended2.cfg
 PORT=8092
 LOG=/tmp/fb-http.log
+BOOTLOG=/tmp/remote-screen.boot.log
 
-start() {
-    [ -x "$BIN" ] || { echo "remote-screen: $BIN missing"; exit 0; }
+_log() { echo "[$(date '+%H:%M:%S' 2>/dev/null)] $*" >> "$BOOTLOG" 2>/dev/null; }
 
-    # Honor the Remote Screen toggle when the helper is available.
-    if [ -x /usr/local/bin/extended-config.py ]; then
+worker() {
+    : > "$BOOTLOG" 2>/dev/null
+    _log "worker start"
+    [ -f "$BIN" ] || { _log "fb-http.py missing at $BIN"; return; }
+
+    # printer_data may not be mounted yet this early in boot; wait up to 60s for
+    # the config file before reading the toggle. If it never appears, fail OPEN
+    # and start anyway (better a running screen than a silently disabled one).
+    i=0
+    while [ ! -f "$CFG" ] && [ "$i" -lt 60 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ -f "$CFG" ] && [ -x /usr/local/bin/extended-config.py ]; then
         rs=$(/usr/local/bin/extended-config.py get "$CFG" web remote_screen false 2>/dev/null)
+        _log "remote_screen=$rs (config ready after ${i}s)"
         case "$rs" in
             [Tt][Rr][Uu][Ee]) ;;
-            *) echo "remote-screen: disabled (web.remote_screen=$rs)"; exit 0 ;;
+            *) _log "disabled; not starting"; return ;;
         esac
+    else
+        _log "config not found after ${i}s; starting anyway (fail-open)"
     fi
 
     if pgrep -f "$BIN" >/dev/null 2>&1; then
-        echo "remote-screen: already running"
-        exit 0
+        _log "already running"
+        return
     fi
-
-    echo "remote-screen: starting fb-http on :$PORT (DRM backend)"
+    _log "launching fb-http on :$PORT (DRM)"
     /usr/bin/python3 "$BIN" \
         --bind 127.0.0.1 --port "$PORT" \
         --backend drm --drm-device /dev/dri/card0 --drm-wait 60 \
         --html-dir /usr/local/share/fb-http/html >"$LOG" 2>&1 &
 }
 
-stop() {
-    pkill -f "$BIN" 2>/dev/null
-    echo "remote-screen: stopped"
-}
-
 case "$1" in
-    start)   start ;;
-    stop)    stop ;;
-    restart) stop; sleep 1; start ;;
+    start)   worker & ;;
+    stop)    pkill -f "$BIN" 2>/dev/null; echo "remote-screen: stopped" ;;
+    restart) pkill -f "$BIN" 2>/dev/null; sleep 1; worker & ;;
     status)  pgrep -af "$BIN" || { echo "remote-screen: not running"; exit 1; } ;;
     *)       echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
