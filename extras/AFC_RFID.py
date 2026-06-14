@@ -192,24 +192,6 @@ class SpoolmanClient:
         which already has get_spool)."""
         return self._mr.get_spool(spool_id)
 
-    def update_spool_comment_tag(self, spool_id, tag, value):
-        """Upsert a ``tag=value`` pair in a spool's comment field (replacing an
-        existing tag in place, else appending)."""
-        existing = self.get_spool(spool_id)
-        if existing is None:
-            return None
-        comment = existing.get("comment") or ""
-        pattern = r'\b' + re.escape(tag) + r'=\S*'
-        new_tag = f"{tag}={value}"
-        if re.search(pattern, comment):
-            comment = re.sub(pattern, new_tag, comment)
-        elif comment:
-            comment = comment.rstrip() + " " + new_tag
-        else:
-            comment = new_tag
-        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}",
-                                    body={"comment": comment})
-
     def read_flow_k(self, spool_id):
         """Read flow K from the afc_flow_k extra field; fall back to the legacy
         afc_flow_k=<value> comment tag for spools not yet migrated."""
