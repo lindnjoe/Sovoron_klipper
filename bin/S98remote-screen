@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# S99remote-screen — start the Snapmaker U1 "Remote Screen" (fb-http -> Mainsail)
+# S98remote-screen — start the Snapmaker U1 "Remote Screen" (fb-http -> Mainsail)
 # at boot, INDEPENDENTLY of HelixScreen (whose updates overwrite its own hook).
 #
 # Daemonized the same way as the U1's openrfid init (start-stop-daemon -S -b -m),
@@ -9,10 +9,16 @@
 # to a persistent boot log so a failed boot is diagnosable (rcS gives init scripts
 # no console we can read after the fact).
 #
+# Numbered S98 (not S99) ON PURPOSE: on this image S99prometheus-klipper-exporter
+# hangs/aborts rcS, so nothing in the S99 block after it starts (that's why an
+# S99 version ran fine manually but never at boot). S98 runs before the whole S99
+# block — after S90lmd, before S99openrfid which we know rcS reaches — so it's
+# guaranteed to run. helix starts later at S99; fb-http --drm-wait handles that.
+#
 # Install (run on the U1 as root):
-#   cp bin/S99remote-screen /etc/init.d/S99remote-screen
-#   chmod +x /etc/init.d/S99remote-screen
-#   /etc/init.d/S99remote-screen start
+#   cp bin/S98remote-screen /etc/init.d/S98remote-screen
+#   chmod +x /etc/init.d/S98remote-screen
+#   /etc/init.d/S98remote-screen start
 
 PIDFILE=/var/run/remote-screen.pid
 BIN=/usr/local/bin/fb-http.py
