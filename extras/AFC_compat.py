@@ -293,6 +293,15 @@ def _patch_afc_lane_load_runout():
                 and is_only_load
                 and self._afc_prep_done is True):
             if load_state:
+                # Stash any externally-staged spool (scanner -> next_spool_id)
+                # before set_loaded() consumes it via _set_values, so a unit's
+                # on_filament_insert (e.g. ACE, which clear_values()) can tell a
+                # fresh scan apart from a stale/remembered id and keep it.
+                try:
+                    self._afc_staged_spool_id = getattr(
+                        self.afc.spool, 'next_spool_id', None)
+                except Exception:
+                    self._afc_staged_spool_id = None
                 self.set_loaded()
                 # on_filament_insert only when this wasn't a suppressed
                 # (operation-driven) state change.

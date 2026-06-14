@@ -533,6 +533,12 @@ class afcACE(afcUnit):
         if slot >= self.SLOTS_PER_UNIT:
             return
         saved_spool_id = lane.spool_id
+        # A spool_id present at insert came from set_loaded()->_set_values:
+        # either a freshly-staged scan (external scanner -> next_spool_id) or a
+        # remembered spool. The compat load handler records the staged id so we
+        # can keep a fresh scan even when remember_spool is off.
+        staged_spool_id = getattr(lane, '_afc_staged_spool_id', None)
+        lane._afc_staged_spool_id = None
         self.afc.spool.clear_values(lane)
         self._refresh_slot_inventory(slot)
         slot_info = self._slot_inventory[slot]
@@ -546,7 +552,11 @@ class afcACE(afcUnit):
                 })
         if sync_rfid_to_spoolman is not None:
             self._sync_rfid_to_spoolman(lane, slot_info)
-        if saved_spool_id and not lane.spool_id and lane.remember_spool:
+        # If the ACE slot had no RFID identity of its own (lane.spool_id still
+        # unset after the inventory read), restore the spool assigned before
+        # insertion when it was freshly scanned/staged or remember_spool is on.
+        if (saved_spool_id and not lane.spool_id
+                and (staged_spool_id is not None or lane.remember_spool)):
             self.afc.spool.set_spoolID(lane, saved_spool_id)
         self.lane_illuminate_spool(lane)
         self._hub_load_suppressed.discard(lane.name)
