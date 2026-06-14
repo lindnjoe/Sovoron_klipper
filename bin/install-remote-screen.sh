@@ -30,7 +30,10 @@ set -e
 SELF_DIR=$(dirname "$0")
 LAUNCHER_SRC="${1:-$SELF_DIR/S98remote-screen}"
 LAUNCHER_DST=/etc/init.d/S98remote-screen
-HOOK=/etc/init.d/S99openrfid
+# Hook the display's own base init script (helix-managed but user-owned). It runs
+# at boot and exit 0's right after delegating to helix; we insert our call before
+# that first exit so the screen starts once helix has been handed off.
+HOOK=/etc/init.d/S99fb-http
 MARKER="AFC-REMOTE-SCREEN-HOOK"
 
 # 1. Install the launcher.
@@ -55,10 +58,12 @@ else
     BAK="$HOOK.afcbak.$(date +%s 2>/dev/null || echo bak)"
     cp "$HOOK" "$BAK"
     TMP="$HOOK.tmp.$$"
-    # Insert our start/stop delegation just before the final `exit $?` so the
-    # base script's own behavior is untouched. Guarded by the marker.
+    # Insert our start/stop delegation before the FIRST standalone `exit` line
+    # (matches `exit 0` in S99fb-http and `exit $?` elsewhere). The done flag
+    # keeps it to the first match so it lands in the active code path, before the
+    # script exits. Guarded by the marker.
     awk -v done=0 '
-        /^[[:space:]]*exit[[:space:]]+\$\?/ && !done {
+        /^[[:space:]]*exit[[:space:]]/ && !done {
             print "# " "AFC-REMOTE-SCREEN-HOOK: start the Mainsail remote screen"
             print "case \"$1\" in"
             print "  start) [ -x /etc/init.d/S98remote-screen ] && /etc/init.d/S98remote-screen start ;;"
