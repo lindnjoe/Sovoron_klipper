@@ -179,8 +179,13 @@ img.addEventListener('touchend', function(e) {
 </script>
 <script src="auth.js"></script>
 <script>
+// No service worker: this page is an embedded iframe served fresh by nginx, and
+// a cached SW only caused a stale view. Actively unregister any that exist
+// (sw.js itself also self-destructs) so assets always load current.
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.getRegistrations()
+        .then(function (regs) { regs.forEach(function (r) { r.unregister(); }); })
+        .catch(function () {});
 }
 initAuth();
 </script>
