@@ -78,6 +78,44 @@ class AFC_autocal:
             self.logger.warning("AFC_autocal: AFC not loaded; disabled")
             return
         self.logger = self.afc.logger
+        if self.apply_stored_k or self.auto_calibrate:
+            self._patch_set_tool_loaded_emit()
+
+    def _patch_set_tool_loaded_emit(self):
+        """Make every normal toolchange emit ``afc:tool_loaded``.
+
+        Upstream ``AFCLane.set_tool_loaded()`` doesn't fire the event; only the
+        ACE/OpenAMS/U1 units emit it in their own special paths, so a plain lane
+        load (e.g. a standalone U1 extruder, or a Box Turtle / HTLF lane) never
+        triggers autocal. Patch the lane base class here — entirely inside
+        AFC_autocal — so this behavior exists ONLY when this module is
+        installed/enabled and we never touch the frozen upstream files. The
+        patch is idempotent (guarded by a class flag) and a no-op for the
+        startup-reconcile / RFID emit paths, which don't go through
+        set_tool_loaded(normal_toolchange=True).
+        """
+        try:
+            from extras.AFC_lane import AFCLane
+        except Exception as e:
+            self.logger.warning(
+                "AFC_autocal: cannot patch set_tool_loaded: %s" % e)
+            return
+        if getattr(AFCLane, '_afc_autocal_emit_patched', False):
+            return
+        _orig = AFCLane.set_tool_loaded
+
+        def set_tool_loaded(self, normal_toolchange=False, _orig=_orig):
+            _orig(self, normal_toolchange=normal_toolchange)
+            if normal_toolchange:
+                try:
+                    self.printer.send_event("afc:tool_loaded", self)
+                except Exception:
+                    pass
+
+        AFCLane.set_tool_loaded = set_tool_loaded
+        AFCLane._afc_autocal_emit_patched = True
+        self.logger.info(
+            "AFC_autocal: set_tool_loaded now emits afc:tool_loaded on load")
 
     def _spoolman(self):
         mr = getattr(self.afc, 'moonraker', None) if self.afc else None
@@ -156,19 +194,27 @@ class AFC_autocal:
                 self._set_lane_k(lane, k)
         return k
 
-    def _calibrate(self, cur_lane, gcmd=None):
+    def _calibrate(self, cur_lane, gcmd=None, runner=None):
         """Run the calibration command, then store/apply/persist the new K.
 
+        :param runner: callable used to run ``calibrate_gcode``. Defaults to
+          ``run_script_from_command`` (assumes the gcode mutex is held, i.e.
+          we're inside a command). Pass ``self.gcode.run_script`` when calling
+          from a deferred/reactor context so the mutex is acquired safely.
         :return float or None: the measured K, or None if none produced.
         """
         flow_cal = self.printer.lookup_object('flow_calibrator', None)
         if flow_cal is None:
-            (gcmd.error if gcmd else RuntimeError)(
-                "AFC_autocal: flow_calibrator not found")
+            msg = "AFC_autocal: flow_calibrator not found"
+            if gcmd is not None:
+                gcmd.respond_info(msg)
+            else:
+                self.logger.warning(msg)
             return None
         ext_name = cur_lane.extruder_obj.name
         k_before = flow_cal._current_k.get(ext_name)
-        self.gcode.run_script_from_command(self.calibrate_gcode)
+        run = runner if runner is not None else self.gcode.run_script_from_command
+        run(self.calibrate_gcode)
         k_after = flow_cal._current_k.get(ext_name)
         if k_after is None or k_after == k_before:
             self.logger.info(
@@ -194,22 +240,40 @@ class AFC_autocal:
     # ── Event handlers ──────────────────────────────────────────────
 
     def _handle_tool_loaded(self, cur_lane):
+        if self.afc is None or cur_lane is None:
+            return
+        if not (self.apply_stored_k or self.auto_calibrate):
+            return
+        # set_tool_loaded fires mid-toolchange with the gcode mutex held, so we
+        # can't apply K / run a calibration synchronously here. Defer to the
+        # reactor; _do_tool_loaded then uses run_script (which acquires the
+        # mutex) and runs once the load has released it.
+        self.reactor.register_callback(
+            lambda et, lane=cur_lane: self._do_tool_loaded(lane))
+
+    def _do_tool_loaded(self, cur_lane):
         try:
-            if self.afc is None or cur_lane is None:
-                return
-            if not (self.apply_stored_k or self.auto_calibrate):
-                return
             # Spool already has a stored K? apply it (if applying is on) and
             # skip calibration — it's already calibrated.
             if self._ensure_k_loaded(cur_lane) is not None:
                 if self.apply_stored_k:
                     self._apply_lane_k(cur_lane.name)
                 return
-            # No stored K — optionally calibrate (which stores + applies).
-            if self.auto_calibrate:
-                self._calibrate(cur_lane)
+            # No stored K — optionally calibrate (stores + applies). Only when
+            # it's safe to run gcode (prep done, machine idle): never start a
+            # calibration in the middle of a print or before AFC is ready.
+            if self.auto_calibrate and self._safe_to_calibrate():
+                self._calibrate(cur_lane, runner=self.gcode.run_script)
         except Exception as e:
             self.logger.warning("AFC_autocal: tool_loaded error: %s" % e)
+
+    def _safe_to_calibrate(self):
+        if not getattr(self.afc, 'prep_done', False):
+            return False
+        state = getattr(self.afc, 'current_state', None)
+        if state is not None and str(state).split('.')[-1].lower() != 'idle':
+            return False
+        return True
 
     def _reapply_current_k(self):
         # Re-applying only matters when we apply stored K.
