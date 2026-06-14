@@ -44,7 +44,7 @@ start() {
     /usr/bin/python3 "$BIN" \
         --bind 127.0.0.1 --port "$PORT" \
         --backend drm --drm-device /dev/dri/card0 --drm-wait 60 \
-        --html-dir /usr/share/fb-http/html >"$LOG" 2>&1 &
+        --html-dir /usr/local/share/fb-http/html >"$LOG" 2>&1 &
 }
 
 stop() {
