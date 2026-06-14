@@ -91,8 +91,8 @@ class AFC_autocal:
         AFC_autocal — so this behavior exists ONLY when this module is
         installed/enabled and we never touch the frozen upstream files. The
         patch is idempotent (guarded by a class flag) and a no-op for the
-        startup-reconcile / RFID emit paths, which don't go through
-        set_tool_loaded(normal_toolchange=True).
+        startup-reconcile / RFID emit paths, which set lane status directly
+        rather than going through set_tool_loaded.
         """
         try:
             from extras.AFC_lane import AFCLane
@@ -106,11 +106,14 @@ class AFC_autocal:
 
         def set_tool_loaded(self, normal_toolchange=False, _orig=_orig):
             _orig(self, normal_toolchange=normal_toolchange)
-            if normal_toolchange:
-                try:
-                    self.printer.send_event("afc:tool_loaded", self)
-                except Exception:
-                    pass
+            # Emit on every load, not just normal_toolchange: the direct
+            # "load to extruder" path (AFC_extruder.temp_check_cb) and the
+            # OpenAMS load paths call set_tool_loaded() with the default
+            # (normal_toolchange=False), and those loads need autocal too.
+            try:
+                self.printer.send_event("afc:tool_loaded", self)
+            except Exception:
+                pass
 
         AFCLane.set_tool_loaded = set_tool_loaded
         AFCLane._afc_autocal_emit_patched = True
