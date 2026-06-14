@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 import logging
+import threading
 
 from extras.AFC_RFID import SpoolmanClient
 
@@ -44,6 +45,7 @@ class AFC_autocal:
         self.logger = logging.getLogger('AFC_autocal')
         self.afc = None
         self._lane_flow_k = {}   # lane_name -> (spool_id, k)
+        self._k_fetch_inflight = set()   # lane names with a pending async read
 
         # Two independent toggles. 'enabled' is a back-compat master that
         # defaults BOTH on when set.
@@ -256,19 +258,82 @@ class AFC_autocal:
 
     def _do_tool_loaded(self, cur_lane):
         try:
-            # Spool already has a stored K? apply it (if applying is on) and
-            # skip calibration — it's already calibrated.
-            if self._ensure_k_loaded(cur_lane) is not None:
+            if self.afc is None or cur_lane is None:
+                return
+            if not (self.apply_stored_k or self.auto_calibrate):
+                return
+            # An already-CACHED K is just an MCU command (no I/O) — apply it
+            # immediately, safe any time including mid-print tool changes.
+            if self._get_lane_k(cur_lane) is not None:
                 if self.apply_stored_k:
                     self._apply_lane_k(cur_lane.name)
                 return
-            # No stored K — optionally calibrate (stores + applies). Only when
-            # it's safe to run gcode (prep done, machine idle): never start a
-            # calibration in the middle of a print or before AFC is ready.
-            if self.auto_calibrate and self._safe_to_calibrate():
-                self._calibrate(cur_lane, runner=self.gcode.run_script)
+            # Uncached: reading K from Spoolman is a SYNCHRONOUS HTTP call.
+            # Run it OFF the reactor thread so it can't stall step delivery and
+            # trip the MCU "Timer too close"; the result is applied back on the
+            # reactor by _k_applied.
+            self._fetch_k_async(cur_lane)
         except Exception as e:
             self.logger.warning("AFC_autocal: tool_loaded error: %s" % e)
+
+    def _fetch_k_async(self, cur_lane):
+        """Read this lane's K from Spoolman in a worker thread, then hand the
+        result to the reactor. The worker only does the (stateless) HTTP read;
+        all state changes / applies happen on the reactor in _k_applied."""
+        lane_name = cur_lane.name
+        if lane_name in self._k_fetch_inflight:
+            return
+        sid = self._norm_spool_id(getattr(cur_lane, 'spool_id', None))
+        if sid is None:
+            # No spool to look up — nothing to apply; calibrate if idle/enabled.
+            if self.auto_calibrate and self._safe_to_calibrate():
+                self._calibrate(cur_lane, runner=self.gcode.run_script)
+            return
+        if not self.apply_stored_k:
+            # Only auto_calibrate is on, and that needs idle — defer to _k_applied
+            # with k=None so it takes the (idle-gated) calibrate path.
+            self._k_applied(lane_name, sid, None)
+            return
+
+        self._k_fetch_inflight.add(lane_name)
+
+        def worker():
+            k = None
+            try:
+                client = self._spoolman()
+                if client is not None:
+                    k = client.read_flow_k(sid)
+            except Exception as e:
+                self.logger.debug("AFC_autocal: async K read failed: %s" % e)
+            # Hop back onto the reactor (thread-safe) to apply / decide.
+            self.reactor.register_async_callback(
+                lambda et: self._k_applied(lane_name, sid, k))
+
+        threading.Thread(target=worker, name="afc-autocal-k",
+                         daemon=True).start()
+
+    def _k_applied(self, lane_name, sid, k):
+        """Runs on the reactor with the K read off-thread. Re-validate the lane
+        still carries that spool (it may have changed during the read), then
+        apply the stored K or fall back to an idle-gated calibration."""
+        self._k_fetch_inflight.discard(lane_name)
+        try:
+            lane = self.afc.lanes.get(lane_name) if self.afc else None
+            if lane is None:
+                return
+            if self._norm_spool_id(getattr(lane, 'spool_id', None)) != sid:
+                return  # spool changed since we kicked off the read — stale
+            if k is not None:
+                self._set_lane_k(lane, k)
+                if self.apply_stored_k:
+                    self._apply_lane_k(lane_name)
+                return
+            # No stored K — optionally calibrate (stores + applies). Gated to
+            # prep-done + idle so we never start a calibration mid-print.
+            if self.auto_calibrate and self._safe_to_calibrate():
+                self._calibrate(lane, runner=self.gcode.run_script)
+        except Exception as e:
+            self.logger.warning("AFC_autocal: K apply error: %s" % e)
 
     def _safe_to_calibrate(self):
         if not getattr(self.afc, 'prep_done', False):
@@ -290,7 +355,10 @@ class AFC_autocal:
         cur_lane = self._current_lane()
         if cur_lane is None:
             return
-        if self._ensure_k_loaded(cur_lane) is not None:
+        # Re-apply only the already-cached K (no Spoolman read on this event
+        # path). The K was cached at load; if it wasn't, the load's async fetch
+        # applies it — no need to block here.
+        if self._get_lane_k(cur_lane) is not None:
             self._apply_lane_k(cur_lane.name)
 
     def _handle_home_rails_end(self, homing_state, rails):
