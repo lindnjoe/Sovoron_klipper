@@ -842,9 +842,31 @@ def main():
     parser.add_argument('--drm-device', default=None,
                         help='DRM device path (e.g. /dev/dri/card1)')
     parser.add_argument('--fb', default='/dev/fb0', help='Framebuffer device (fbdev mode)')
+    parser.add_argument('--drm-wait', type=float, default=60.0,
+                        help='Seconds to wait for an active DRM display before '
+                             'falling back to fbdev (start-order tolerance)')
     parser.add_argument('--touch', default='', help='Touch input device (blank = auto-detect the touchscreen)')
     parser.add_argument('--html-dir', default=default_html_dir, help='Path to HTML directory')
     args = parser.parse_args()
+
+    def open_drm_retry(device, wait_s):
+        """Open DRM, retrying until an active display appears or wait_s elapses.
+
+        fb-http may be launched (e.g. from a boot hook) before the on-screen UI
+        has brought up a DRM CRTC. Rather than fall straight back to a black
+        fbdev, wait for the display to come up."""
+        deadline = time.time() + max(0.0, wait_s)
+        attempt = 0
+        while True:
+            try:
+                return DRMFramebuffer(device)
+            except Exception as e:
+                if time.time() >= deadline:
+                    raise
+                attempt += 1
+                if attempt == 1 or attempt % 5 == 0:
+                    log(f"Waiting for an active DRM display ({e})...")
+                time.sleep(2)
 
     fb = None
     backend = args.backend
@@ -855,23 +877,26 @@ def main():
         # So prefer DRM whenever there's an active DRM display — don't gate on a
         # specific process name (pgrep 'helix-screen' missed the native UI and
         # any differently-named or not-yet-started helixscreen, falling back to
-        # a black fbdev). Fall back to fbdev only when no usable DRM CRTC found.
+        # a black fbdev). Wait up to --drm-wait for the display (we may start
+        # before the UI), then fall back to fbdev only if none appears.
         try:
-            fb = DRMFramebuffer(args.drm_device)
+            fb = open_drm_retry(args.drm_device, args.drm_wait)
             log("Auto: active DRM display found, using DRM backend")
             backend = 'drm'
         except Exception as e:
-            log(f"Auto: no usable DRM display ({e}); using fbdev")
+            log(f"Auto: no usable DRM display after {args.drm_wait:.0f}s ({e}); "
+                f"using fbdev")
             fb = None
             backend = 'fbdev'
 
     if backend == 'drm' and fb is None:
-        # Explicit --backend drm: still fall back to fbdev on failure rather
-        # than crashing the server (which leaves Mainsail's box empty).
+        # Explicit --backend drm: wait for the display, then still fall back to
+        # fbdev on failure rather than crashing (which leaves Mainsail empty).
         try:
-            fb = DRMFramebuffer(args.drm_device)
+            fb = open_drm_retry(args.drm_device, args.drm_wait)
         except Exception as e:
-            log(f"DRM backend failed ({e}); falling back to fbdev")
+            log(f"DRM backend failed after {args.drm_wait:.0f}s ({e}); "
+                f"falling back to fbdev")
             fb = None
 
     if fb is None:
