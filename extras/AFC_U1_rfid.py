@@ -483,7 +483,8 @@ class AFC_U1_RFID:
             {"channel": int, "manufacturer": str, "type": str,
              "sub_type": str, "colors": [argb_int, ...],
              "hotend_min_temp": int, "hotend_max_temp": int,
-             "bed_temp": int, "weight_grams": int, "card_uid": [int, ...]}
+             "bed_temp": int, "weight_grams": int, "card_uid": [int, ...],
+             "manufacturing_date": str}   # -> Spoolman lot_nr
         """
         try:
             channel = web_request.get_int('channel')
@@ -504,6 +505,7 @@ class AFC_U1_RFID:
             'WEIGHT': web_request.get_int('weight_grams', 0),
             'COLOR_NUMS': len(colors),
             'CARD_UID': web_request.get('card_uid', None),
+            'MF_DATE': web_request.get('manufacturing_date', ''),
         }
         for idx, c in enumerate(colors, start=1):
             try:
@@ -776,7 +778,40 @@ class AFC_U1_RFID:
             "diameter": 1.75,
             "extruder_temp": ext_temp,
             "bed_temp": int(bed_max) if bed_max else None,
+            # Tag metadata for Spoolman: manufacturing date -> lot_nr, card UID
+            # -> afc_rfid_uid extra field. (MF_DATE is reliable on the OpenRFID
+            # webhook path; the filament_detect path often reports it unset.)
+            "mfg_date": self._fmt_mfg_date(info.get("MF_DATE")),
+            "uid": self._fmt_uid(info.get("CARD_UID")),
         }
+
+    @staticmethod
+    def _fmt_mfg_date(raw):
+        """Normalize a tag manufacturing date to a clean string (lot_nr), or
+        None if unset. Accepts YYYYMMDD (filament_detect) or ISO YYYY-MM-DD
+        (OpenRFID webhook); treats epoch/1970 as 'unset'."""
+        if not raw:
+            return None
+        s = str(raw).strip()
+        if not s or s.startswith("1970") or s in ("0", "00000000"):
+            return None
+        if len(s) == 8 and s.isdigit():
+            return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+        return s
+
+    @staticmethod
+    def _fmt_uid(raw):
+        """Format a card UID (list of byte ints, e.g. [123,240,175,255]) as an
+        uppercase hex string ('7BF0AFFF'); pass through a non-empty string."""
+        if not raw:
+            return None
+        if isinstance(raw, (list, tuple)):
+            try:
+                return "".join("%02X" % (int(b) & 0xFF) for b in raw)
+            except (ValueError, TypeError):
+                return None
+        s = str(raw).strip()
+        return s or None
 
     def _notify_scan(self, brand: str, material: str, color: str,
                      slot_info: dict, lane_name: str = "",

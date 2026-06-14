@@ -32,6 +32,7 @@ class SpoolmanClient:
         self._mr = moonraker
         self.host = moonraker.host
         self.logger = moonraker.logger
+        self._fields_ensured = False
 
     def _get_results(self, url_string, print_error=True):
         return self._mr._get_results(url_string, print_error)
@@ -127,10 +128,64 @@ class SpoolmanClient:
         if spool_weight is not None: data["spool_weight"] = spool_weight
         return self._spoolman_proxy("POST", "/v1/spool", body=json.dumps(data))
 
-    # ── Flow-K storage (autoflow) ────────────────────────────────────
-    # K is persisted per-spool in Spoolman's comment field as an
-    # "afc_flow_k=<value>" tag, so it follows the physical spool.
+    # ── Spool metadata: extra fields (autoflow K, RFID UID) + lot_nr ──
+    # Flow K and the tag UID live in dedicated Spoolman *extra fields* (created
+    # on demand), not the comment — so the comment stays free for the user. The
+    # tag's manufacturing date goes to the built-in lot_nr. Extra-field values
+    # are JSON-encoded per Spoolman (float -> "1.23", text -> "\"abc\"").
+    SPOOL_EXTRA_FLOW_K = "afc_flow_k"     # field_type: float
+    SPOOL_EXTRA_UID = "afc_rfid_uid"      # field_type: text
+    # Legacy: K used to be stored as an "afc_flow_k=<value>" comment tag. Kept
+    # only so read_flow_k can migrate old spools; write_flow_k strips it.
     SPOOLMAN_FLOW_K_TAG = "afc_flow_k"
+
+    def _ensure_spool_fields(self):
+        """Create the AFC spool extra fields if they don't exist yet.
+
+        Idempotent and cached: one GET /v1/field/spool per client; POSTs only
+        the fields that are missing. POST is create-or-update, so a re-create is
+        harmless if a race adds it first."""
+        if self._fields_ensured:
+            return
+        existing = self._spoolman_proxy("GET", "/v1/field/spool",
+                                        print_error=False)
+        keys = set()
+        if isinstance(existing, list):
+            keys = {f.get("key") for f in existing if isinstance(f, dict)}
+        if self.SPOOL_EXTRA_FLOW_K not in keys:
+            self._spoolman_proxy(
+                "POST", f"/v1/field/spool/{self.SPOOL_EXTRA_FLOW_K}",
+                body={"name": "AFC Flow K", "field_type": "float"})
+        if self.SPOOL_EXTRA_UID not in keys:
+            self._spoolman_proxy(
+                "POST", f"/v1/field/spool/{self.SPOOL_EXTRA_UID}",
+                body={"name": "RFID Tag UID", "field_type": "text"})
+        self._fields_ensured = True
+
+    def _patch_spool(self, spool_id, lot_nr=None, extra_updates=None):
+        """PATCH a spool's lot_nr and/or extra fields. Reads the current extra
+        and merges, so other extra fields (e.g. slicer presets) are preserved."""
+        body = {}
+        if lot_nr is not None:
+            body["lot_nr"] = lot_nr
+        if extra_updates:
+            spool = self.get_spool(spool_id)
+            extra = dict((spool or {}).get("extra") or {})
+            extra.update(extra_updates)
+            body["extra"] = extra
+        if not body:
+            return None
+        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)
+
+    def write_spool_metadata(self, spool_id, lot_nr=None, uid=None):
+        """Write the tag's manufacturing date (-> lot_nr) and UID (-> extra)."""
+        extra = None
+        if uid:
+            self._ensure_spool_fields()
+            extra = {self.SPOOL_EXTRA_UID: json.dumps(str(uid))}
+        if lot_nr is None and extra is None:
+            return None
+        return self._patch_spool(spool_id, lot_nr=lot_nr, extra_updates=extra)
 
     def get_spool(self, spool_id):
         """Read a spool dict from Spoolman (delegated to the live moonraker,
@@ -156,10 +211,18 @@ class SpoolmanClient:
                                     body={"comment": comment})
 
     def read_flow_k(self, spool_id):
-        """Parse afc_flow_k=<value> from a spool's comment; None if absent."""
+        """Read flow K from the afc_flow_k extra field; fall back to the legacy
+        afc_flow_k=<value> comment tag for spools not yet migrated."""
         spool = self.get_spool(spool_id)
         if not spool:
             return None
+        raw = (spool.get("extra") or {}).get(self.SPOOL_EXTRA_FLOW_K)
+        if raw is not None and raw != "":
+            try:
+                return float(json.loads(raw))
+            except (ValueError, TypeError):
+                pass
+        # Migration fallback: old comment tag.
         m = re.search(r'\b' + self.SPOOLMAN_FLOW_K_TAG + r'=([\d.]+)',
                       spool.get("comment") or "")
         if m:
@@ -170,9 +233,21 @@ class SpoolmanClient:
         return None
 
     def write_flow_k(self, spool_id, k):
-        """Persist a calibrated flow K to the spool's comment."""
-        return self.update_spool_comment_tag(
-            spool_id, self.SPOOLMAN_FLOW_K_TAG, f"{float(k):.6f}")
+        """Persist a calibrated flow K to the afc_flow_k extra field. Also strips
+        the legacy comment tag if present (we no longer store K in the comment)."""
+        self._ensure_spool_fields()
+        spool = self.get_spool(spool_id)
+        if not spool:
+            return None
+        extra = dict(spool.get("extra") or {})
+        extra[self.SPOOL_EXTRA_FLOW_K] = json.dumps(round(float(k), 6))
+        body = {"extra": extra}
+        comment = spool.get("comment") or ""
+        stripped = re.sub(r'\s*\b' + re.escape(self.SPOOLMAN_FLOW_K_TAG) + r'=\S*',
+                          '', comment).strip()
+        if stripped != comment:
+            body["comment"] = stripped
+        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)
 
 # Max RGB Euclidean distance for two spool colours to be the SAME filament.
 # 0.0 = exact hex match (different colours -> different spools). Raise a little
@@ -809,6 +884,17 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                           spool_weight if spool_weight and spool_weight > 0 else None)
 
         spool_id = spool.get("id")
+
+        # Persist tag metadata on the spool: manufacturing date -> built-in
+        # lot_nr, RFID tag UID -> afc_rfid_uid extra field. Best-effort.
+        try:
+            mfg_date = slot_info.get("mfg_date")
+            uid = slot_info.get("uid")
+            if mfg_date or uid:
+                moonraker.write_spool_metadata(spool_id, lot_nr=mfg_date, uid=uid)
+        except Exception as e:
+            logger.debug(f"{prefix}: spool metadata write skipped: {e}")
+
         fil_name = filament.get("name", "")
         fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
         remaining = spool.get("remaining_weight")
