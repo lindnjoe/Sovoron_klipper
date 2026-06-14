@@ -1475,7 +1475,17 @@ class afcACE(afcUnit):
                     f"Failed to start feed assist slot {slot} after "
                     f"{attempts} attempts: {e}")
             except Exception as e:
-                self.logger.error(f"Failed to start feed assist slot {slot}: {e}")
+                # FORBIDDEN means the ACE refused assist for a moment (slot
+                # state still settling, e.g. right after boot). The heartbeat
+                # watchdog re-issues it on the next status tick and it succeeds,
+                # so log at debug — it's transient and self-healing, not a fault.
+                if 'FORBIDDEN' in str(e).upper():
+                    self.logger.debug(
+                        f"Feed assist slot {slot} not permitted yet "
+                        f"(FORBIDDEN); watchdog will retry: {e}")
+                else:
+                    self.logger.error(
+                        f"Failed to start feed assist slot {slot}: {e}")
                 return
 
     def _stop_feed_assist(self, slot: int):
