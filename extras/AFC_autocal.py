@@ -256,19 +256,45 @@ class AFC_autocal:
 
     def _do_tool_loaded(self, cur_lane):
         try:
-            # Spool already has a stored K? apply it (if applying is on) and
-            # skip calibration — it's already calibrated.
-            if self._ensure_k_loaded(cur_lane) is not None:
+            if self.afc is None or cur_lane is None:
+                return
+            if not (self.apply_stored_k or self.auto_calibrate):
+                return
+            # Applying an already-CACHED K is just an MCU command (no I/O), so
+            # it's safe any time — including mid-print tool changes.
+            if self._get_lane_k(cur_lane) is not None:
                 if self.apply_stored_k:
                     self._apply_lane_k(cur_lane.name)
                 return
-            # No stored K — optionally calibrate (stores + applies). Only when
-            # it's safe to run gcode (prep done, machine idle): never start a
-            # calibration in the middle of a print or before AFC is ready.
+            # Uncached: reading K from Spoolman is a SYNCHRONOUS HTTP call.
+            # Doing it on the reactor while a print job is running can stall step
+            # delivery and trip the MCU "Timer too close". So only read (or
+            # calibrate) when no print is active; otherwise skip — it'll be
+            # picked up on the next idle load.
+            if not self._reactor_io_safe():
+                return
+            if self.apply_stored_k and self._ensure_k_loaded(cur_lane) is not None:
+                self._apply_lane_k(cur_lane.name)
+                return
+            # No stored K — optionally calibrate (stores + applies). Gated to
+            # prep-done + idle so we never start a calibration mid-print.
             if self.auto_calibrate and self._safe_to_calibrate():
                 self._calibrate(cur_lane, runner=self.gcode.run_script)
         except Exception as e:
             self.logger.warning("AFC_autocal: tool_loaded error: %s" % e)
+
+    def _reactor_io_safe(self):
+        """True only when no print job is active, so a blocking Spoolman read on
+        the reactor can't stall step delivery and trip the MCU 'Timer too close'.
+        Uses virtual_sdcard.is_active(), which is True throughout a print —
+        including the start gcode / AFC_PRINT_SETUP where the bed probe runs."""
+        vsd = self.printer.lookup_object('virtual_sdcard', None)
+        try:
+            if vsd is not None and vsd.is_active():
+                return False
+        except Exception:
+            pass
+        return True
 
     def _safe_to_calibrate(self):
         if not getattr(self.afc, 'prep_done', False):
