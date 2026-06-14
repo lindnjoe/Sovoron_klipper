@@ -718,6 +718,15 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
     if not sku and not material:
         return
 
+    # No moonraker (or Spoolman not set up at all)? The lane's material/colour
+    # was already applied by apply_filament_defaults before this is called, so
+    # the RFID info still shows in Mainsail — just skip the Spoolman sync rather
+    # than crashing on a None moonraker.
+    if getattr(afc, 'moonraker', None) is None:
+        logger.debug(f"{prefix}: moonraker/Spoolman unavailable; "
+                     f"applied tag to lane, skipping Spoolman sync")
+        return
+
     # Wrap the live moonraker with our Spoolman write-client (upstream's
     # AFC_moonraker has only read helpers). Reuses its host + GET plumbing.
     moonraker = SpoolmanClient(afc.moonraker)
