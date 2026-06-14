@@ -1,0 +1,61 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# S99remote-screen — start the Snapmaker U1 "Remote Screen" (fb-http -> Mainsail)
+# at boot, INDEPENDENTLY of HelixScreen.
+#
+# Why this instead of patching HelixScreen's hooks.sh: HelixScreen regenerates /
+# overwrites its platform hook on every update, which silently wipes any patch we
+# add there and breaks the remote display until it's re-applied. This init script
+# lives outside HelixScreen's tree, so HelixScreen updates can't touch it.
+#
+# It sorts after HelixScreen's own S99fb-http ('r' > 'f'), so helix is already
+# rendering by the time we start; fb-http also has --drm-wait (60s) so it tolerates
+# starting before helix has an active CRTC. Reads the same DRM scanout (card0).
+#
+# Install (run on the U1 as root):
+#   cp bin/S99remote-screen /etc/init.d/S99remote-screen
+#   chmod +x /etc/init.d/S99remote-screen
+#   /etc/init.d/S99remote-screen start
+
+BIN=/usr/local/bin/fb-http.py
+CFG=/home/lava/printer_data/config/extended/extended2.cfg
+PORT=8092
+LOG=/tmp/fb-http.log
+
+start() {
+    [ -x "$BIN" ] || { echo "remote-screen: $BIN missing"; exit 0; }
+
+    # Honor the Remote Screen toggle when the helper is available.
+    if [ -x /usr/local/bin/extended-config.py ]; then
+        rs=$(/usr/local/bin/extended-config.py get "$CFG" web remote_screen false 2>/dev/null)
+        case "$rs" in
+            [Tt][Rr][Uu][Ee]) ;;
+            *) echo "remote-screen: disabled (web.remote_screen=$rs)"; exit 0 ;;
+        esac
+    fi
+
+    if pgrep -f "$BIN" >/dev/null 2>&1; then
+        echo "remote-screen: already running"
+        exit 0
+    fi
+
+    echo "remote-screen: starting fb-http on :$PORT (DRM backend)"
+    /usr/bin/python3 "$BIN" \
+        --bind 127.0.0.1 --port "$PORT" \
+        --backend drm --drm-device /dev/dri/card0 --drm-wait 60 \
+        --html-dir /usr/share/fb-http/html >"$LOG" 2>&1 &
+}
+
+stop() {
+    pkill -f "$BIN" 2>/dev/null
+    echo "remote-screen: stopped"
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 1; start ;;
+    status)  pgrep -af "$BIN" || { echo "remote-screen: not running"; exit 1; } ;;
+    *)       echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
