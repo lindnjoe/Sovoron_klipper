@@ -557,6 +557,50 @@ def colors_match(scanned, candidate, tol=0.0) -> bool:
     return True
 
 
+def _norm_uid(uid) -> str:
+    """Normalize an RFID UID for comparison: drop separators, upper-case.
+    So 'E5:CA:F0:A1', 'e5caf0a1' and 'E5CAF0A1' all compare equal."""
+    return re.sub(r'[\s:_\-]', '', str(uid or '')).strip().upper()
+
+
+# Module alias of the spool UID extra-field key, captured from the client class
+# at import so this doesn't depend on the global SpoolmanClient name at call time.
+_UID_FIELD = SpoolmanClient.SPOOL_EXTRA_UID
+
+
+def _spool_stored_uid(spool: dict) -> str:
+    """Read a spool's stored RFID UID (afc_rfid_uid extra field), JSON-decoded
+    and normalized. Empty string when absent/unparseable."""
+    raw = (spool.get("extra") or {}).get(_UID_FIELD)
+    if raw in (None, ""):
+        return ""
+    try:
+        val = json.loads(raw)
+    except (ValueError, TypeError):
+        val = raw
+    return _norm_uid(val)
+
+
+def find_spool_by_uid(client, uid):
+    """Find the Spoolman spool whose afc_rfid_uid extra field matches ``uid``.
+
+    The tag UID is the primary identity of a physical spool: if it matches, it
+    IS that exact spool. Spoolman can't query extra fields, so we scan all
+    spools once. Returns the spool dict or None.
+    """
+    target = _norm_uid(uid)
+    if not target:
+        return None
+    try:
+        spools = client.search_spools()
+    except Exception:
+        return None
+    for s in spools:
+        if _spool_stored_uid(s) == target:
+            return s
+    return None
+
+
 def density_for_material(material: str) -> float:
     """Return Spoolman density (g/cm^3) for a material string.
     Strips spaces, dashes, underscores so 'PLA-CF', 'pla cf', 'pla_cf'
@@ -788,17 +832,34 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
     # AFC_moonraker has only read helpers). Reuses its host + GET plumbing.
     moonraker = SpoolmanClient(afc.moonraker)
 
+    scanned_uid = _norm_uid(slot_info.get("uid"))
+
     try:
         filament = None
+        spool = None
 
-        if sku:
+        # ── UID is the primary key ──────────────────────────────────────
+        # If this exact physical spool has been seen before (its tag UID is
+        # stamped on a Spoolman spool), bind to THAT spool directly — no SKU /
+        # filament matching, no collapsing onto a sibling of the same product.
+        if scanned_uid:
+            spool = find_spool_by_uid(moonraker, scanned_uid)
+            if spool is not None:
+                filament = spool.get("filament") or None
+                logger.info(f"{prefix}: matched spool #{spool.get('id')} "
+                            f"by tag UID {scanned_uid}")
+
+        # ── Otherwise resolve the FILAMENT (product) by SKU / brand+colour ──
+        if spool is not None:
+            pass
+        elif sku:
             filaments = moonraker.search_filaments(article_number=sku)
             for f in filaments:
                 if f.get("article_number", "") == sku:
                     filament = f
                     break
 
-        if filament is None and (brand or material):
+        if spool is None and filament is None and (brand or material):
             fallback_candidates = []
             if brand and material:
                 fallback_candidates = moonraker.search_filaments(
@@ -869,7 +930,7 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                 else:
                     filament = best
 
-        if filament is None:
+        if spool is None and filament is None:
             if not allow_create:
                 return
 
@@ -913,50 +974,52 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                              brand, material, color_hex, diameter,
                              ext_temp, bed_temp, sku)
 
-        filament_id = filament.get("id")
-        if filament_id is None:
-            return
+        # Filament id (from a SKU match, a freshly-created filament, or the one
+        # embedded in a UID-matched spool).
+        filament_id = (filament or {}).get("id")
 
         # Backfill any fields the tag has but the existing Spoolman filament is
         # missing (no-op for one we just created). Never overwrites populated
-        # fields — only fills empties.
-        try:
-            updates = _missing_filament_fields(filament, slot_info)
-            if updates:
-                updated = moonraker.update_filament(filament_id, updates)
-                logger.info(f"{prefix}: backfilled {', '.join(sorted(updates))} "
-                            f"on filament #{filament_id}")
-                if isinstance(updated, dict):
-                    filament = updated
-        except Exception as e:
-            logger.debug(f"{prefix}: filament backfill skipped: {e}")
+        # fields — only fills empties. Skipped when we only have a spool.
+        if filament_id is not None:
+            try:
+                updates = _missing_filament_fields(filament, slot_info)
+                if updates:
+                    updated = moonraker.update_filament(filament_id, updates)
+                    logger.info(f"{prefix}: backfilled {', '.join(sorted(updates))} "
+                                f"on filament #{filament_id}")
+                    if isinstance(updated, dict):
+                        filament = updated
+            except Exception as e:
+                logger.debug(f"{prefix}: filament backfill skipped: {e}")
 
-        spool = None
-        existing_spools = moonraker.search_spools(filament_id=filament_id)
-        if existing_spools:
-            best = None
-            for s in existing_spools:
-                remaining = s.get("remaining_weight") or 0
-                if best is None or remaining > (best.get("remaining_weight") or 0):
-                    best = s
-            if best is not None:
-                spool = best
-
+        # ── Pick the physical spool (when not already matched by UID) ────
         if spool is None:
-            if not allow_create:
+            if filament_id is None:
                 return
-
-            spool = moonraker.create_spool(
-                filament_id=filament_id,
-                initial_weight=default_filament_weight,
-                remaining_weight=default_filament_weight,
-                spool_weight=spool_weight if spool_weight and spool_weight > 0 else None,
-            )
-            if spool is None:
+            existing_spools = moonraker.search_spools(filament_id=filament_id)
+            # A tag UID present here means a NEW physical spool of a known
+            # filament -> give it its own spool (UID stamped below) so it tracks
+            # independently. Fall back to the fullest existing spool only when we
+            # can't create (or the tag carries no UID at all — legacy behaviour).
+            if allow_create and (scanned_uid or not existing_spools):
+                spool = moonraker.create_spool(
+                    filament_id=filament_id,
+                    initial_weight=default_filament_weight,
+                    remaining_weight=default_filament_weight,
+                    spool_weight=spool_weight if spool_weight and spool_weight > 0 else None,
+                )
+                if spool is None:
+                    return
+                log_new_spool(logger, prefix, spool,
+                              default_filament_weight,
+                              spool_weight if spool_weight and spool_weight > 0 else None)
+            elif existing_spools:
+                # Best-effort fallback: the fullest existing spool.
+                spool = max(existing_spools,
+                            key=lambda s: s.get("remaining_weight") or 0)
+            else:
                 return
-            log_new_spool(logger, prefix, spool,
-                          default_filament_weight,
-                          spool_weight if spool_weight and spool_weight > 0 else None)
 
         spool_id = spool.get("id")
 
@@ -970,8 +1033,8 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
         except Exception as e:
             logger.debug(f"{prefix}: spool metadata write skipped: {e}")
 
-        fil_name = filament.get("name", "")
-        fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
+        fil_name = (filament or {}).get("name", "")
+        fil_color = ((filament or {}).get("color_hex") or "").strip().lstrip("#")
         remaining = spool.get("remaining_weight")
         remaining_str = f", {remaining:.0f}g left" if remaining else ""
         if fil_color:
