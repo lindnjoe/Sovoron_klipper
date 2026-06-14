@@ -703,6 +703,7 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
     sku = slot_info.get("sku", "")
     brand = slot_info.get("brand", "")
     material = slot_info.get("material", "")
+    sub_type = slot_info.get("sub_type", "")
     color_hex = slot_info.get("color_hex", "") or None
     # All colours the tag carries (dual/multi-colour spools have >1). Used for
     # exact identity so a spool only matches a filament with the same colours.
@@ -812,7 +813,19 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                 if vendor:
                     vendor_id = vendor.get("id")
 
-            filament_name = f"{material} {sku}".strip() if material else (sku or "Unknown")
+            # Name: "<brand> <sub_type>" (e.g. "Snapmaker SnapSpeed"), degrading
+            # gracefully when a part is missing so we never emit a bare SKU when
+            # we have better info.
+            if brand and sub_type:
+                filament_name = f"{brand} {sub_type}"
+            elif sub_type and material:
+                filament_name = f"{material} {sub_type}"
+            elif brand and material:
+                filament_name = f"{brand} {material}"
+            elif material:
+                filament_name = f"{material} {sku}".strip() if sku else material
+            else:
+                filament_name = sku or "Unknown"
             filament = moonraker.create_filament(
                 name=filament_name,
                 vendor_id=vendor_id,
