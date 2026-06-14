@@ -99,6 +99,11 @@ class AFC_U1_RFID:
         # so the lane-based auto-create lookup doesn't apply).
         self._scanner_auto_create = config.getboolean(
             'scanner_auto_create', True)
+        # Default auto-create for LANE reads via this reader (extruder1/2/3 etc.
+        # whose unit/extruder are upstream-frozen and can't take the option). A
+        # lane's unit/extruder auto_spoolman_create still overrides this.
+        self._lane_auto_create = config.getboolean(
+            'auto_spoolman_create', False)
         # scanner_lanes: a loadable lane that ALSO acts as a scanner (rare).
         self._cfg_scanners: set = {s.strip() for s in
                                    config.get('scanner_lanes', '').split(',')
@@ -607,7 +612,8 @@ class AFC_U1_RFID:
             # Scanner channels have no lane, so the lane-based auto-create
             # lookup doesn't apply — use the configured scanner default.
             allow_create = (self._scanner_auto_create if scanner_only
-                            else get_auto_spoolman_create(lane))
+                            else get_auto_spoolman_create(
+                                lane, self._lane_auto_create))
             sync_rfid_to_spoolman(
                 self.afc, lane, slot_info, self.logger, "U1 RFID",
                 allow_create=allow_create, set_next=True)
@@ -620,7 +626,7 @@ class AFC_U1_RFID:
         if getattr(lane, "spool_id", None) not in (None, "", 0):
             self.afc.spool.set_spoolID(lane, "")
         apply_filament_defaults(lane, slot_info)
-        allow_create = get_auto_spoolman_create(lane)
+        allow_create = get_auto_spoolman_create(lane, self._lane_auto_create)
         sync_rfid_to_spoolman(
             self.afc, lane, slot_info, self.logger, "U1 RFID",
             allow_create=allow_create)
