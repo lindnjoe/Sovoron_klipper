@@ -120,6 +120,14 @@ class SpoolmanClient:
         if article_number is not None: data["article_number"] = article_number
         return self._spoolman_proxy("POST", "/v1/filament", body=json.dumps(data))
 
+    def update_filament(self, filament_id, fields):
+        """PATCH a filament with the given fields (used to backfill empties on a
+        matched filament). No-op on an empty dict."""
+        if not fields:
+            return None
+        return self._spoolman_proxy("PATCH", f"/v1/filament/{filament_id}",
+                                    body=fields)
+
     def create_spool(self, filament_id, initial_weight=None, remaining_weight=None,
                      spool_weight=None):
         data = {"filament_id": filament_id}
@@ -675,6 +683,55 @@ def apply_filament_defaults(lane: AFCLane, slot_info: dict,
         lane.weight = 1000
 
 
+def _missing_filament_fields(filament: dict, slot_info: dict) -> dict:
+    """Return only the Spoolman filament fields the tag can supply that are
+    currently EMPTY on the matched filament — so a scan backfills missing data
+    without ever overwriting what's already set.
+
+    :param filament: the existing Spoolman filament dict.
+    :param slot_info: the scanned tag's normalized info.
+    :return: dict of {field: value} to PATCH (empty if nothing to fill).
+    """
+    updates = {}
+
+    material = (slot_info.get("material") or "").strip()
+    if material and not (filament.get("material") or "").strip():
+        updates["material"] = material
+        if not filament.get("density"):
+            updates["density"] = density_for_material(material)
+
+    diameter = slot_info.get("diameter")
+    if diameter and not filament.get("diameter"):
+        updates["diameter"] = diameter
+
+    ext = slot_info.get("extruder_temp")
+    if ext and not filament.get("settings_extruder_temp"):
+        updates["settings_extruder_temp"] = ext
+
+    bed = slot_info.get("bed_temp")
+    if bed and not filament.get("settings_bed_temp"):
+        updates["settings_bed_temp"] = bed
+
+    sku = (slot_info.get("sku") or "").strip()
+    if sku and not (filament.get("article_number") or "").strip():
+        updates["article_number"] = sku
+
+    # Colour: only when the filament has neither a single nor a multi colour
+    # (Spoolman accepts one or the other, never both).
+    has_color = (filament.get("color_hex") or "").strip() or \
+        (filament.get("multi_color_hexes") or "").strip()
+    colors = [c.lstrip("#").lower()
+              for c in (slot_info.get("multi_color") or []) if c]
+    if colors and not has_color:
+        if len(colors) > 1:
+            updates["multi_color_hexes"] = ",".join(colors)
+            updates["multi_color_direction"] = "coaxial"
+        else:
+            updates["color_hex"] = colors[0]
+
+    return updates
+
+
 def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                           allow_create: bool = False, set_next: bool = False,
                           spool_weight=None):
@@ -859,6 +916,20 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
         filament_id = filament.get("id")
         if filament_id is None:
             return
+
+        # Backfill any fields the tag has but the existing Spoolman filament is
+        # missing (no-op for one we just created). Never overwrites populated
+        # fields — only fills empties.
+        try:
+            updates = _missing_filament_fields(filament, slot_info)
+            if updates:
+                updated = moonraker.update_filament(filament_id, updates)
+                logger.info(f"{prefix}: backfilled {', '.join(sorted(updates))} "
+                            f"on filament #{filament_id}")
+                if isinstance(updated, dict):
+                    filament = updated
+        except Exception as e:
+            logger.debug(f"{prefix}: filament backfill skipped: {e}")
 
         spool = None
         existing_spools = moonraker.search_spools(filament_id=filament_id)
