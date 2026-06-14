@@ -6,83 +6,89 @@
 #
 # Why this instead of patching HelixScreen's hooks.sh: HelixScreen regenerates /
 # overwrites its platform hook on every update, which silently wipes any patch we
-# add there and breaks the remote display until it's re-applied. This init script
-# lives outside HelixScreen's tree, so HelixScreen updates can't touch it.
+# add there and breaks the remote display. This init script lives outside
+# HelixScreen's tree, so HelixScreen updates can't touch it.
 #
-# Daemonization: rcS runs each init script with `$i start` and waits for it to
-# return. A plain `worker &` orphan does NOT survive that at boot (it gets reaped
-# before it does anything — which is why a manual start worked but boot didn't).
-# So we re-exec ourselves under setsid into a NEW session (a real detached
-# daemon, like openrfid does) which survives rcS finishing this script.
+# Daemonization: this mirrors the U1's own openrfid init script, which is the
+# proven way to launch a long-lived daemon from rcS on this device. A hand-rolled
+# `setsid &` / `worker &` did NOT survive boot here (it worked from an interactive
+# shell but got reaped at boot), whereas `start-stop-daemon -S -b -m` does. We
+# wrap fb-http in `sh -c 'exec ... > log'` so we keep a log while the pidfile
+# still tracks the real fb-http PID (exec preserves it).
 #
-# The worker waits for printer_data (config) to be available, honors the Remote
-# Screen toggle (fail-open if the config never appears), then exec's fb-http.
-# fb-http's --drm-wait tolerates starting before helix has an active CRTC.
+# Config: read the Remote Screen toggle from the same place openrfid does
+# (/oem/printer_data), which is reliably mounted at boot; fall back to the
+# /home/lava path; fail OPEN (start anyway) if neither is readable.
 #
 # Install (run on the U1 as root):
 #   cp bin/S99remote-screen /etc/init.d/S99remote-screen
 #   chmod +x /etc/init.d/S99remote-screen
 #   /etc/init.d/S99remote-screen start
 
+PIDFILE=/var/run/remote-screen.pid
 BIN=/usr/local/bin/fb-http.py
-CFG=/home/lava/printer_data/config/extended/extended2.cfg
-PORT=8092
 LOG=/tmp/fb-http.log
-# Persistent (survives reboot, unlike /tmp tmpfs) so a failed boot is diagnosable.
-BOOTLOG=/userdata/remote-screen.boot.log
+PORT=8092
 
-_log() { echo "[$(date '+%H:%M:%S' 2>/dev/null)] $*" >> "$BOOTLOG" 2>/dev/null; }
+start() {
+    [ -f "$BIN" ] || { echo "remote-screen: $BIN missing"; return; }
 
-worker() {
-    _log "worker start (pid $$)"
-    [ -f "$BIN" ] || { _log "fb-http.py missing at $BIN"; return; }
-
-    # Config should already be mounted at S99, but tolerate a slow mount: wait
-    # up to 60s for it. Fail OPEN (start anyway) if it never appears.
-    i=0
-    while [ ! -f "$CFG" ] && [ "$i" -lt 60 ]; do
-        sleep 1
-        i=$((i + 1))
+    # Honor the Remote Screen toggle. Try the boot-reliable /oem path first
+    # (what openrfid uses), then the /home/lava path; fail open if neither.
+    CFG=""
+    for c in /oem/printer_data/config/extended/extended2.cfg \
+             /home/lava/printer_data/config/extended/extended2.cfg; do
+        [ -f "$c" ] && { CFG="$c"; break; }
     done
-    if [ -f "$CFG" ] && [ -x /usr/local/bin/extended-config.py ]; then
-        rs=$(/usr/local/bin/extended-config.py get "$CFG" web remote_screen false 2>/dev/null)
-        _log "remote_screen=$rs (config ready after ${i}s)"
-        case "$rs" in
+    if [ -n "$CFG" ] && [ -x /usr/local/bin/extended-config.py ]; then
+        RS=$(/usr/local/bin/extended-config.py get "$CFG" web remote_screen false 2>/dev/null)
+        case "$RS" in
             [Tt][Rr][Uu][Ee]) ;;
-            *) _log "disabled; not starting"; return ;;
+            *) echo "remote-screen: disabled (web.remote_screen=$RS), not starting."; return ;;
         esac
     else
-        _log "config not found after ${i}s; starting anyway (fail-open)"
+        echo "remote-screen: config not found, starting anyway (fail-open)."
     fi
 
-    if pgrep -f "$BIN" >/dev/null 2>&1; then
-        _log "already running"
-        return
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "remote-screen: already running"
+        return 0
     fi
-    _log "exec fb-http on :$PORT (DRM)"
-    # exec: become the fb-http process (this shell is already the detached
-    # session leader from setsid), so the daemon outlives boot.
-    exec /usr/bin/python3 "$BIN" \
-        --bind 127.0.0.1 --port "$PORT" \
-        --backend drm --drm-device /dev/dri/card0 --drm-wait 60 \
-        --html-dir /usr/local/share/fb-http/html >"$LOG" 2>&1
+
+    printf "Starting Remote Screen: "
+    start-stop-daemon -S -b -m \
+        -p "$PIDFILE" \
+        -x /bin/sh -- -c \
+        "exec /usr/bin/python3 $BIN --bind 127.0.0.1 --port $PORT \
+            --backend drm --drm-device /dev/dri/card0 --drm-wait 60 \
+            --html-dir /usr/local/share/fb-http/html >$LOG 2>&1"
+    echo "OK"
 }
 
-spawn() {
-    # Detach into a new session so the worker survives rcS finishing this script.
-    if command -v setsid >/dev/null 2>&1; then
-        setsid "$0" __worker </dev/null >/dev/null 2>&1 &
+stop() {
+    printf "Stopping Remote Screen: "
+    if [ -f "$PIDFILE" ]; then
+        start-stop-daemon -K -p "$PIDFILE" -s TERM
+        rm -f "$PIDFILE"
+        echo "OK"
     else
-        # Fallback: double-fork via subshell (less bulletproof than setsid).
-        ( "$0" __worker </dev/null >/dev/null 2>&1 & )
+        pkill -f "$BIN" 2>/dev/null
+        echo "OK"
     fi
 }
 
 case "$1" in
-    start)    spawn ;;
-    __worker) worker ;;
-    stop)     pkill -f "$BIN" 2>/dev/null; echo "remote-screen: stopped" ;;
-    restart)  pkill -f "$BIN" 2>/dev/null; sleep 1; spawn ;;
-    status)   pgrep -af "$BIN" || { echo "remote-screen: not running"; exit 1; } ;;
-    *)        echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+    start)        start ;;
+    stop)         stop ;;
+    restart|reload) stop; sleep 1; start ;;
+    status)
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "remote-screen: running (pid $(cat "$PIDFILE"))"
+        else
+            pgrep -af "$BIN" || { echo "remote-screen: not running"; exit 1; }
+        fi
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
+
+exit $?
