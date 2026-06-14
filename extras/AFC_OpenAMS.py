@@ -449,6 +449,11 @@ class afcAMS(afcUnit):
         # Hardware identifier
         self.oams_name = config.get("oams", "oams1")
 
+        # Auto-create matching spools in Spoolman on RFID scan for this unit's
+        # lanes (read by AFC_RFID.get_auto_spoolman_create via lane.unit_obj).
+        # Default off — lane reads match-only unless explicitly enabled.
+        self.auto_spoolman_create = config.getboolean("auto_spoolman_create", False)
+
         # Stuck spool detection
         self.stuck_spool_auto_recovery = config.getboolean("stuck_spool_auto_recovery", False)
         self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", 8.0, minval=0.0)
