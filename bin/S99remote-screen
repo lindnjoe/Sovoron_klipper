@@ -2,23 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # S99remote-screen — start the Snapmaker U1 "Remote Screen" (fb-http -> Mainsail)
-# at boot, INDEPENDENTLY of HelixScreen.
+# at boot, INDEPENDENTLY of HelixScreen (whose updates overwrite its own hook).
 #
-# Why this instead of patching HelixScreen's hooks.sh: HelixScreen regenerates /
-# overwrites its platform hook on every update, which silently wipes any patch we
-# add there and breaks the remote display. This init script lives outside
-# HelixScreen's tree, so HelixScreen updates can't touch it.
-#
-# Daemonization: this mirrors the U1's own openrfid init script, which is the
-# proven way to launch a long-lived daemon from rcS on this device. A hand-rolled
-# `setsid &` / `worker &` did NOT survive boot here (it worked from an interactive
-# shell but got reaped at boot), whereas `start-stop-daemon -S -b -m` does. We
-# wrap fb-http in `sh -c 'exec ... > log'` so we keep a log while the pidfile
-# still tracks the real fb-http PID (exec preserves it).
-#
-# Config: read the Remote Screen toggle from the same place openrfid does
-# (/oem/printer_data), which is reliably mounted at boot; fall back to the
-# /home/lava path; fail OPEN (start anyway) if neither is readable.
+# Daemonized the same way as the U1's openrfid init (start-stop-daemon -S -b -m),
+# the proven long-lived-daemon pattern on this device. Every decision is written
+# to a persistent boot log so a failed boot is diagnosable (rcS gives init scripts
+# no console we can read after the fact).
 #
 # Install (run on the U1 as root):
 #   cp bin/S99remote-screen /etc/init.d/S99remote-screen
@@ -28,13 +17,17 @@
 PIDFILE=/var/run/remote-screen.pid
 BIN=/usr/local/bin/fb-http.py
 LOG=/tmp/fb-http.log
+BOOTLOG=/userdata/remote-screen.boot.log
 PORT=8092
 
+_log() { echo "[$(date '+%H:%M:%S' 2>/dev/null)] $*" >> "$BOOTLOG" 2>/dev/null; }
+
 start() {
-    [ -f "$BIN" ] || { echo "remote-screen: $BIN missing"; return; }
+    _log "start() invoked (pid $$, arg=$1)"
+    [ -f "$BIN" ] || { _log "BIN missing: $BIN"; echo "remote-screen: $BIN missing"; return; }
 
     # Honor the Remote Screen toggle. Try the boot-reliable /oem path first
-    # (what openrfid uses), then the /home/lava path; fail open if neither.
+    # (what openrfid uses), then /home/lava; fail OPEN if neither is readable.
     CFG=""
     for c in /oem/printer_data/config/extended/extended2.cfg \
              /home/lava/printer_data/config/extended/extended2.cfg; do
@@ -42,26 +35,26 @@ start() {
     done
     if [ -n "$CFG" ] && [ -x /usr/local/bin/extended-config.py ]; then
         RS=$(/usr/local/bin/extended-config.py get "$CFG" web remote_screen false 2>/dev/null)
+        _log "toggle: CFG=$CFG remote_screen=$RS"
         case "$RS" in
             [Tt][Rr][Uu][Ee]) ;;
-            *) echo "remote-screen: disabled (web.remote_screen=$RS), not starting."; return ;;
+            *) _log "disabled; not starting"; echo "remote-screen: disabled ($RS)"; return ;;
         esac
     else
-        echo "remote-screen: config not found, starting anyway (fail-open)."
+        _log "config not found (CFG='$CFG'); fail-open"
     fi
 
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        _log "already running (pid $(cat "$PIDFILE"))"
         echo "remote-screen: already running"
         return 0
     fi
 
+    _log "launching fb-http via start-stop-daemon"
     printf "Starting Remote Screen: "
-    start-stop-daemon -S -b -m \
-        -p "$PIDFILE" \
-        -x /bin/sh -- -c \
-        "exec /usr/bin/python3 $BIN --bind 127.0.0.1 --port $PORT \
-            --backend drm --drm-device /dev/dri/card0 --drm-wait 60 \
-            --html-dir /usr/local/share/fb-http/html >$LOG 2>&1"
+    start-stop-daemon -S -b -m -p "$PIDFILE" -x /bin/sh -- -c \
+        "exec /usr/bin/python3 $BIN --bind 127.0.0.1 --port $PORT --backend drm --drm-device /dev/dri/card0 --drm-wait 60 --html-dir /usr/local/share/fb-http/html >$LOG 2>&1"
+    _log "start-stop-daemon returned rc=$?"
     echo "OK"
 }
 
@@ -78,8 +71,8 @@ stop() {
 }
 
 case "$1" in
-    start)        start ;;
-    stop)         stop ;;
+    start)          start ;;
+    stop)           stop ;;
     restart|reload) stop; sleep 1; start ;;
     status)
         if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
