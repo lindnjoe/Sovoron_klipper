@@ -60,7 +60,7 @@ def _ams_box_logo(title, n_slots, name):
         bay_w += 1
     inner = n * bay_w + (n - 1)
     bar = "-" * bay_w
-    spool = "◉".center(bay_w)
+    spool = "O".center(bay_w)
     rows = [
         "+" + "-" * inner + "+",
         "|" + title.center(inner) + "|",
