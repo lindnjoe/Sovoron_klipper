@@ -142,7 +142,10 @@ class SpoolmanClient:
     # on demand), not the comment — so the comment stays free for the user. The
     # tag's manufacturing date goes to the built-in lot_nr. Extra-field values
     # are JSON-encoded per Spoolman (float -> "1.23", text -> "\"abc\"").
-    SPOOL_EXTRA_FLOW_K = "afc_flow_k"        # field_type: float (ours-only)
+    SPOOL_EXTRA_FLOW_K = "flow_k"            # field_type: float (name "Flow K")
+    # Legacy extra key from earlier AFC versions; still read so spools that
+    # stored K under 'afc_flow_k' migrate to 'flow_k' on the next write.
+    SPOOL_EXTRA_FLOW_K_LEGACY = "afc_flow_k"
     # NFC tag UIDs live in a 'card_uids' spool extra field as a comma-separated
     # list of uppercase-hex UIDs — matching the Snapmaker-Extended convention so
     # spools created by either tool interoperate (a spool can carry >1 tag).
@@ -172,7 +175,7 @@ class SpoolmanClient:
         if self.SPOOL_EXTRA_FLOW_K not in keys:
             self._spoolman_proxy(
                 "POST", f"/v1/field/spool/{self.SPOOL_EXTRA_FLOW_K}",
-                body={"name": "AFC Flow K", "field_type": "float"})
+                body={"name": "Flow K", "field_type": "float"})
         if self.SPOOL_EXTRA_CARD_UIDS not in keys:
             self._spoolman_proxy(
                 "POST", f"/v1/field/spool/{self.SPOOL_EXTRA_CARD_UIDS}",
@@ -247,17 +250,20 @@ class SpoolmanClient:
         return self._mr.get_spool(spool_id)
 
     def read_flow_k(self, spool_id):
-        """Read flow K from the afc_flow_k extra field; fall back to the legacy
-        afc_flow_k=<value> comment tag for spools not yet migrated."""
+        """Read flow K from the 'flow_k' extra field; fall back to the legacy
+        'afc_flow_k' extra field, then the legacy afc_flow_k=<value> comment tag,
+        for spools not yet migrated."""
         spool = self.get_spool(spool_id)
         if not spool:
             return None
-        raw = (spool.get("extra") or {}).get(self.SPOOL_EXTRA_FLOW_K)
-        if raw is not None and raw != "":
-            try:
-                return float(json.loads(raw))
-            except (ValueError, TypeError):
-                pass
+        extra = spool.get("extra") or {}
+        for key in (self.SPOOL_EXTRA_FLOW_K, self.SPOOL_EXTRA_FLOW_K_LEGACY):
+            raw = extra.get(key)
+            if raw is not None and raw != "":
+                try:
+                    return float(json.loads(raw))
+                except (ValueError, TypeError):
+                    pass
         # Migration fallback: old comment tag.
         m = re.search(r'\b' + self.SPOOLMAN_FLOW_K_TAG + r'=([\d.]+)',
                       spool.get("comment") or "")
@@ -269,13 +275,15 @@ class SpoolmanClient:
         return None
 
     def write_flow_k(self, spool_id, k):
-        """Persist a calibrated flow K to the afc_flow_k extra field (K lives in
-        the extra field, not the comment) and strip any legacy comment tag."""
+        """Persist a calibrated flow K to the 'flow_k' extra field (K lives in
+        the extra field, not the comment), drop the legacy 'afc_flow_k' extra so
+        there's a single source of truth, and strip any legacy comment tag."""
         self._ensure_spool_fields()
         spool = self.get_spool(spool_id)
         if not spool:
             return None
         extra = dict(spool.get("extra") or {})
+        extra.pop(self.SPOOL_EXTRA_FLOW_K_LEGACY, None)
         extra[self.SPOOL_EXTRA_FLOW_K] = json.dumps(round(float(k), 6))
         body = {"extra": extra}
         comment = spool.get("comment") or ""
