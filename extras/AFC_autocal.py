@@ -59,7 +59,7 @@ class AFC_autocal:
         # Suppress auto-calibration for this many seconds after klippy:ready so
         # the startup prep reconcile (which fires once prep_done flips) doesn't
         # kick off a calibration; genuine spool inserts later still calibrate.
-        self._startup_cal_grace = config.getfloat('startup_cal_grace', 90.0)
+        self._startup_cal_grace = config.getfloat('startup_cal_grace', 30.0)
         self._ready_time = None
 
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
