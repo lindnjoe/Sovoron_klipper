@@ -293,11 +293,11 @@ class AFC_autocal:
             return
         sid = self._norm_spool_id(getattr(cur_lane, 'spool_id', None))
         if sid is None:
-            # No spool to look up — nothing to apply; calibrate only if this
-            # lane's tool is the mounted one (FLOW_CALIBRATE acts on the active
-            # extruder), idle, and enabled.
-            if (self.auto_calibrate and self._lane_on_active_toolhead(cur_lane)
-                    and self._safe_to_calibrate()):
+            # No spool to look up — nothing to apply; calibrate if idle/enabled.
+            # Not gated to the active tool: calibrate_gcode (the configured
+            # flow-calibrate macro) switches to this lane's tool and loads it
+            # before measuring, so an inserted off-shuttle lane calibrates too.
+            if self.auto_calibrate and self._safe_to_calibrate():
                 self._calibrate(cur_lane, runner=self.gcode.run_script)
             return
         if not self.apply_stored_k:
@@ -341,21 +341,23 @@ class AFC_autocal:
                 if self.apply_stored_k and self._lane_on_active_toolhead(lane):
                     self._apply_lane_k(lane_name)
                 return
-            # No stored K — optionally calibrate (stores + applies). Only when
-            # this lane's tool is mounted (FLOW_CALIBRATE acts on the active
-            # extruder), prep done, and idle — never on a sibling tool/mid-print.
-            if (self.auto_calibrate and self._lane_on_active_toolhead(lane)
-                    and self._safe_to_calibrate()):
+            # No stored K — optionally calibrate (stores + applies). Gated to
+            # prep-done + idle (+ startup grace) so we never start a calibration
+            # mid-print or during boot prep. NOT gated to the active tool:
+            # calibrate_gcode switches to this lane's tool and loads it before
+            # measuring, so an inserted off-shuttle lane calibrates too.
+            if self.auto_calibrate and self._safe_to_calibrate():
                 self._calibrate(lane, runner=self.gcode.run_script)
         except Exception as e:
             self.logger.warning("AFC_autocal: K apply error: %s" % e)
 
     def _lane_on_active_toolhead(self, lane):
         """True when this lane's extruder is the one currently mounted on the
-        toolhead. Flow K (pressure advance + FLOW_CALIBRATE) is per-extruder and
-        can only be set/measured on the ACTIVE extruder — so we only apply or
-        calibrate a lane's K when its tool is actually mounted, never on a
-        sibling tool that happens to be on the shuttle (e.g. T0 during prep)."""
+        toolhead. Applying stored K sets pressure advance on the ACTIVE extruder,
+        so we only apply a lane's K when its tool is actually mounted, never on a
+        sibling tool on the shuttle (e.g. T0 during prep). An off-shuttle lane's
+        cached K is re-applied when its tool is activated. (Calibration is NOT
+        gated this way — calibrate_gcode switches/loads to the lane's tool.)"""
         try:
             ext_obj = getattr(lane, 'extruder_obj', None)
             if ext_obj is None:
