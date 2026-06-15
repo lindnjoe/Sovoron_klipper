@@ -724,6 +724,7 @@ def apply_filament_defaults(lane: AFCLane, slot_info: dict,
     rfid_material = slot_info.get("material", "") if slot_info else ""
     rfid_extruder_temp = slot_info.get("extruder_temp") if slot_info else None
     rfid_bed_temp = slot_info.get("bed_temp") if slot_info else None
+    rfid_sub_type = slot_info.get("sub_type", "") if slot_info else ""
 
     if rfid_material and rfid_material.lower() == "unknown":
         rfid_material = ""
@@ -748,6 +749,11 @@ def apply_filament_defaults(lane: AFCLane, slot_info: dict,
             lane.bed_temp = float(rfid_bed_temp)
         except (TypeError, ValueError):
             pass
+    # Stash the tag's sub-type/variant on the lane (read side of the Spoolman
+    # 'variant' field) so consumers like the U1 print config can use the real
+    # sub-type instead of a hardcoded default.
+    if rfid_sub_type:
+        lane.sub_type = rfid_sub_type
 
     if afc_defaults is not None:
         if not has_material and not getattr(lane, "material", None):
