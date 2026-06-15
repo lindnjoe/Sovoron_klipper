@@ -436,20 +436,20 @@ class AMSHardwareService:
 
 def _ams_box_logo(title, n_slots, name):
     """AMS-style unit logo: a titled box with one spool bay per slot, fronted by
-    the R/E/A/D/Y banner (prep console output)."""
+    the R/E/A/D/Y banner (prep console output). ASCII borders for portability."""
     n = max(1, int(n_slots) if n_slots else 1)
     bay_w = 3
     while n * bay_w + (n - 1) < len(title):
         bay_w += 1
     inner = n * bay_w + (n - 1)
-    bar = "\u2500" * bay_w
-    spool = "\u25c9".center(bay_w)
+    bar = "-" * bay_w
+    spool = "◉".center(bay_w)
     rows = [
-        "\u250c" + "\u2500" * inner + "\u2510",
-        "\u2502" + title.center(inner) + "\u2502",
-        "\u251c" + "\u252c".join([bar] * n) + "\u2524",
-        "\u2502" + "\u2502".join([spool] * n) + "\u2502",
-        "\u2514" + "\u2534".join([bar] * n) + "\u2518",
+        "+" + "-" * inner + "+",
+        "|" + title.center(inner) + "|",
+        "+" + "+".join([bar] * n) + "+",
+        "|" + "|".join([spool] * n) + "|",
+        "+" + "+".join([bar] * n) + "+",
     ]
     body = "\n".join("%s  %s" % (L, r) for L, r in zip("READY", rows))
     return "<span class=success--text>%s</span>\n   %s\n" % (body, name)
@@ -461,13 +461,13 @@ def _ams_box_logo_error(title, n_slots, name):
     bay_w = 3
     while n * bay_w + (n - 1) < len(title):
         bay_w += 1
-    inner = max(n * bay_w + (n - 1), len("\u2716 ERROR"))
+    inner = max(n * bay_w + (n - 1), len("X ERROR"))
     rows = [
-        "\u250c" + "\u2500" * inner + "\u2510",
-        "\u2502" + title.center(inner) + "\u2502",
-        "\u251c" + "\u2500" * inner + "\u2524",
-        "\u2502" + "\u2716 ERROR".center(inner) + "\u2502",
-        "\u2514" + "\u2500" * inner + "\u2518",
+        "+" + "-" * inner + "+",
+        "|" + title.center(inner) + "|",
+        "+" + "-" * inner + "+",
+        "|" + "X ERROR".center(inner) + "|",
+        "+" + "-" * inner + "+",
     ]
     body = "\n".join("%s  %s" % (L, r) for L, r in zip("ERROR", rows))
     return "<span class=error--text>%s</span>\n   %s\n" % (body, name)
