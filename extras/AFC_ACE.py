@@ -40,9 +40,12 @@ except Exception:
     # AFC_RFID is OPTIONAL. The ACE has its own RFID routine and must still
     # apply filament info to the lane (and work at all) on printers that don't
     # deploy / want AFC's RFID+Spoolman integration. Provide self-contained
-    # fallbacks for the lane-info path; the Spoolman-specific helpers stay None
-    # so those code paths (all guarded) simply no-op.
+    # fallbacks only for the lane-info path; the Spoolman-specific helpers stay
+    # None so those code paths (all guarded) simply no-op — without AFC_RFID
+    # there's no Spoolman matching/creation, and _get_auto_spoolman_create()
+    # already falls back to its own self.auto_spoolman_create.
     sync_rfid_to_spoolman = None
+    get_auto_spoolman_create = None
     log_new_filament = None
     log_new_spool = None
 
@@ -59,15 +62,6 @@ except Exception:
             except (TypeError, ValueError):
                 return ""
         return ""
-
-    def get_auto_spoolman_create(lane, unit_default=False):
-        unit = getattr(lane, 'unit_obj', None)
-        if unit is not None and getattr(unit, 'auto_spoolman_create', False):
-            return True
-        ext = getattr(lane, 'extruder_obj', None)
-        if ext is not None and getattr(ext, 'auto_spoolman_create', False):
-            return True
-        return unit_default
 
     def apply_filament_defaults(lane, slot_info, color_converter=None,
                                 afc_defaults=None):
