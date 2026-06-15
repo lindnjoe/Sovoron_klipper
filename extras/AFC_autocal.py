@@ -56,6 +56,11 @@ class AFC_autocal:
         self.apply_stored_k = config.getboolean('apply_stored_k', dflt)
         self.auto_calibrate = config.getboolean('auto_calibrate', dflt)
         self.calibrate_gcode = config.get('calibrate_gcode', 'FLOW_CALIBRATE')
+        # Suppress auto-calibration for this many seconds after klippy:ready so
+        # the startup prep reconcile (which fires once prep_done flips) doesn't
+        # kick off a calibration; genuine spool inserts later still calibrate.
+        self._startup_cal_grace = config.getfloat('startup_cal_grace', 90.0)
+        self._ready_time = None
 
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.printer.register_event_handler('afc:tool_loaded',
@@ -75,6 +80,7 @@ class AFC_autocal:
     # ── Lifecycle ───────────────────────────────────────────────────
 
     def _handle_ready(self):
+        self._ready_time = self.reactor.monotonic()
         self.afc = self.printer.lookup_object('AFC', None)
         if self.afc is None:
             self.logger.warning("AFC_autocal: AFC not loaded; disabled")
@@ -362,6 +368,10 @@ class AFC_autocal:
 
     def _safe_to_calibrate(self):
         if not getattr(self.afc, 'prep_done', False):
+            return False
+        if (self._ready_time is not None
+                and (self.reactor.monotonic() - self._ready_time)
+                < self._startup_cal_grace):
             return False
         state = getattr(self.afc, 'current_state', None)
         if state is not None and str(state).split('.')[-1].lower() != 'idle':
