@@ -36,8 +36,83 @@ try:
         sync_rfid_to_spoolman, get_auto_spoolman_create,
         log_new_filament, log_new_spool,
     )
-except:
-    rgb_array_to_hex = None
+except Exception:
+    # AFC_RFID is OPTIONAL. The ACE has its own RFID routine and must still
+    # apply filament info to the lane (and work at all) on printers that don't
+    # deploy / want AFC's RFID+Spoolman integration. Provide self-contained
+    # fallbacks for the lane-info path; the Spoolman-specific helpers stay None
+    # so those code paths (all guarded) simply no-op.
+    sync_rfid_to_spoolman = None
+    log_new_filament = None
+    log_new_spool = None
+
+    def color_name(hex_str):
+        return ""
+
+    def rgb_array_to_hex(color_array):
+        """[r, g, b] -> '#rrggbb' (fallback when AFC_RFID isn't present)."""
+        if isinstance(color_array, (list, tuple)) and len(color_array) >= 3:
+            try:
+                r, g, b = (int(color_array[0]), int(color_array[1]),
+                           int(color_array[2]))
+                return "#%02x%02x%02x" % (r & 0xFF, g & 0xFF, b & 0xFF)
+            except (TypeError, ValueError):
+                return ""
+        return ""
+
+    def get_auto_spoolman_create(lane, unit_default=False):
+        unit = getattr(lane, 'unit_obj', None)
+        if unit is not None and getattr(unit, 'auto_spoolman_create', False):
+            return True
+        ext = getattr(lane, 'extruder_obj', None)
+        if ext is not None and getattr(ext, 'auto_spoolman_create', False):
+            return True
+        return unit_default
+
+    def apply_filament_defaults(lane, slot_info, color_converter=None,
+                                afc_defaults=None):
+        """Apply the ACE's RFID material/color/temps to a lane when not already
+        set — a dependency-free copy of AFC_RFID.apply_filament_defaults so the
+        ACE can populate the lane (shows in Mainsail) with no AFC_RFID present."""
+        info = slot_info or {}
+        has_material = getattr(lane, "material", None) not in (None, "")
+        has_color = getattr(lane, "color", None) not in (None, "", "#000000")
+        has_ext_temp = getattr(lane, "extruder_temp", None) is not None
+        has_bed_temp = getattr(lane, "bed_temp", None) is not None
+
+        material = (info.get("material", "") or "")
+        if material.lower() == "unknown":
+            material = ""
+        color_hex = info.get("color_hex", "") or ""
+        if not color_hex and color_converter is not None:
+            raw = info.get("color", [0, 0, 0])
+            if raw != [0, 0, 0]:
+                color_hex = color_converter(raw)
+
+        if not has_material and material:
+            lane.material = material
+        if not has_color and color_hex:
+            lane.color = color_hex if color_hex.startswith("#") else "#" + color_hex
+        if not has_ext_temp and info.get("extruder_temp") is not None:
+            try:
+                lane.extruder_temp = float(info.get("extruder_temp"))
+            except (TypeError, ValueError):
+                pass
+        if not has_bed_temp and info.get("bed_temp") is not None:
+            try:
+                lane.bed_temp = float(info.get("bed_temp"))
+            except (TypeError, ValueError):
+                pass
+
+        if afc_defaults is not None:
+            if not getattr(lane, "material", None):
+                dm = afc_defaults.get("default_material_type")
+                if dm:
+                    lane.material = dm
+            if not getattr(lane, "color", None):
+                dc = afc_defaults.get("default_color")
+                if dc:
+                    lane.color = dc
 
 try: from extras.AFC_logger import AFC_QueueListener
 except: AFC_QueueListener = None
