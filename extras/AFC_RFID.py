@@ -143,18 +143,10 @@ class SpoolmanClient:
     # tag's manufacturing date goes to the built-in lot_nr. Extra-field values
     # are JSON-encoded per Spoolman (float -> "1.23", text -> "\"abc\"").
     SPOOL_EXTRA_FLOW_K = "flow_k"            # field_type: float (name "Flow K")
-    # Legacy extra key from earlier AFC versions; still read so spools that
-    # stored K under 'afc_flow_k' migrate to 'flow_k' on the next write.
-    SPOOL_EXTRA_FLOW_K_LEGACY = "afc_flow_k"
     # NFC tag UIDs live in a 'card_uids' spool extra field as a comma-separated
     # list of uppercase-hex UIDs — matching the Snapmaker-Extended convention so
     # spools created by either tool interoperate (a spool can carry >1 tag).
     SPOOL_EXTRA_CARD_UIDS = "card_uids"      # field_type: text
-    # Legacy single-UID field from earlier AFC versions; still read for matching.
-    SPOOL_EXTRA_UID_LEGACY = "afc_rfid_uid"
-    # Legacy comment tag ("afc_flow_k=<value>"): read_flow_k still accepts it to
-    # migrate spools that carry it, and write_flow_k strips it.
-    SPOOLMAN_FLOW_K_TAG = "afc_flow_k"
     # The tag's filament sub-type / variant (e.g. "Matte", "Silk", "Basic") lives
     # in a 'variant' filament extra field (also matching Snapmaker-Extended).
     FILAMENT_EXTRA_VARIANT = "variant"
@@ -250,48 +242,28 @@ class SpoolmanClient:
         return self._mr.get_spool(spool_id)
 
     def read_flow_k(self, spool_id):
-        """Read flow K from the 'flow_k' extra field; fall back to the legacy
-        'afc_flow_k' extra field, then the legacy afc_flow_k=<value> comment tag,
-        for spools not yet migrated."""
+        """Read flow K from the 'flow_k' extra field."""
         spool = self.get_spool(spool_id)
         if not spool:
             return None
-        extra = spool.get("extra") or {}
-        for key in (self.SPOOL_EXTRA_FLOW_K, self.SPOOL_EXTRA_FLOW_K_LEGACY):
-            raw = extra.get(key)
-            if raw is not None and raw != "":
-                try:
-                    return float(json.loads(raw))
-                except (ValueError, TypeError):
-                    pass
-        # Migration fallback: old comment tag.
-        m = re.search(r'\b' + self.SPOOLMAN_FLOW_K_TAG + r'=([\d.]+)',
-                      spool.get("comment") or "")
-        if m:
+        raw = (spool.get("extra") or {}).get(self.SPOOL_EXTRA_FLOW_K)
+        if raw is not None and raw != "":
             try:
-                return float(m.group(1))
-            except ValueError:
-                return None
+                return float(json.loads(raw))
+            except (ValueError, TypeError):
+                pass
         return None
 
     def write_flow_k(self, spool_id, k):
-        """Persist a calibrated flow K to the 'flow_k' extra field (K lives in
-        the extra field, not the comment), drop the legacy 'afc_flow_k' extra so
-        there's a single source of truth, and strip any legacy comment tag."""
+        """Persist a calibrated flow K to the 'flow_k' extra field."""
         self._ensure_spool_fields()
         spool = self.get_spool(spool_id)
         if not spool:
             return None
         extra = dict(spool.get("extra") or {})
-        extra.pop(self.SPOOL_EXTRA_FLOW_K_LEGACY, None)
         extra[self.SPOOL_EXTRA_FLOW_K] = json.dumps(round(float(k), 6))
-        body = {"extra": extra}
-        comment = spool.get("comment") or ""
-        stripped = re.sub(r'\s*\b' + re.escape(self.SPOOLMAN_FLOW_K_TAG) + r'=\S*',
-                          '', comment).strip()
-        if stripped != comment:
-            body["comment"] = stripped
-        return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)
+        return self._spoolman_proxy(
+            "PATCH", f"/v1/spool/{spool_id}", body={"extra": extra})
 
 # Max RGB Euclidean distance for two spool colours to be the SAME filament.
 # 0.0 = exact hex match (different colours -> different spools). Raise a little
@@ -617,10 +589,9 @@ def _norm_uid(uid) -> str:
     return re.sub(r'[\s:_\-]', '', str(uid or '')).strip().upper()
 
 
-# Spool UID extra-field keys, captured from the client class at import so this
+# Spool UID extra-field key, captured from the client class at import so this
 # doesn't depend on the global SpoolmanClient name at call time.
 _CARD_UIDS_FIELD = SpoolmanClient.SPOOL_EXTRA_CARD_UIDS
-_LEGACY_UID_FIELD = SpoolmanClient.SPOOL_EXTRA_UID_LEGACY
 
 
 def _decode_extra(extra, key):
@@ -636,8 +607,7 @@ def _decode_extra(extra, key):
 
 def _spool_uids(spool: dict) -> set:
     """Set of normalized NFC UIDs stored on a spool: the 'card_uids'
-    comma-separated list (Snapmaker-Extended convention) plus the legacy single
-    'afc_rfid_uid' field (read for migration)."""
+    comma-separated list (Snapmaker-Extended convention)."""
     extra = spool.get("extra") or {}
     uids = set()
     val = _decode_extra(extra, _CARD_UIDS_FIELD)
@@ -646,19 +616,14 @@ def _spool_uids(spool: dict) -> set:
             n = _norm_uid(part)
             if n:
                 uids.add(n)
-    legacy = _decode_extra(extra, _LEGACY_UID_FIELD)
-    if legacy is not None:
-        n = _norm_uid(legacy)
-        if n:
-            uids.add(n)
     return uids
 
 
 def find_spool_by_uid(client, uid):
     """Find the Spoolman spool that carries this NFC tag UID (in its 'card_uids'
-    list, or the legacy field). The UID is the primary identity of a physical
-    spool: if it matches, it IS that spool. Spoolman can't query extra fields, so
-    we scan all spools once. Returns the spool dict or None.
+    list). The UID is the primary identity of a physical spool: if it matches, it
+    IS that spool. Spoolman can't query extra fields, so we scan all spools once.
+    Returns the spool dict or None.
     """
     target = _norm_uid(uid)
     if not target:
@@ -1002,7 +967,7 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
 
         spool_id = spool.get("id")
 
-        # Stamp tag metadata: manufacturing date -> lot_nr, UID -> afc_rfid_uid.
+        # Stamp tag metadata: manufacturing date -> lot_nr, UID -> card_uids.
         try:
             mfg_date = slot_info.get("mfg_date")
             uid = slot_info.get("uid")
