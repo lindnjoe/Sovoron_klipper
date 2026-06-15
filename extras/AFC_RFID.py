@@ -638,6 +638,36 @@ def find_spool_by_uid(client, uid):
     return None
 
 
+def find_spool_by_sku(client, sku):
+    """Find an existing Spoolman spool for a product SKU (filament
+    article_number). For readers that DON'T expose a per-tag UID (e.g. the ACE
+    Pro, which reports SKU/material but no unique tag id) the spool can't be
+    uniquely identified, so bind to the fullest non-archived spool of that exact
+    product. Returns the spool dict or None."""
+    if not sku:
+        return None
+    try:
+        filaments = client.search_filaments(article_number=sku)
+    except Exception:
+        return None
+    fids = [f.get("id") for f in filaments
+            if f.get("article_number", "") == sku and f.get("id") is not None]
+    best, best_remaining = None, -1.0
+    for fid in fids:
+        try:
+            spools = client.search_spools(filament_id=fid)
+        except Exception:
+            continue
+        for s in spools:
+            if s.get("archived"):
+                continue
+            rem = s.get("remaining_weight")
+            rem = float(rem) if rem is not None else 0.0
+            if rem > best_remaining:
+                best, best_remaining = s, rem
+    return best
+
+
 def density_for_material(material: str) -> float:
     """Return Spoolman density (g/cm^3) for a material string.
     Strips spaces, dashes, underscores so 'PLA-CF', 'pla cf', 'pla_cf'
@@ -824,11 +854,13 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                           spool_weight=None):
     """Sync an RFID tag to Spoolman, keyed on the tag UID.
 
-    The tag UID is unique per physical spool and is the ONLY spool-match
+    The tag UID is unique per physical spool and is the primary spool-match
     criterion: if a Spoolman spool already carries this UID, bind to it;
-    otherwise it is a new spool. When creating, the filament (product) is
-    resolved by exact SKU so spools of the same product share one filament
-    definition; a new filament is created only when there's no SKU match.
+    otherwise it is a new spool. Readers that don't expose a per-tag UID (e.g.
+    the ACE Pro) fall back to matching by exact product SKU. When creating, the
+    filament (product) is resolved by exact SKU so spools of the same product
+    share one filament definition; a new filament is created only when there's
+    no SKU match.
 
     :param afc: AFC main object (needs .spoolman, .moonraker, .spool).
     :param lane: Lane to assign the spool to.
@@ -875,11 +907,22 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
             logger.info(f"{prefix}: matched spool #{spool.get('id')} "
                         f"by tag UID {scanned_uid}")
 
+        if spool is None and not scanned_uid and sku:
+            # No tag UID (e.g. ACE Pro exposes SKU but no per-tag UID): fall back
+            # to matching by exact product SKU and bind to an existing spool of
+            # that product. The UID path above stays strict.
+            spool = find_spool_by_sku(moonraker, sku)
+            filament = (spool.get("filament") or None) if spool else filament
+            if spool is not None:
+                logger.info(f"{prefix}: matched spool #{spool.get('id')} "
+                            f"by SKU {sku} (no tag UID)")
+
         if spool is None:
-            # Unseen UID. Only create when permitted AND the tag carries a UID
-            # (without one the spool can't be re-identified). Otherwise leave the
+            # Still unmatched. Create only when permitted AND the spool can be
+            # re-identified on a later insert — by a tag UID, or (for no-UID
+            # readers like the ACE Pro) by its product SKU. Otherwise leave the
             # lane on the values apply_filament_defaults already set.
-            if not (allow_create and scanned_uid):
+            if not (allow_create and (scanned_uid or sku)):
                 return
             if not sku and not material:
                 return
