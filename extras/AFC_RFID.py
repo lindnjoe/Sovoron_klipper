@@ -142,14 +142,18 @@ class SpoolmanClient:
     # on demand), not the comment — so the comment stays free for the user. The
     # tag's manufacturing date goes to the built-in lot_nr. Extra-field values
     # are JSON-encoded per Spoolman (float -> "1.23", text -> "\"abc\"").
-    SPOOL_EXTRA_FLOW_K = "afc_flow_k"     # field_type: float
-    SPOOL_EXTRA_UID = "afc_rfid_uid"      # field_type: text
+    SPOOL_EXTRA_FLOW_K = "afc_flow_k"        # field_type: float (ours-only)
+    # NFC tag UIDs live in a 'card_uids' spool extra field as a comma-separated
+    # list of uppercase-hex UIDs — matching the Snapmaker-Extended convention so
+    # spools created by either tool interoperate (a spool can carry >1 tag).
+    SPOOL_EXTRA_CARD_UIDS = "card_uids"      # field_type: text
+    # Legacy single-UID field from earlier AFC versions; still read for matching.
+    SPOOL_EXTRA_UID_LEGACY = "afc_rfid_uid"
     # Legacy comment tag ("afc_flow_k=<value>"): read_flow_k still accepts it to
     # migrate spools that carry it, and write_flow_k strips it.
     SPOOLMAN_FLOW_K_TAG = "afc_flow_k"
-    # The tag's filament sub-type / variant (e.g. "Matte", "Silk", "Basic") is
-    # stored in a 'variant' extra field on the FILAMENT — structured, not just
-    # baked into the name.
+    # The tag's filament sub-type / variant (e.g. "Matte", "Silk", "Basic") lives
+    # in a 'variant' filament extra field (also matching Snapmaker-Extended).
     FILAMENT_EXTRA_VARIANT = "variant"
 
     def _ensure_spool_fields(self):
@@ -169,10 +173,10 @@ class SpoolmanClient:
             self._spoolman_proxy(
                 "POST", f"/v1/field/spool/{self.SPOOL_EXTRA_FLOW_K}",
                 body={"name": "AFC Flow K", "field_type": "float"})
-        if self.SPOOL_EXTRA_UID not in keys:
+        if self.SPOOL_EXTRA_CARD_UIDS not in keys:
             self._spoolman_proxy(
-                "POST", f"/v1/field/spool/{self.SPOOL_EXTRA_UID}",
-                body={"name": "RFID Tag UID", "field_type": "text"})
+                "POST", f"/v1/field/spool/{self.SPOOL_EXTRA_CARD_UIDS}",
+                body={"name": "Card UIDs", "field_type": "text"})
         self._fields_ensured = True
 
     def _ensure_filament_fields(self):
@@ -222,11 +226,17 @@ class SpoolmanClient:
         return self._spoolman_proxy("PATCH", f"/v1/spool/{spool_id}", body=body)
 
     def write_spool_metadata(self, spool_id, lot_nr=None, uid=None):
-        """Write the tag's manufacturing date (-> lot_nr) and UID (-> extra)."""
+        """Write the tag's manufacturing date (-> lot_nr) and NFC UID (-> the
+        'card_uids' extra field, merged into the spool's existing UID list as
+        comma-separated uppercase hex)."""
         extra = None
-        if uid:
+        norm = _norm_uid(uid)
+        if norm:
             self._ensure_spool_fields()
-            extra = {self.SPOOL_EXTRA_UID: json.dumps(str(uid))}
+            uids = _spool_uids(self.get_spool(spool_id) or {})
+            uids.add(norm)
+            extra = {self.SPOOL_EXTRA_CARD_UIDS:
+                     json.dumps(",".join(sorted(uids)))}
         if lot_nr is None and extra is None:
             return None
         return self._patch_spool(spool_id, lot_nr=lot_nr, extra_updates=extra)
@@ -599,30 +609,48 @@ def _norm_uid(uid) -> str:
     return re.sub(r'[\s:_\-]', '', str(uid or '')).strip().upper()
 
 
-# Module alias of the spool UID extra-field key, captured from the client class
-# at import so this doesn't depend on the global SpoolmanClient name at call time.
-_UID_FIELD = SpoolmanClient.SPOOL_EXTRA_UID
+# Spool UID extra-field keys, captured from the client class at import so this
+# doesn't depend on the global SpoolmanClient name at call time.
+_CARD_UIDS_FIELD = SpoolmanClient.SPOOL_EXTRA_CARD_UIDS
+_LEGACY_UID_FIELD = SpoolmanClient.SPOOL_EXTRA_UID_LEGACY
 
 
-def _spool_stored_uid(spool: dict) -> str:
-    """Read a spool's stored RFID UID (afc_rfid_uid extra field), JSON-decoded
-    and normalized. Empty string when absent/unparseable."""
-    raw = (spool.get("extra") or {}).get(_UID_FIELD)
+def _decode_extra(extra, key):
+    """JSON-decode a Spoolman extra-field value; return None when absent."""
+    raw = (extra or {}).get(key)
     if raw in (None, ""):
-        return ""
+        return None
     try:
-        val = json.loads(raw)
+        return json.loads(raw)
     except (ValueError, TypeError):
-        val = raw
-    return _norm_uid(val)
+        return raw
+
+
+def _spool_uids(spool: dict) -> set:
+    """Set of normalized NFC UIDs stored on a spool: the 'card_uids'
+    comma-separated list (Snapmaker-Extended convention) plus the legacy single
+    'afc_rfid_uid' field (read for migration)."""
+    extra = spool.get("extra") or {}
+    uids = set()
+    val = _decode_extra(extra, _CARD_UIDS_FIELD)
+    if val is not None:
+        for part in str(val).split(","):
+            n = _norm_uid(part)
+            if n:
+                uids.add(n)
+    legacy = _decode_extra(extra, _LEGACY_UID_FIELD)
+    if legacy is not None:
+        n = _norm_uid(legacy)
+        if n:
+            uids.add(n)
+    return uids
 
 
 def find_spool_by_uid(client, uid):
-    """Find the Spoolman spool whose afc_rfid_uid extra field matches ``uid``.
-
-    The tag UID is the primary identity of a physical spool: if it matches, it
-    IS that exact spool. Spoolman can't query extra fields, so we scan all
-    spools once. Returns the spool dict or None.
+    """Find the Spoolman spool that carries this NFC tag UID (in its 'card_uids'
+    list, or the legacy field). The UID is the primary identity of a physical
+    spool: if it matches, it IS that spool. Spoolman can't query extra fields, so
+    we scan all spools once. Returns the spool dict or None.
     """
     target = _norm_uid(uid)
     if not target:
@@ -632,7 +660,7 @@ def find_spool_by_uid(client, uid):
     except Exception:
         return None
     for s in spools:
-        if _spool_stored_uid(s) == target:
+        if target in _spool_uids(s):
             return s
     return None
 
