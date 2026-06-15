@@ -227,7 +227,9 @@ class AFCU1PrintSetup:
 
             cfg["filament_vendor"][phys] = "AFC"
             cfg["filament_type"][phys] = material.upper()
-            cfg["filament_sub_type"][phys] = "Basic"
+            # Use the spool's real sub-type/variant (stashed on the lane from the
+            # RFID tag / Spoolman 'variant' field); fall back to "Basic".
+            cfg["filament_sub_type"][phys] = getattr(lane, "sub_type", None) or "Basic"
             cfg["filament_soft"][phys] = material.upper() in SOFT_MATERIALS
             cfg["filament_exist"][phys] = True
 
