@@ -33,6 +33,7 @@ class SpoolmanClient:
         self.host = moonraker.host
         self.logger = moonraker.logger
         self._fields_ensured = False
+        self._filament_fields_ensured = False
 
     def _get_results(self, url_string, print_error=True):
         return self._mr._get_results(url_string, print_error)
@@ -146,6 +147,10 @@ class SpoolmanClient:
     # Legacy comment tag ("afc_flow_k=<value>"): read_flow_k still accepts it to
     # migrate spools that carry it, and write_flow_k strips it.
     SPOOLMAN_FLOW_K_TAG = "afc_flow_k"
+    # The tag's filament sub-type / variant (e.g. "Matte", "Silk", "Basic") is
+    # stored in a 'variant' extra field on the FILAMENT — structured, not just
+    # baked into the name.
+    FILAMENT_EXTRA_VARIANT = "variant"
 
     def _ensure_spool_fields(self):
         """Create the AFC spool extra fields if they don't exist yet.
@@ -169,6 +174,37 @@ class SpoolmanClient:
                 "POST", f"/v1/field/spool/{self.SPOOL_EXTRA_UID}",
                 body={"name": "RFID Tag UID", "field_type": "text"})
         self._fields_ensured = True
+
+    def _ensure_filament_fields(self):
+        """Create the AFC filament extra fields if they don't exist yet.
+        Idempotent and cached (one GET /v1/field/filament per client)."""
+        if self._filament_fields_ensured:
+            return
+        existing = self._spoolman_proxy("GET", "/v1/field/filament",
+                                        print_error=False)
+        keys = set()
+        if isinstance(existing, list):
+            keys = {f.get("key") for f in existing if isinstance(f, dict)}
+        if self.FILAMENT_EXTRA_VARIANT not in keys:
+            self._spoolman_proxy(
+                "POST", f"/v1/field/filament/{self.FILAMENT_EXTRA_VARIANT}",
+                body={"name": "Variant", "field_type": "text"})
+        self._filament_fields_ensured = True
+
+    def write_filament_variant(self, filament_id, variant, current_extra=None):
+        """Store the filament sub-type/variant (e.g. 'Matte', 'Silk') in the
+        'variant' filament extra field. Merges with any existing extra; a no-op
+        when the value is empty or already current."""
+        if not variant:
+            return None
+        self._ensure_filament_fields()
+        extra = dict(current_extra or {})
+        new_val = json.dumps(str(variant))
+        if extra.get(self.FILAMENT_EXTRA_VARIANT) == new_val:
+            return None
+        extra[self.FILAMENT_EXTRA_VARIANT] = new_val
+        return self._spoolman_proxy(
+            "PATCH", f"/v1/filament/{filament_id}", body={"extra": extra})
 
     def _patch_spool(self, spool_id, lot_nr=None, extra_updates=None):
         """PATCH a spool's lot_nr and/or extra fields. Reads the current extra
@@ -899,6 +935,15 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                         filament = updated
             except Exception as e:
                 logger.debug(f"{prefix}: filament backfill skipped: {e}")
+
+            # Store the tag's sub-type as a structured 'variant' filament field.
+            if sub_type:
+                try:
+                    moonraker.write_filament_variant(
+                        filament_id, sub_type,
+                        current_extra=(filament or {}).get("extra"))
+                except Exception as e:
+                    logger.debug(f"{prefix}: filament variant write skipped: {e}")
 
             # New physical spool for this UID.
             spool = moonraker.create_spool(
