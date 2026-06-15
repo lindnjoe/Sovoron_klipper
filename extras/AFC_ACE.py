@@ -306,8 +306,19 @@ class afcACE(afcUnit):
                 if slot != active_slot:
                     self._stop_feed_assist(slot)
             active_lane = self.afc.lanes.get(name)
+            # Only START assist once the lane is actually loaded to the toolhead
+            # (its toolhead sensor is triggered). Starting on tool pickup —
+            # before the filament reaches the toolhead — fights the load feed and
+            # leaves assist in a bad state; the load sequence enables assist
+            # itself the moment it reaches the sensor.
+            try:
+                at_toolhead = (active_lane is not None
+                               and self._toolhead_sensor_triggered(active_lane))
+            except Exception:
+                at_toolhead = False
             if (active_lane is not None and self._use_feed_assist(active_lane)
-                    and active_slot not in self._feed_assist_active):
+                    and active_slot not in self._feed_assist_active
+                    and at_toolhead):
                 self._start_feed_assist(active_slot)
         elif name is not None and name in self.afc.lanes:
             # The active tool is a real lane on ANOTHER unit — stop ours.
