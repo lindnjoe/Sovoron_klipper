@@ -428,6 +428,46 @@ class AMSHardwareService:
         return None
 
 
+
+def _ams_box_logo(title, n_slots, name):
+    """AMS-style unit logo: a titled box with one spool bay per slot, fronted by
+    the R/E/A/D/Y banner (prep console output)."""
+    n = max(1, int(n_slots) if n_slots else 1)
+    bay_w = 3
+    while n * bay_w + (n - 1) < len(title):
+        bay_w += 1
+    inner = n * bay_w + (n - 1)
+    bar = "\u2500" * bay_w
+    spool = "\u25c9".center(bay_w)
+    rows = [
+        "\u250c" + "\u2500" * inner + "\u2510",
+        "\u2502" + title.center(inner) + "\u2502",
+        "\u251c" + "\u252c".join([bar] * n) + "\u2524",
+        "\u2502" + "\u2502".join([spool] * n) + "\u2502",
+        "\u2514" + "\u2534".join([bar] * n) + "\u2518",
+    ]
+    body = "\n".join("%s  %s" % (L, r) for L, r in zip("READY", rows))
+    return "<span class=success--text>%s</span>\n   %s\n" % (body, name)
+
+
+def _ams_box_logo_error(title, n_slots, name):
+    """Error variant of the AMS-style logo (red box, ERROR banner)."""
+    n = max(1, int(n_slots) if n_slots else 1)
+    bay_w = 3
+    while n * bay_w + (n - 1) < len(title):
+        bay_w += 1
+    inner = max(n * bay_w + (n - 1), len("\u2716 ERROR"))
+    rows = [
+        "\u250c" + "\u2500" * inner + "\u2510",
+        "\u2502" + title.center(inner) + "\u2502",
+        "\u251c" + "\u2500" * inner + "\u2524",
+        "\u2502" + "\u2716 ERROR".center(inner) + "\u2502",
+        "\u2514" + "\u2500" * inner + "\u2518",
+    ]
+    body = "\n".join("%s  %s" % (L, r) for L, r in zip("ERROR", rows))
+    return "<span class=error--text>%s</span>\n   %s\n" % (body, name)
+
+
 class afcAMS(afcUnit):
     """OpenAMS unit type — supports engagement verification, stuck spool
     and clog detection via FPS + encoder monitoring."""
@@ -515,19 +555,8 @@ class afcAMS(afcUnit):
     def handle_connect(self):
         super().handle_connect()
 
-        self.logo = '<span class=success--text>R  OpenAMS\n'
-        self.logo += 'E  ========\n'
-        self.logo += 'A  |      |\n'
-        self.logo += 'D  | OAMS |\n'
-        self.logo += 'Y  ========</span>\n'
-        self.logo += '  ' + self.name + '\n'
-
-        self.logo_error = '<span class=error--text>E  OpenAMS\n'
-        self.logo_error += 'R  ========\n'
-        self.logo_error += 'R  | ERR  |\n'
-        self.logo_error += 'O  |  X   |\n'
-        self.logo_error += 'R  ========</span>\n'
-        self.logo_error += '  ' + self.name + '\n'
+        self.logo = _ams_box_logo("OpenAMS", len(self.lanes), self.name)
+        self.logo_error = _ams_box_logo_error("OpenAMS", len(self.lanes), self.name)
 
         # Build spool map, set custom commands, read per-lane engagement params
         for lane_name, lane in self.lanes.items():

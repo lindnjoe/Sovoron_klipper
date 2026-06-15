@@ -168,7 +168,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-15T04:17:11Z"
+          "timestamp": "2026-06-15T05:16:22Z"
         },
         "optional": []
       },
@@ -508,6 +508,22 @@
                   "enabled": true,
                   "id": "favorite_macro:2",
                   "row": 3,
+                  "rowspan": 1
+                },
+                {
+                  "col": -1,
+                  "colspan": 1,
+                  "enabled": false,
+                  "id": "chamber_temperature",
+                  "row": -1,
+                  "rowspan": 1
+                },
+                {
+                  "col": -1,
+                  "colspan": 2,
+                  "enabled": false,
+                  "id": "control_buttons",
+                  "row": -1,
                   "rowspan": 1
                 }
               ]
