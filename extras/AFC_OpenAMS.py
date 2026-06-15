@@ -10,14 +10,11 @@ clog detection, and engagement verification."""
 from __future__ import annotations
 
 import time
-import logging
 import threading
 import traceback
 from datetime import datetime
 from configparser import Error as error
 from typing import Any, Callable, Dict, Optional, Tuple, TYPE_CHECKING
-
-from . import bus
 
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
@@ -31,10 +28,10 @@ except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.form
 try: from extras.AFC_unit import afcUnit
 except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
-# FollowerController, OAMSMonitor, FPSLoadState/FPSState and TemperatureOAMS are
-# defined inline at the bottom of this file so the OpenAMS unit is
-# self-contained. The [oams] hardware controller lives in its own oams.py
-# because Klipper resolves the [oams ...] config section to that module name.
+# FollowerController, OAMSMonitor and FPSLoadState/FPSState are defined inline
+# at the bottom of this file so the OpenAMS unit is self-contained. The [oams]
+# hardware controller lives in its own oams.py because Klipper resolves the
+# [oams ...] config section to that module name.
 
 
 # ── Compatibility shims for the frozen upstream core (see AFC_compat.py) ──
@@ -515,8 +512,8 @@ class afcAMS(afcUnit):
         self._td1_last_capture_time = None
 
         # Register temperature_oams sensor factory during config parsing
-        # (TemperatureOAMS is defined inline at the bottom of this file).
         try:
+            from extras.temperature_oams import TemperatureOAMS
             pheaters = self.printer.load_object(config, "heaters")
             pheaters.add_sensor_factory("temperature_oams", TemperatureOAMS)
         except Exception:
@@ -2390,9 +2387,9 @@ class afcAMS(afcUnit):
 
 # ══════════════════════════════════════════════════════════════════════
 # Helpers for the OpenAMS unit, kept here so it's self-contained: the follower
-# motor controller, the real-time stuck/clog monitor, and the HDC1080 temp/
-# humidity sensor. The [oams] hardware controller lives in oams.py because
-# Klipper maps the [oams ...] config section to that module name.
+# motor controller and the real-time stuck/clog monitor. The [oams] hardware
+# controller lives in oams.py because Klipper maps the [oams ...] config
+# section to that module name.
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -2973,202 +2970,6 @@ class OAMSMonitor:
             st.clog_start_encoder = None
             if st.clog_active:
                 st.clog_active = False
-
-
-# ── HDC1080 temperature/humidity sensor ───────────────────────────────
-
-# HDC1080 register addresses
-TEMP_REG = 0x00
-HUMI_REG = 0x01
-CONF_REG = 0x02
-FSER_REG = 0xFB
-MSER_REG = 0xFC
-LSER_REG = 0xFD
-MFID_REG = 0xFE
-DVID_REG = 0xFF
-
-HDC1080_I2C_ADDR = 0x40
-
-CONFIG_RESET_BIT = 0x8000
-CONFIG_BATTERY_STATUS_BIT = 0x0800
-HEATER_ENABLE_BIT = 0x2000
-
-TEMP_RES_14 = 0x0000
-TEMP_RES_11 = 0x0400
-TEMP_RES = {14: TEMP_RES_14, 11: TEMP_RES_11}
-
-HUMI_RES_14 = 0x0000
-HUMI_RES_11 = 0x0100
-HUMI_RES_8  = 0x0200
-HUMI_RES = {14: HUMI_RES_14, 11: HUMI_RES_11, 8: HUMI_RES_8}
-
-
-class TemperatureOAMS:
-    """HDC1080-based temperature and humidity sensor for OpenAMS units."""
-
-    def __init__(self, config):
-        self.printer = config.get_printer()
-        self.name = config.get_name().split()[-1]
-        self.reactor = self.printer.get_reactor()
-        self.i2c = bus.MCU_I2C_from_config(
-            config, default_addr=HDC1080_I2C_ADDR, default_speed=100000)
-        self.report_time = config.getint('report_time', 5, minval=5)
-        self.temp = self.min_temp = self.max_temp = self.humidity = 0.
-        self.sample_timer = self.reactor.register_timer(self._sample)
-        self.simulate_aht3x = config.getboolean(
-            'simulate_supported_sensor_mainsail', True)
-        if self.simulate_aht3x:
-            self.printer.add_object("aht3x " + self.name, self)
-        else:
-            self.printer.add_object("temperature_oams " + self.name, self)
-        self.printer.register_event_handler("klippy:connect",
-                                            self.handle_connect)
-        self.temp_resolution = config.getint('temp_resolution', 14, minval=11, maxval=14)
-        if self.temp_resolution not in TEMP_RES:
-            raise ValueError("Invalid temperature resolution, valid: %s"
-                             % ", ".join(str(x) for x in TEMP_RES))
-        self.temp_resolution = TEMP_RES[self.temp_resolution]
-
-        self.humidity_resolution = config.getint('humidity_resolution', 14, minval=8, maxval=14)
-        if self.humidity_resolution not in HUMI_RES:
-            raise ValueError("Invalid humidity resolution, valid: %s"
-                             % ", ".join(str(x) for x in HUMI_RES))
-        self.humidity_resolution = HUMI_RES[self.humidity_resolution]
-
-        self.temp_offset = config.getfloat('temp_offset', 0.0)
-        self.humidity_offset = config.getfloat('humidity_offset', 0.0)
-        self.heater_enabled = config.getboolean('heater_enabled', False)
-
-        self.is_calibrated = False
-        self.init_sent = False
-        self._consecutive_errors = 0
-        self._max_consecutive_errors = 5
-        self._last_good_temp = 0.0
-
-    def handle_connect(self):
-        self._init_device()
-        self.reactor.update_timer(self.sample_timer, self.reactor.NOW)
-
-    def setup_minmax(self, min_temp, max_temp):
-        self.min_temp = min_temp
-        self.max_temp = max_temp
-
-    def setup_callback(self, cb):
-        self._callback = cb
-
-    def get_report_time_delta(self):
-        return self.report_time
-
-    def _init_device(self):
-        data = [CONF_REG, 1 << 4, 0x00]
-        self.i2c.i2c_write(data)
-        manufacturer_id = self._read_register_16(MFID_REG)
-        device_id = self._read_register_16(DVID_REG)
-
-        self._set_resolution(CONF_REG, 0x0400, self.temp_resolution)
-        self._set_resolution(CONF_REG, 0x0300, self.humidity_resolution)
-
-        if self.heater_enabled:
-            self._set_config_bit(HEATER_ENABLE_BIT, True)
-
-        logging.info("temperature_oams %s: manufacturer=%s device=%s",
-                     self.name, hex(manufacturer_id), hex(device_id))
-        self.init_sent = True
-
-    def _read_register_16(self, reg):
-        self.i2c.i2c_write([reg])
-        self.reactor.pause(self.reactor.monotonic() + 0.0635)
-        read = self.i2c.i2c_read([], 2)
-        data = bytearray(read['response'])
-        return (data[0] << 8) | data[1]
-
-    def _set_resolution(self, reg, mask, value):
-        config = self._read_register_16(reg)
-        config = (config & ~mask) | value
-        data = [reg, config >> 8, 0x00]
-        self.i2c.i2c_write(data)
-        self.reactor.pause(self.reactor.monotonic() + 0.015)
-
-    def _set_config_bit(self, bit, enable):
-        config = self._read_register_16(CONF_REG)
-        if enable:
-            config |= bit
-        else:
-            config &= ~bit
-        data = [CONF_REG, config >> 8, 0x00]
-        self.i2c.i2c_write(data)
-        self.reactor.pause(self.reactor.monotonic() + 0.015)
-
-    def _read_temp(self):
-        try:
-            self.i2c.i2c_write([TEMP_REG])
-            self.reactor.pause(self.reactor.monotonic() + 0.0635)
-            read = self.i2c.i2c_read([], 2)
-            data = bytearray(read['response'])
-            raw = (data[0] << 8) | data[1]
-            celsius = (raw / 65536.0) * 165.0 - 40
-            return celsius, True
-        except Exception as e:
-            logging.debug("temperature_oams %s: temp read failed: %s", self.name, e)
-            return 0.0, False
-
-    def _read_humidity(self):
-        try:
-            self.i2c.i2c_write([HUMI_REG])
-            self.reactor.pause(self.reactor.monotonic() + 0.0635)
-            read = self.i2c.i2c_read([], 2)
-            data = bytearray(read['response'])
-            raw = (data[0] << 8) | data[1]
-            percent = (raw / 65536.0) * 100.0
-            return percent, True
-        except Exception as e:
-            logging.debug("temperature_oams %s: humidity read failed: %s", self.name, e)
-            return 0.0, False
-
-    def _sample(self, eventtime):
-        if not self.init_sent:
-            return eventtime + self.report_time
-
-        temp_val, temp_ok = self._read_temp()
-        self.reactor.pause(self.reactor.monotonic() + 0.015)
-        humi_val, humi_ok = self._read_humidity()
-
-        if temp_ok:
-            self.temp = temp_val + self.temp_offset
-            self._last_good_temp = self.temp
-            self._consecutive_errors = 0
-        else:
-            self._consecutive_errors += 1
-            self.temp = self._last_good_temp
-
-        if humi_ok:
-            self.humidity = humi_val + self.humidity_offset
-
-        if not (temp_ok or humi_ok):
-            self._consecutive_errors += 1
-            if self._consecutive_errors >= self._max_consecutive_errors:
-                logging.warning(
-                    "temperature_oams %s: %d consecutive I2C errors, backing off",
-                    self.name, self._consecutive_errors)
-                return eventtime + self.report_time * 3
-            return eventtime + self.report_time
-
-        if self._consecutive_errors == 0:
-            if self.temp < self.min_temp or self.temp > self.max_temp:
-                self.printer.invoke_shutdown(
-                    "temperature_oams %s: %.1f outside range %.1f:%.1f"
-                    % (self.name, self.temp, self.min_temp, self.max_temp))
-
-        measured_time = self.reactor.monotonic()
-        print_time = self.i2c.get_mcu().estimated_print_time(measured_time)
-        self._callback(print_time, self.temp)
-        return measured_time + self.report_time
-
-    def get_status(self, eventtime):
-        return {
-            'temperature': round(self.temp, 2),
-            'humidity': round(self.humidity, 2),
-        }
 
 
 def load_config_prefix(config):
