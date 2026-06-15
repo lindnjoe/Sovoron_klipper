@@ -60,7 +60,8 @@ class AFC_U1_RFID:
         #   [AFC_U1_rfid]
         #   lane_channels: lane4:1, lane5:2, lane6:3   # tag -> assign to lane
         #   scanner_channels: 0                         # tag -> stage next spool
-        #   scanner_auto_create: True
+        #   scanner_auto_create: True   # opt-in (default False): create scanned
+        #                               # spools in Spoolman when no match exists
         # lane_channels: a loadable AFC lane reads its RFID channel and the tag
         # is assigned to THAT lane. (Legacy alias: 'channels'.)
         self._cfg_channels: Dict[str, int] = {}        # lane_name -> channel
@@ -96,9 +97,10 @@ class AFC_U1_RFID:
                 raise config.error(
                     "AFC_U1_rfid: bad scanner channel '%s'" % ch)
         # Auto-create scanned spools in Spoolman (scanner channels have no lane,
-        # so the lane-based auto-create lookup doesn't apply).
+        # so the lane-based auto-create lookup doesn't apply). Opt-in: defaults
+        # off so creating Spoolman entries is an explicit choice.
         self._scanner_auto_create = config.getboolean(
-            'scanner_auto_create', True)
+            'scanner_auto_create', False)
         # Default auto-create for LANE reads via this reader (extruder1/2/3 etc.
         # whose unit/extruder are upstream-frozen and can't take the option). A
         # lane's unit/extruder auto_spoolman_create still overrides this.
