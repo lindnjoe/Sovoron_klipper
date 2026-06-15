@@ -22,11 +22,11 @@
             "color": "#f4ee2a",
             "weight": 988.8057812206342,
             "extruder_temp": 210,
-            "bed_temp": 0.0,
+            "bed_temp": null,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Loaded",
+            "status": "Tooled",
             "dist_hub": 250.0,
             "td1_data": {}
         },
