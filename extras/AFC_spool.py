@@ -67,17 +67,21 @@ class AFCSpool:
                 # Below could also be done with the following macro for multi color spools
                 # SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=3 COLORS=123456,654321 COLOR_NUMS=2 MULTI_MODE=1
                 from extras.print_task_config import DEFAULT_PRINT_TASK_CONFIG
-                extruder_num = 0 if lane.extruder_obj.name == "extruder" else lane.extruder_obj.name[-1]
+                extruder_num = "0" if lane.extruder_obj.name == "extruder" else lane.extruder_obj.name[-1]
                 extruder_num = 0 if not extruder_num.isdigit() else int(extruder_num)
-                
+
                 tmp_print_task_config = copy.deepcopy(self.print_task_config_obj.print_task_config)
 
                 tmp_print_task_config['filament_vendor'][extruder_num] = "Generic"
                 tmp_print_task_config['filament_type'][extruder_num] = lane.material
-                tmp_print_task_config['filament_sub_type'][extruder_num] = "None"
+                tmp_print_task_config['filament_sub_type'][extruder_num] = None
 
-                tmp_print_task_config['filament_color'][extruder_num] = int(lane.color.replace('#', ''), 16) | 0xFF000000
-                tmp_print_task_config['filament_color_rgba'][extruder_num] = lane.color.replace('#', '') + "FF"
+                tmp_print_task_config['filament_color'][extruder_num] = "FFFFFFFF"
+                tmp_print_task_config['filament_color_rgba'][extruder_num] = "FFFFFFFF"
+                if lane.color:
+                  tmp_print_task_config['filament_color'][extruder_num] = int(lane.color.replace('#', ''), 16) | 0xFF000000
+                  tmp_print_task_config['filament_color_rgba'][extruder_num] = lane.color.replace('#', '') + "FF"
+
                 if lane.multi_color:
                     tmp_print_task_config['filament_color_multi'][extruder_num]["nums"] = len(lane.multi_color)
                     tmp_print_task_config['filament_color_multi'][extruder_num]["colors"] = lane.multi_color
