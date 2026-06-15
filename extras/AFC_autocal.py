@@ -46,6 +46,8 @@ class AFC_autocal:
         self.afc = None
         self._lane_flow_k = {}   # lane_name -> (spool_id, k)
         self._k_fetch_inflight = set()   # lane names with a pending async read
+        self._staged_handled = {}   # lane_name -> spool_id auto-loaded from stage
+        self._staged_pending = set()   # lanes with a retry chain awaiting idle
 
         # Two independent toggles. 'enabled' is a back-compat master that
         # defaults BOTH on when set.
@@ -65,6 +67,8 @@ class AFC_autocal:
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.printer.register_event_handler('afc:tool_loaded',
                                             self._handle_tool_loaded)
+        self.printer.register_event_handler('afc:spool_assigned',
+                                            self._handle_spool_assigned)
         self.printer.register_event_handler('homing:home_rails_end',
                                             self._handle_home_rails_end)
         self.printer.register_event_handler('extruder:activate_extruder',
@@ -88,6 +92,8 @@ class AFC_autocal:
         self.logger = self.afc.logger
         if self.apply_stored_k or self.auto_calibrate:
             self._patch_set_tool_loaded_emit()
+        if self.auto_calibrate:
+            self._patch_set_spoolid_emit()
 
     def _patch_set_tool_loaded_emit(self):
         """Make every normal toolchange emit ``afc:tool_loaded``.
@@ -127,6 +133,40 @@ class AFC_autocal:
         AFCLane._afc_autocal_emit_patched = True
         self.logger.info(
             "AFC_autocal: set_tool_loaded now emits afc:tool_loaded on load")
+
+    def _patch_set_spoolid_emit(self):
+        """Make spool assignment emit ``afc:spool_assigned``.
+
+        A spool staged into a lane (any unit type) is assigned via
+        ``AFCSpool.set_spoolID`` but isn't loaded to the toolhead, so it never
+        fires ``afc:tool_loaded`` and autocal has nothing to hook. Patch
+        set_spoolID here (entirely inside AFC_autocal, idempotent) to emit the
+        lane on every call; _handle_spool_assigned then auto-loads an uncalibrated
+        staged lane so the normal tool_loaded path calibrates it. Heavy gating in
+        the handler (filament present, idle, prep-done, startup grace, dedup)
+        keeps startup reconcile / clears from triggering anything.
+        """
+        try:
+            from extras.AFC_spool import AFCSpool
+        except Exception as e:
+            self.logger.warning(
+                "AFC_autocal: cannot patch set_spoolID: %s" % e)
+            return
+        if getattr(AFCSpool, '_afc_autocal_spoolid_patched', False):
+            return
+        _orig = AFCSpool.set_spoolID
+
+        def set_spoolID(self, cur_lane, SpoolID, save_vars=True, _orig=_orig):
+            _orig(self, cur_lane, SpoolID, save_vars=save_vars)
+            try:
+                self.printer.send_event("afc:spool_assigned", cur_lane)
+            except Exception:
+                pass
+
+        AFCSpool.set_spoolID = set_spoolID
+        AFCSpool._afc_autocal_spoolid_patched = True
+        self.logger.info(
+            "AFC_autocal: set_spoolID now emits afc:spool_assigned")
 
     def _spoolman(self):
         mr = getattr(self.afc, 'moonraker', None) if self.afc else None
@@ -283,6 +323,108 @@ class AFC_autocal:
             self._fetch_k_async(cur_lane)
         except Exception as e:
             self.logger.warning("AFC_autocal: tool_loaded error: %s" % e)
+
+    def _handle_spool_assigned(self, cur_lane):
+        if self.afc is None or cur_lane is None or not self.auto_calibrate:
+            return
+        # set_spoolID may run with the gcode mutex held — defer to the reactor.
+        self.reactor.register_callback(
+            lambda et, lane=cur_lane: self._do_spool_assigned(lane))
+
+    def _do_spool_assigned(self, cur_lane, attempts=0):
+        """A spool was assigned to a lane. If the lane is staged (filament
+        present, has a spool, but isn't in the toolhead) and uncalibrated,
+        auto-load it once it's safe so the normal tool_loaded path calibrates it.
+        Works with any unit type. A lane already in the toolhead is handled by the
+        tool_loaded path; a direct extruder auto-loading is skipped because it
+        becomes tool_loaded (or is still load-in-flight) while we wait. Spools
+        already staged at boot are left alone (startup grace)."""
+        try:
+            if self.afc is None or cur_lane is None or not self.auto_calibrate:
+                return
+            name = cur_lane.name
+            sid = self._norm_spool_id(getattr(cur_lane, 'spool_id', None))
+            if sid is None:
+                # Spool cleared/removed — allow a later re-insert to retry.
+                self._staged_handled.pop(name, None)
+                self._staged_pending.discard(name)
+                return
+            if getattr(cur_lane, 'tool_loaded', False):
+                self._staged_pending.discard(name)
+                return  # in the toolhead — tool_loaded path handles it
+            if not getattr(cur_lane, 'load_state', False):
+                self._staged_pending.discard(name)
+                return  # no filament present at the lane — nothing to load
+            if self._staged_handled.get(name) == sid:
+                return  # already auto-loaded this spool from staging
+            if attempts == 0 and name in self._staged_pending:
+                return  # a retry chain is already waiting for this lane
+            # Don't auto-load spools already staged at boot: inside the startup
+            # grace we neither act nor retry (genuine inserts happen later).
+            now = self.reactor.monotonic()
+            if (self._ready_time is not None
+                    and (now - self._ready_time) < self._startup_cal_grace):
+                self._staged_pending.discard(name)
+                return
+            # The assignment often fires mid staging-load, so wait (bounded) for
+            # the printer to be idle/prepped AND for any extruder load in flight
+            # to finish (a direct extruder auto-loading becomes tool_loaded —
+            # let it, rather than forcing a redundant tool change).
+            if (not self._safe_to_calibrate()
+                    or self._extruder_load_in_flight(cur_lane)):
+                if attempts < 30:
+                    self._staged_pending.add(name)
+                    self.reactor.register_callback(
+                        lambda et, l=cur_lane, a=attempts + 1:
+                            self._do_spool_assigned(l, a), now + 1.0)
+                else:
+                    self._staged_pending.discard(name)
+                return
+            self._staged_pending.discard(name)
+            self._staged_handled[name] = sid
+            # Only auto-load when it actually needs calibration (no stored K).
+            # The K read is a blocking HTTP call, so do it off the reactor.
+            self._check_staged_k_async(name, sid)
+        except Exception as e:
+            self.logger.warning("AFC_autocal: spool_assigned error: %s" % e)
+
+    def _check_staged_k_async(self, lane_name, sid):
+        def worker():
+            k = None
+            try:
+                client = self._spoolman()
+                if client is not None:
+                    k = client.read_flow_k(sid)
+            except Exception as e:
+                self.logger.debug("AFC_autocal: staged K read failed: %s" % e)
+            self.reactor.register_async_callback(
+                lambda et: self._staged_k_ready(lane_name, sid, k))
+
+        threading.Thread(target=worker, name="afc-autocal-staged",
+                         daemon=True).start()
+
+    def _staged_k_ready(self, lane_name, sid, k):
+        """Runs on the reactor with the staged spool's K. If it already has a K
+        there's nothing to calibrate — leave it staged. Otherwise load the lane
+        (CHANGE_TOOL), which fires tool_loaded and drives the calibrate path."""
+        try:
+            lane = self.afc.lanes.get(lane_name) if self.afc else None
+            if lane is None:
+                return
+            if self._norm_spool_id(getattr(lane, 'spool_id', None)) != sid:
+                return  # spool changed since we kicked off the read
+            if getattr(lane, 'tool_loaded', False):
+                return  # got loaded in the meantime
+            if k is not None:
+                self._set_lane_k(lane, k)
+                return  # already calibrated — don't force a load
+            if not self._safe_to_calibrate():
+                return
+            self.logger.info(
+                "AFC autocal: loading staged lane %s to calibrate" % lane_name)
+            self.gcode.run_script("CHANGE_TOOL LANE=%s" % lane_name)
+        except Exception as e:
+            self.logger.warning("AFC_autocal: staged load error: %s" % e)
 
     def _fetch_k_async(self, cur_lane):
         """Read this lane's K from Spoolman in a worker thread, then hand the
