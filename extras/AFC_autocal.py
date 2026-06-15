@@ -298,7 +298,7 @@ class AFC_autocal:
             # flow-calibrate macro) switches to this lane's tool and loads it
             # before measuring, so an inserted off-shuttle lane calibrates too.
             if self.auto_calibrate and self._safe_to_calibrate():
-                self._calibrate(cur_lane, runner=self.gcode.run_script)
+                self._calibrate_when_loaded(cur_lane)
             return
         if not self.apply_stored_k:
             # Only auto_calibrate is on, and that needs idle — defer to _k_applied
@@ -347,9 +347,36 @@ class AFC_autocal:
             # calibrate_gcode switches to this lane's tool and loads it before
             # measuring, so an inserted off-shuttle lane calibrates too.
             if self.auto_calibrate and self._safe_to_calibrate():
-                self._calibrate(lane, runner=self.gcode.run_script)
+                self._calibrate_when_loaded(lane)
         except Exception as e:
             self.logger.warning("AFC_autocal: K apply error: %s" % e)
+
+    def _extruder_load_in_flight(self, lane):
+        """True while the lane's extruder is mid async-load. The U1 direct-load
+        (AFC_extruder.move_extruder) schedules a deferred cleanup timer
+        (extruder_move_cb) that calls toolhead.flush_step_generation(); if a
+        calibration's homing/drip move overlaps that cleanup, the flush raises
+        DripModeEndSignal and shuts Klipper down. Non-U1 loads don't set this
+        flag, so they calibrate immediately as before."""
+        ext = getattr(lane, 'extruder_obj', None)
+        return bool(getattr(ext, 'load_active', False))
+
+    def _calibrate_when_loaded(self, lane, attempts=0):
+        """Calibrate once any in-flight async extruder load has finished. Waits
+        (bounded) for load_active to clear so the load's deferred cleanup can't
+        overlap the calibration's homing/drip move (see _extruder_load_in_flight)."""
+        try:
+            if not self._safe_to_calibrate():
+                return  # state changed while waiting (e.g. a print started)
+            if self._extruder_load_in_flight(lane) and attempts < 60:
+                self.reactor.register_callback(
+                    lambda et, l=lane, a=attempts + 1:
+                        self._calibrate_when_loaded(l, a),
+                    self.reactor.monotonic() + 0.5)
+                return
+            self._calibrate(lane, runner=self.gcode.run_script)
+        except Exception as e:
+            self.logger.warning("AFC_autocal: deferred calibrate error: %s" % e)
 
     def _lane_on_active_toolhead(self, lane):
         """True when this lane's extruder is the one currently mounted on the
