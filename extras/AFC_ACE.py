@@ -704,6 +704,15 @@ class afcACE(afcUnit):
 
         dist_hub = lane.dist_hub
         if dist_hub <= 0:
+            # No feed needed (hub effectively at the load point): the filament
+            # is already at the hub the moment it's detected, so mark it staged
+            # instead of leaving the lane "detected but not loaded".
+            lane.loaded_to_hub = True
+            self._set_hub_state(lane, True)
+            self.afc.save_vars()
+            self.logger.info(
+                f"ACE prep_post_load: {lane.name} staged at hub "
+                f"(dist_hub=0, no feed needed)")
             return
 
         max_attempts = 3
@@ -1371,7 +1380,17 @@ class afcACE(afcUnit):
                     f"Failed to start feed assist slot {slot} after "
                     f"{attempts} attempts: {e}")
             except Exception as e:
-                self.logger.error(f"Failed to start feed assist slot {slot}: {e}")
+                # FORBIDDEN means the ACE refused assist for a moment (slot
+                # state still settling, e.g. right after boot). The heartbeat
+                # watchdog re-issues it next tick and it succeeds, so log at
+                # debug — it's transient and self-healing, not a fault.
+                if 'FORBIDDEN' in str(e).upper():
+                    self.logger.debug(
+                        f"Feed assist slot {slot} not permitted yet "
+                        f"(FORBIDDEN); watchdog will retry: {e}")
+                else:
+                    self.logger.error(
+                        f"Failed to start feed assist slot {slot}: {e}")
                 return
 
     def _stop_feed_assist(self, slot: int):
