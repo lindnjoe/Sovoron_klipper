@@ -1890,8 +1890,22 @@ class afcACE(afcUnit):
                     f"ACE {self.name}: slot {slot} inventory query failed: {e}")
 
     def _store_slot_rfid(self, slot, info):
-        """Store RFID fields from a get_filament_info response into slot cache."""
+        """Store RFID fields from a get_filament_info response into slot cache.
+
+        Per Anycubic's own ACE protocol (klipper-go ace_proto.go, FilamentInfo)
+        the richest per-slot tag payload is: index, sku, brand, type, color[],
+        extruder_temp{min,max}, hotbed_temp{min,max}, diameter, rfid (recognition
+        status), source. The real firmware additionally returns weight
+        (total/current). There is NO per-tag UID/serial in the payload, so an ACE
+        spool's identity has to come from its SKU. The full raw dict is kept (and
+        debug-logged) so any extra fields a firmware build sends are visible."""
         inv = self._slot_inventory[slot]
+        prev_raw = inv.get("raw")
+        inv["raw"] = info
+        changed = info != prev_raw
+        if changed:
+            self.logger.debug(
+                f"ACE {self.name}: slot {slot} get_filament_info -> {info}")
         inv["material"] = info.get("material", info.get("type", ""))
         inv["color"] = info.get("color", [0, 0, 0])
         inv["sku"] = info.get("sku", "")
@@ -1899,22 +1913,56 @@ class afcACE(afcUnit):
         inv["diameter"] = info.get("diameter", 1.75)
         inv["total_weight"] = info.get("total", 0)
         inv["current_weight"] = info.get("current", 0)
+        # RFID recognition state + data source (ace_proto.go RfidStatus / source):
+        #   rfid:   0 not-found, 1 unrecognized, 2 recognized, 3 recognizing
+        #   source: 0 unknown, 1 RFID, 2 custom (user-set), 3 empty
+        inv["rfid"] = info.get("rfid")
+        inv["source"] = info.get("source")
+        inv["filament_id"] = info.get("id")
+        # Keep the full min/max temperature ranges AND a derived single value.
         ext_temp = info.get("extruder_temp", {})
         bed_temp = info.get("hotbed_temp", {})
-        if isinstance(ext_temp, dict) and ext_temp.get("min") and ext_temp.get("max"):
-            inv["extruder_temp"] = (ext_temp["min"] + ext_temp["max"]) // 2
-        elif isinstance(ext_temp, dict) and ext_temp.get("max"):
-            inv["extruder_temp"] = ext_temp["max"]
+        if isinstance(ext_temp, dict):
+            inv["extruder_temp_min"] = ext_temp.get("min")
+            inv["extruder_temp_max"] = ext_temp.get("max")
+            if ext_temp.get("min") and ext_temp.get("max"):
+                inv["extruder_temp"] = (ext_temp["min"] + ext_temp["max"]) // 2
+            elif ext_temp.get("max"):
+                inv["extruder_temp"] = ext_temp["max"]
+            else:
+                inv["extruder_temp"] = None
         else:
             inv["extruder_temp"] = None
-        inv["bed_temp"] = bed_temp.get("max") if isinstance(bed_temp, dict) else None
+            inv["extruder_temp_min"] = inv["extruder_temp_max"] = None
+        if isinstance(bed_temp, dict):
+            inv["bed_temp"] = bed_temp.get("max")
+            inv["bed_temp_min"] = bed_temp.get("min")
+            inv["bed_temp_max"] = bed_temp.get("max")
+        else:
+            inv["bed_temp"] = inv["bed_temp_min"] = inv["bed_temp_max"] = None
+        # Surface the identity-relevant fields once per change (not every poll)
+        # so a real tag read is visible and we can see whether 'id' carries a
+        # unique per-spool value usable as a UID.
+        if changed and (inv.get("source") == 1 or inv.get("rfid") in (2, 3)
+                        or inv.get("sku")):
+            self.logger.info(
+                f"ACE {self.name}: slot {slot} RFID read — "
+                f"id={inv.get('filament_id')} sku={inv.get('sku')!r} "
+                f"brand={inv.get('brand')!r} type={inv.get('material')!r} "
+                f"source={inv.get('source')} rfid={inv.get('rfid')}")
 
     def _refresh_slot_inventory(self, slot):
-        """Fetch fresh RFID data for a single slot from ACE hardware."""
+        """Fetch fresh RFID data for a single slot from ACE hardware. Forces the
+        ACE to re-read the tag first so an inserted spool reports current data."""
         if self._ace is None or not self._ace.connected:
             return
         if slot < 0 or slot >= self.SLOTS_PER_UNIT:
             return
+        try:
+            self._ace.refresh_filament_info(slot)
+        except Exception as e:
+            self.logger.debug(
+                f"ACE {self.name}: slot {slot} tag re-read skipped: {e}")
         try:
             info = self._ace.get_filament_info(slot)
             if isinstance(info, dict):
@@ -2735,6 +2783,43 @@ class ACEConnection:
     def disable_rfid(self):
         """Disable RFID/NFC tag detection."""
         return self.send_command("disable_rfid")
+
+    # ---- Commands from Anycubic's ACE protocol (ace_proto.go) ----
+    # Method strings follow the snake_case convention of the commands above
+    # (which match the firmware); verify on-device — an unsupported method just
+    # returns an error code and is otherwise harmless.
+
+    def refresh_filament_info(self, slot_index, timeout=3.0):
+        """Ask the ACE to re-read a slot's RFID tag (RefreshFilamentInfo) so the
+        next get_filament_info returns fresh data."""
+        return self.send_command(
+            "refresh_filament_info", params={"index": slot_index},
+            timeout=timeout)
+
+    def set_filament_info(self, slot_index, filament_type, color_rgb):
+        """Write filament type + colour to a slot (SetFilamentInfo) — used for
+        slots without a readable RFID tag (custom filament).
+
+        :param color_rgb: [r, g, b] (0-255).
+        """
+        return self.send_command(
+            "set_filament_info",
+            params={"index": slot_index, "type": filament_type,
+                    "color": list(color_rgb)})
+
+    def set_fan_speed(self, fan_speed):
+        """Set the ACE enclosure fan speed (SetFanSpeed)."""
+        return self.send_command("set_fan_speed",
+                                 params={"fan_speed": fan_speed})
+
+    def continue_filament(self, auto=1):
+        """Resume/continue a paused feed (ContinueFilament)."""
+        return self.send_command("continue_filament", params={"auto": auto})
+
+    def switch_filament(self, slot_index):
+        """Select the active slot for feeding (SwitchFilament)."""
+        return self.send_command("switch_filament",
+                                 params={"index": slot_index})
 
 
 def load_config_prefix(config):
