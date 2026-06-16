@@ -2199,17 +2199,13 @@ class afcACE(afcUnit):
         if sync_rfid_to_spoolman is None:
             return
         if self.afc.spoolman is None or self.afc.moonraker is None:
-            # Early in startup moonraker may not have connected yet (the slot
-            # sync runs at ACE connect); only flag a genuine misconfig once prep
-            # is done, by which point moonraker should be up.
-            if getattr(self.afc, 'prep_done', False):
-                self.logger.warning(
-                    f"ACE {self.name}: RFID->Spoolman skipped for {lane.name} — "
-                    f"Spoolman/moonraker not configured in AFC")
-            else:
-                self.logger.debug(
-                    f"ACE {self.name}: RFID->Spoolman deferred for {lane.name} — "
-                    f"moonraker not connected yet (startup)")
+            # Spoolman not in use (a valid setup — tag-only, no Spoolman) or
+            # moonraker not connected yet at startup. Either way the tag was
+            # already applied to the lane by apply_filament_defaults, so the
+            # Spoolman sync is just a no-op here. Debug only — not a warning.
+            self.logger.debug(
+                f"ACE {self.name}: RFID->Spoolman skipped for {lane.name} — "
+                f"Spoolman not configured/connected")
             return
         if getattr(lane, "spool_id", None) not in (None, "", 0):
             self.logger.debug(
