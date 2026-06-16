@@ -92,6 +92,7 @@ def _ams_box_logo_error(title, n_slots, name):
 
 class afcACE(afcUnit):
     SLOTS_PER_UNIT = 4
+    _LOGO_TITLE = "ACE PRO"   # AFC_ACE2 overrides this for the Pro 2 prep logo
 
     def __init__(self, config):
         super().__init__(config)
@@ -110,6 +111,10 @@ class afcACE(afcUnit):
         # ~90 just run at the ceiling, while values below scale the rate.
         self.feed_speed = config.getfloat("feed_speed", 80.0)
         self.retract_speed = config.getfloat("retract_speed", 80.0)
+        # Safety cap on the dryer set-point — ACE_DRY clamps the commanded temp
+        # to this to avoid cooking filament / over-driving the heater.
+        self.max_dryer_temperature = config.getfloat(
+            "max_dryer_temperature", 55.0, minval=0.0)
         self.unload_preretract = config.getfloat("unload_preretract", 50.0)
         self._unit_load_to_hub = config.getboolean("load_to_hub", None)
         self._default_feed_assist = config.getboolean("use_feed_assist", True)
@@ -207,8 +212,8 @@ class afcACE(afcUnit):
     def handle_connect(self):
         super().handle_connect()
 
-        self.logo = _ams_box_logo("ACE PRO", len(self.lanes), self.name)
-        self.logo_error = _ams_box_logo_error("ACE PRO", len(self.lanes), self.name)
+        self.logo = _ams_box_logo(self._LOGO_TITLE, len(self.lanes), self.name)
+        self.logo_error = _ams_box_logo_error(self._LOGO_TITLE, len(self.lanes), self.name)
 
         # Build slot map (1-based config index → 0-based ACE slot)
         # and set custom load/unload commands
@@ -269,18 +274,21 @@ class afcACE(afcUnit):
     def _handle_ready(self):
         self.afc.reactor.register_callback(self._deferred_ace_connect)
 
+    def _make_connection(self, reactor, serial_port, logger, baud_rate):
+        """Create the ACE serial transport. AFC_ACE2 (Pro 2) overrides this to
+        return a V2 (binary protobuf) connection instead of the V1 JSON one."""
+        return ACEConnection(reactor=reactor, serial_port=serial_port,
+                             logger=logger, baud_rate=baud_rate)
+
     def _deferred_ace_connect(self, eventtime):
         """Connect to ACE hardware after reactor is fully running."""
         serial_logger = self._create_serial_logger() or self.logger
         last_err = None
         for attempt in range(self._CONNECT_MAX_RETRIES):
             try:
-                self._ace = ACEConnection(
-                    reactor=self.afc.reactor,
-                    serial_port=self.serial_port,
-                    logger=serial_logger,
-                    baud_rate=self.baud_rate,
-                )
+                self._ace = self._make_connection(
+                    self.afc.reactor, self.serial_port, serial_logger,
+                    self.baud_rate)
                 self._ace.connect()
                 if attempt > 0:
                     self.logger.info(
@@ -1557,6 +1565,11 @@ class afcACE(afcUnit):
         temp = gcmd.get_float('TEMP', 50.0)
         duration = gcmd.get_float('DURATION', 90.0)
         fan = gcmd.get_int('FAN', 7000)
+        if temp > self.max_dryer_temperature:
+            gcmd.respond_info(
+                f"ACE dryer: TEMP {temp:.0f}°C capped to "
+                f"max_dryer_temperature {self.max_dryer_temperature:.0f}°C")
+            temp = self.max_dryer_temperature
         if not self._ace or not self._ace.connected:
             gcmd.respond_info("ACE not connected")
             return
