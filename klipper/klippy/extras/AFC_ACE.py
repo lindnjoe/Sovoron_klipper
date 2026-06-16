@@ -169,6 +169,9 @@ class afcACE(afcUnit):
         self.gcode.register_command(
             f'ACE_CMD_{unit_suffix}', self.cmd_ACE_CMD,
             desc=f"Send a raw ACE protocol command and print the reply ({self.name})")
+        self.gcode.register_command(
+            f'ACE_FEED_TEST_{unit_suffix}', self.cmd_ACE_FEED_TEST,
+            desc=f"Sweep feed speed to test whether it changes feed rate ({self.name})")
         # Register base commands (first unit wins for single-unit setups)
         for cmd, handler, desc in [
             ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
@@ -178,6 +181,7 @@ class afcACE(afcUnit):
             ('ACE_DRY_STOP', self.cmd_ACE_DRY_STOP, "Stop ACE filament dryer"),
             ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
             ('ACE_CMD', self.cmd_ACE_CMD, "Send a raw ACE protocol command and print the reply"),
+            ('ACE_FEED_TEST', self.cmd_ACE_FEED_TEST, "Sweep feed speed to test whether it changes feed rate"),
         ]:
             try:
                 self.gcode.register_command(cmd, handler, desc=desc)
@@ -1415,18 +1419,120 @@ class afcACE(afcUnit):
         except Exception as e:
             gcmd.respond_info(f"ACE_CMD {method}: {e}")
 
+    def _pick_test_slot(self):
+        """First slot that reports a recognized tag / SKU (a loaded spool)."""
+        for slot in range(self.SLOTS_PER_UNIT):
+            inv = self._slot_inventory[slot]
+            if inv.get("rfid") in (2, 3) or inv.get("sku"):
+                return slot
+        return None
+
+    def _poll_until_status(self, want_ready, timeout):
+        """Poll get_status until status is (want_ready=True) / isn't ('ready').
+        Returns True if the wanted condition was seen before timeout."""
+        ace = self._ace
+        reactor = self.afc.reactor
+        elapsed = 0.0
+        while elapsed < timeout:
+            try:
+                hw = ace.get_status(timeout=2.0)
+                if isinstance(hw, dict):
+                    is_ready = hw.get("status", "") == "ready"
+                    if is_ready == want_ready:
+                        return True
+            except Exception:
+                pass
+            reactor.pause(reactor.monotonic() + 0.2)
+            elapsed += 0.2
+        return False
+
+    cmd_ACE_FEED_TEST_options = {
+        "SLOT":   {"type": "int",   "default": -1},
+        "LENGTH": {"type": "float", "default": 100.0},
+        "START":  {"type": "int",   "default": 10},
+        "END":    {"type": "int",   "default": 250},
+        "STEP":   {"type": "int",   "default": 20},
+    }
+
+    def cmd_ACE_FEED_TEST(self, gcmd):
+        """Sweep the ACE feed/unwind speed to see whether the speed param
+        actually changes the feed rate. For each speed it feeds LENGTH mm, times
+        it (waiting for the ACE to finish), then unwinds LENGTH mm so the net
+        travel is zero. Waits for 'ready' between every move so nothing returns
+        FORBIDDEN. Prints speed -> elapsed and derived mm/s.
+
+        Usage: ACE_FEED_TEST [SLOT=<n>] [LENGTH=100] [START=10] [END=250] [STEP=20]
+        Run with the test slot NOT loaded to the toolhead — the spool feeds toward
+        the hub and returns each pass. Keep LENGTH below your dist_hub.
+        This ties up the console for the duration of the sweep."""
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        length = gcmd.get_float('LENGTH', 100.0, minval=1.0)
+        start = gcmd.get_int('START', 10, minval=1)
+        end = gcmd.get_int('END', 250, minval=start)
+        step = gcmd.get_int('STEP', 20, minval=1)
+        slot = gcmd.get_int('SLOT', -1)
+        if slot < 0:
+            slot = self._pick_test_slot()
+        if slot is None or slot < 0 or slot >= self.SLOTS_PER_UNIT:
+            gcmd.respond_info(
+                "ACE_FEED_TEST: no loaded slot detected — pass SLOT=<n>")
+            return
+        reactor = self.afc.reactor
+        gcmd.respond_info(
+            f"ACE_FEED_TEST: slot {slot}, {length:.0f}mm, speeds "
+            f"{start}..{end} step {step} (feed + net-zero unwind each pass)")
+        results = []
+        speed = start
+        try:
+            while speed <= end:
+                self._wait_for_ace_ready()
+                # feed and time to completion
+                t0 = reactor.monotonic()
+                self._ace.feed_filament(slot, length, speed)
+                self._poll_until_status(False, timeout=5.0)   # wait until busy
+                self._poll_until_status(True, timeout=max(30.0, length / 2))
+                elapsed = reactor.monotonic() - t0
+                rate = length / elapsed if elapsed > 0 else 0
+                results.append((speed, elapsed))
+                gcmd.respond_info(
+                    f"  speed={speed:>3}: {elapsed:5.2f}s  (~{rate:4.0f} mm/s)")
+                # net-zero return at the same speed
+                self._wait_for_ace_ready()
+                self._ace.unwind_filament(slot, length, speed, "normal")
+                self._poll_until_status(False, timeout=5.0)
+                self._poll_until_status(True, timeout=max(30.0, length / 2))
+                speed += step
+        except Exception as e:
+            gcmd.respond_info(f"ACE_FEED_TEST aborted at speed {speed}: {e}")
+            self._wait_for_ace_ready()
+            return
+        if len(results) >= 2:
+            t_slow, t_fast = results[0][1], results[-1][1]
+            if t_slow > 0 and abs(t_slow - t_fast) / t_slow < 0.15:
+                verdict = ("times ~constant -> speed param appears "
+                           "CLAMPED/IGNORED (like the fan)")
+            else:
+                verdict = "times scale with speed -> speed param WORKS"
+            gcmd.respond_info(f"ACE_FEED_TEST done. {verdict}")
+        else:
+            gcmd.respond_info("ACE_FEED_TEST done.")
+
     cmd_ACE_DRY_options = {
         "UNIT": {"type": "string", "default": ""},
         "TEMP": {"type": "float", "default": 50.0},
         "DURATION": {"type": "float", "default": 90.0},
-        "FAN": {"type": "int", "default": 800},
+        "FAN": {"type": "int", "default": 7000},
     }
 
     def cmd_ACE_DRY(self, gcmd):
-        """Start ACE filament dryer."""
+        """Start ACE filament dryer. NOTE: the ACE Pro firmware ignores the fan
+        speed and always runs its fan at 7000 — FAN is kept for compatibility
+        but has no effect."""
         temp = gcmd.get_float('TEMP', 50.0)
         duration = gcmd.get_float('DURATION', 90.0)
-        fan = gcmd.get_int('FAN', 800)
+        fan = gcmd.get_int('FAN', 7000)
         if not self._ace or not self._ace.connected:
             gcmd.respond_info("ACE not connected")
             return
@@ -1882,9 +1988,14 @@ class afcACE(afcUnit):
             inv["extruder_temp"] = None
             inv["extruder_temp_min"] = inv["extruder_temp_max"] = None
         if isinstance(bed_temp, dict):
-            inv["bed_temp"] = bed_temp.get("max")
             inv["bed_temp_min"] = bed_temp.get("min")
             inv["bed_temp_max"] = bed_temp.get("max")
+            if bed_temp.get("min") and bed_temp.get("max"):
+                inv["bed_temp"] = (bed_temp["min"] + bed_temp["max"]) // 2
+            elif bed_temp.get("max"):
+                inv["bed_temp"] = bed_temp["max"]
+            else:
+                inv["bed_temp"] = None
         else:
             inv["bed_temp"] = inv["bed_temp_min"] = inv["bed_temp_max"] = None
         # Surface a real tag read once per change (not every poll). Live capture
@@ -2704,7 +2815,8 @@ class ACEConnection:
         )
 
     def start_drying(self, temp_c, fan_speed_rpm, duration_min):
-        """Start a filament drying cycle."""
+        """Start a filament drying cycle (verified on the ACE Pro firmware).
+        NOTE: the firmware ignores fan_speed and runs the fan fixed at 7000."""
         return self.send_command(
             "drying",
             params={
@@ -2727,14 +2839,16 @@ class ACEConnection:
         return self.send_command("disable_rfid")
 
     # ---- Commands from Anycubic's ACE protocol (ace_proto.go) ----
-    # These exist in the Kobra3 firmware's protocol but are UNVERIFIED on the
-    # ACE Pro firmware — e.g. 'refresh_filament_info' returns 400 InvalidCommand
-    # there, so treat these as firmware-dependent (an unsupported method just
-    # returns an error code and is otherwise harmless).
+    # Verified on the ACE Pro firmware via ACE_CMD: set_filament_info works
+    # (code 0). set_fan_speed / continue_filament / switch_filament /
+    # refresh_filament_info all return 400 InvalidCommand on this firmware and
+    # were removed; probe new methods with ACE_CMD before adding wrappers.
 
     def set_filament_info(self, slot_index, filament_type, color_rgb):
-        """Write filament type + colour to a slot (SetFilamentInfo) — used for
-        slots without a readable RFID tag (custom filament).
+        """Write filament type + colour to a slot (SetFilamentInfo). Accepted by
+        the ACE Pro firmware (code 0) but had no observable effect on an EMPTY
+        slot in testing (get_filament_info still read blank) — likely only takes
+        on a slot that has filament present. Not wired into any flow.
 
         :param color_rgb: [r, g, b] (0-255).
         """
@@ -2742,20 +2856,6 @@ class ACEConnection:
             "set_filament_info",
             params={"index": slot_index, "type": filament_type,
                     "color": list(color_rgb)})
-
-    def set_fan_speed(self, fan_speed):
-        """Set the ACE enclosure fan speed (SetFanSpeed)."""
-        return self.send_command("set_fan_speed",
-                                 params={"fan_speed": fan_speed})
-
-    def continue_filament(self, auto=1):
-        """Resume/continue a paused feed (ContinueFilament)."""
-        return self.send_command("continue_filament", params={"auto": auto})
-
-    def switch_filament(self, slot_index):
-        """Select the active slot for feeding (SwitchFilament)."""
-        return self.send_command("switch_filament",
-                                 params={"index": slot_index})
 
 
 def load_config_prefix(config):
