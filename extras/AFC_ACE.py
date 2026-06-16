@@ -2199,12 +2199,23 @@ class afcACE(afcUnit):
         if sync_rfid_to_spoolman is None:
             return
         if self.afc.spoolman is None or self.afc.moonraker is None:
+            self.logger.warning(
+                f"ACE {self.name}: RFID->Spoolman skipped for {lane.name} — "
+                f"Spoolman/moonraker not configured in AFC")
             return
         if getattr(lane, "spool_id", None) not in (None, "", 0):
+            self.logger.debug(
+                f"ACE {self.name}: RFID->Spoolman skipped — {lane.name} already "
+                f"has spool_id {lane.spool_id}")
             return
         sku = slot_info.get("sku", "")
         if not sku:
+            self.logger.debug(
+                f"ACE {self.name}: RFID->Spoolman skipped — no SKU on slot")
             return
+        self.logger.debug(
+            f"ACE {self.name}: RFID->Spoolman for {lane.name}, SKU {sku}, "
+            f"auto_create={self._get_auto_spoolman_create(lane)}")
 
         color_rgb = slot_info.get("color", [0, 0, 0])
         color_hex = ""
