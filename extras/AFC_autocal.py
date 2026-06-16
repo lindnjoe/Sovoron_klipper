@@ -499,8 +499,14 @@ class AFC_autocal:
             # mid-print or during boot prep. NOT gated to the active tool:
             # calibrate_gcode switches to this lane's tool and loads it before
             # measuring, so an inserted off-shuttle lane calibrates too.
-            if self.auto_calibrate and self._safe_to_calibrate():
-                self._calibrate_when_loaded(lane)
+            if self.auto_calibrate:
+                if self._safe_to_calibrate():
+                    self._calibrate_when_loaded(lane)
+                else:
+                    self.logger.info(
+                        "AFC autocal: %s has no stored K but not safe to "
+                        "calibrate now (%s) — skipping"
+                        % (lane_name, self._cal_block_reason()))
         except Exception as e:
             self.logger.warning("AFC_autocal: K apply error: %s" % e)
 
@@ -519,7 +525,11 @@ class AFC_autocal:
         (bounded) for load_active to clear so the load's deferred cleanup can't
         overlap the calibration's homing/drip move (see _extruder_load_in_flight)."""
         try:
-            if not self._safe_to_calibrate():
+            reason = self._cal_block_reason()
+            if reason is not None:
+                self.logger.info(
+                    "AFC autocal: %s calibration deferred — %s"
+                    % (lane.name, reason))
                 return  # state changed while waiting (e.g. a print started)
             if self._extruder_load_in_flight(lane) and attempts < 60:
                 self.reactor.register_callback(
@@ -527,6 +537,8 @@ class AFC_autocal:
                         self._calibrate_when_loaded(l, a),
                     self.reactor.monotonic() + 0.5)
                 return
+            self.logger.info(
+                "AFC autocal: running flow calibration for %s" % lane.name)
             self._calibrate(lane, runner=self.gcode.run_script)
         except Exception as e:
             self.logger.warning("AFC_autocal: deferred calibrate error: %s" % e)
@@ -549,16 +561,20 @@ class AFC_autocal:
             return False
 
     def _safe_to_calibrate(self):
+        return self._cal_block_reason() is None
+
+    def _cal_block_reason(self):
+        """None when it's safe to calibrate, else a short reason string."""
         if not getattr(self.afc, 'prep_done', False):
-            return False
+            return "prep not done"
         if (self._ready_time is not None
                 and (self.reactor.monotonic() - self._ready_time)
                 < self._startup_cal_grace):
-            return False
+            return "within startup grace"
         state = getattr(self.afc, 'current_state', None)
         if state is not None and str(state).split('.')[-1].lower() != 'idle':
-            return False
-        return True
+            return "state=%s (not idle)" % str(state).split('.')[-1]
+        return None
 
     def _reapply_current_k(self):
         # Re-applying only matters when we apply stored K.
