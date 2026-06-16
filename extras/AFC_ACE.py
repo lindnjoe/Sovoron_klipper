@@ -1913,12 +1913,11 @@ class afcACE(afcUnit):
         inv["diameter"] = info.get("diameter", 1.75)
         inv["total_weight"] = info.get("total", 0)
         inv["current_weight"] = info.get("current", 0)
-        # RFID recognition state + data source (ace_proto.go RfidStatus / source):
+        # RFID recognition state (ace_proto.go RfidStatus):
         #   rfid:   0 not-found, 1 unrecognized, 2 recognized, 3 recognizing
-        #   source: 0 unknown, 1 RFID, 2 custom (user-set), 3 empty
+        # 'source' is in the documented protocol but absent on tested firmware.
         inv["rfid"] = info.get("rfid")
         inv["source"] = info.get("source")
-        inv["filament_id"] = info.get("id")
         # Keep the full min/max temperature ranges AND a derived single value.
         ext_temp = info.get("extruder_temp", {})
         bed_temp = info.get("hotbed_temp", {})
@@ -1940,29 +1939,23 @@ class afcACE(afcUnit):
             inv["bed_temp_max"] = bed_temp.get("max")
         else:
             inv["bed_temp"] = inv["bed_temp_min"] = inv["bed_temp_max"] = None
-        # Surface the identity-relevant fields once per change (not every poll)
-        # so a real tag read is visible and we can see whether 'id' carries a
-        # unique per-spool value usable as a UID.
-        if changed and (inv.get("source") == 1 or inv.get("rfid") in (2, 3)
-                        or inv.get("sku")):
+        # Surface a real tag read once per change (not every poll). Live capture
+        # confirms the ACE payload has no id/serial/UID field — identity is the
+        # SKU only (the envelope 'id' is just the request id, not the spool).
+        if changed and (inv.get("rfid") in (2, 3) or inv.get("sku")):
             self.logger.info(
                 f"ACE {self.name}: slot {slot} RFID read — "
-                f"id={inv.get('filament_id')} sku={inv.get('sku')!r} "
-                f"brand={inv.get('brand')!r} type={inv.get('material')!r} "
-                f"source={inv.get('source')} rfid={inv.get('rfid')}")
+                f"sku={inv.get('sku')!r} brand={inv.get('brand')!r} "
+                f"type={inv.get('material')!r} rfid={inv.get('rfid')} "
+                f"nozzle={inv.get('extruder_temp_min')}-{inv.get('extruder_temp_max')}C")
 
     def _refresh_slot_inventory(self, slot):
-        """Fetch fresh RFID data for a single slot from ACE hardware. Forces the
-        ACE to re-read the tag first so an inserted spool reports current data."""
+        """Fetch fresh RFID data for a single slot from ACE hardware.
+        (get_filament_info already returns current tag data on this firmware.)"""
         if self._ace is None or not self._ace.connected:
             return
         if slot < 0 or slot >= self.SLOTS_PER_UNIT:
             return
-        try:
-            self._ace.refresh_filament_info(slot)
-        except Exception as e:
-            self.logger.debug(
-                f"ACE {self.name}: slot {slot} tag re-read skipped: {e}")
         try:
             info = self._ace.get_filament_info(slot)
             if isinstance(info, dict):
@@ -2785,16 +2778,10 @@ class ACEConnection:
         return self.send_command("disable_rfid")
 
     # ---- Commands from Anycubic's ACE protocol (ace_proto.go) ----
-    # Method strings follow the snake_case convention of the commands above
-    # (which match the firmware); verify on-device — an unsupported method just
-    # returns an error code and is otherwise harmless.
-
-    def refresh_filament_info(self, slot_index, timeout=3.0):
-        """Ask the ACE to re-read a slot's RFID tag (RefreshFilamentInfo) so the
-        next get_filament_info returns fresh data."""
-        return self.send_command(
-            "refresh_filament_info", params={"index": slot_index},
-            timeout=timeout)
+    # These exist in the Kobra3 firmware's protocol but are UNVERIFIED on the
+    # ACE Pro firmware — e.g. 'refresh_filament_info' returns 400 InvalidCommand
+    # there, so treat these as firmware-dependent (an unsupported method just
+    # returns an error code and is otherwise harmless).
 
     def set_filament_info(self, slot_index, filament_type, color_rgb):
         """Write filament type + colour to a slot (SetFilamentInfo) — used for
