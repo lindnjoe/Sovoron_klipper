@@ -1518,15 +1518,66 @@ class afcACE(afcUnit):
         except Exception as e:
             gcmd.respond_info(f"Error querying ACE: {e}")
 
+    @staticmethod
+    def _parse_ace_params(raw):
+        """Parse the PARAMS argument into a dict. Accepts real JSON, but the
+        gcode/console parser strips JSON double-quotes, so also accept the
+        quote-less form {key:val,key:val} with bare keys, [a,b] lists, and
+        int/float/bool/string value inference."""
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+
+        def conv(v):
+            v = v.strip().strip('"').strip("'")
+            if v.startswith('[') and v.endswith(']'):
+                return [conv(x) for x in v[1:-1].split(',') if x.strip()]
+            for cast in (int, float):
+                try:
+                    return cast(v)
+                except ValueError:
+                    pass
+            if v.lower() in ('true', 'false'):
+                return v.lower() == 'true'
+            return v
+
+        s = raw.lstrip('{').rstrip('}')
+        pairs, cur, depth = [], '', 0
+        for ch in s:
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+            if ch == ',' and depth == 0:
+                pairs.append(cur)
+                cur = ''
+            else:
+                cur += ch
+        if cur.strip():
+            pairs.append(cur)
+        out = {}
+        for p in pairs:
+            sep = ':' if ':' in p else ('=' if '=' in p else None)
+            if sep is None:
+                continue
+            k, _, val = p.partition(sep)
+            out[k.strip().strip('"').strip("'")] = conv(val)
+        return out or None
+
     def cmd_ACE_CMD(self, gcmd):
         """Send a raw ACE protocol command and print the reply — for probing
         which protocol methods this firmware actually supports.
 
-        Usage: ACE_CMD METHOD=<method> [PARAMS=<json>]
-        PARAMS is JSON with NO spaces (gcode splits on whitespace), e.g.
+        Usage: ACE_CMD METHOD=<method> [PARAMS=<json-ish>]
+        PARAMS has NO spaces (gcode splits on whitespace); quotes are optional
+        (the console strips them), e.g.
           ACE_CMD METHOD=get_status
-          ACE_CMD METHOD=set_fan_speed PARAMS={"fan_speed":7000}
-          ACE_CMD METHOD=drying PARAMS={"temp":50,"fan_speed":7000,"duration":90}
+          ACE_CMD METHOD=set_fan_speed PARAMS={fan_speed:7000}
+          ACE_CMD METHOD=set_filament_info PARAMS={index:0,type:PLA,color:[255,0,0]}
         A supported method replies code=0; an unsupported one replies
         code=400 InvalidCommand (shown as an error here) and is harmless."""
         if not self._ace or not self._ace.connected:
@@ -1536,20 +1587,18 @@ class afcACE(afcUnit):
         if not method:
             gcmd.respond_info("ACE_CMD: METHOD=<method> required")
             return
-        raw = gcmd.get('PARAMS', '')
-        params = None
-        if raw:
-            try:
-                params = json.loads(raw)
-            except Exception as e:
-                gcmd.respond_info(f"ACE_CMD: bad PARAMS json ({e}) — "
-                                  f"use no spaces, e.g. PARAMS={{\"index\":0}}")
-                return
+        try:
+            params = self._parse_ace_params(gcmd.get('PARAMS', ''))
+        except Exception as e:
+            gcmd.respond_info(f"ACE_CMD: bad PARAMS ({e}) — e.g. "
+                              f"PARAMS={{index:0,type:PLA}}")
+            return
         try:
             resp = self._ace.send_command(method, params=params)
             gcmd.respond_info(f"ACE_CMD {method}: OK -> {resp}")
         except Exception as e:
             gcmd.respond_info(f"ACE_CMD {method}: {e}")
+
 
     cmd_ACE_DRY_options = {
         "UNIT": {"type": "string", "default": ""},
