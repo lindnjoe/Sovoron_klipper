@@ -923,8 +923,18 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
             # readers like the ACE Pro) by its product SKU. Otherwise leave the
             # lane on the values apply_filament_defaults already set.
             if not (allow_create and (scanned_uid or sku)):
+                ident = f"SKU {sku}" if sku else (
+                    f"UID {scanned_uid}" if scanned_uid else "this tag")
+                logger.info(
+                    f"{prefix}: no Spoolman spool matches {ident} and "
+                    f"auto-create is {'ON' if allow_create else 'OFF'}"
+                    + ("" if allow_create else
+                       " (set 'auto_spoolman_create: True' to create one)"))
                 return
             if not sku and not material:
+                logger.info(
+                    f"{prefix}: tag has no SKU or material — can't create a "
+                    f"Spoolman filament")
                 return
 
             # Resolve the FILAMENT (product): exact SKU match, else create one.
