@@ -480,6 +480,15 @@ class afcACE(afcUnit):
             dist += getattr(hub, 'afc_unload_bowden_length', getattr(hub, 'afc_bowden_length', 0))
         return dist
 
+    def _get_eject_length(self, cur_lane) -> float:
+        """Retract distance for an eject/unload. When the lane is loaded to the
+        toolhead, retract the full path (dist_hub + bowden). When it's only
+        staged at the hub, the filament just spans the lane->hub gap, so retract
+        dist_hub + a 200mm buffer to clear the hub and pull it into the unit."""
+        if getattr(cur_lane, 'tool_loaded', False):
+            return self._get_unload_length(cur_lane)
+        return cur_lane.dist_hub + 200
+
     def _use_feed_assist(self, cur_lane) -> bool:
         fa = getattr(cur_lane, 'use_feed_assist', None)
         if fa is not None:
@@ -789,10 +798,7 @@ class afcACE(afcUnit):
             try:
                 self._stop_feed_assist(slot)
                 self._wait_for_ace_ready()
-                if getattr(lane, 'tool_loaded', False):
-                    dist = self._get_unload_length(lane)
-                else:
-                    dist = lane.dist_hub + 200
+                dist = self._get_eject_length(lane)
                 self.logger.info(
                     f"ACE eject {lane.name}: unwinding {dist:.0f}mm "
                     f"(dist_hub={lane.dist_hub:.0f}mm)")
@@ -825,7 +831,11 @@ class afcACE(afcUnit):
             try:
                 self._stop_feed_assist(slot)
                 self._wait_for_ace_ready()
-                dist = self._get_unload_length(cur_lane)
+                dist = self._get_eject_length(cur_lane)
+                self.logger.info(
+                    f"ACE unload {cur_lane.name}: unwinding {dist:.0f}mm "
+                    f"(dist_hub={cur_lane.dist_hub:.0f}mm, "
+                    f"tool_loaded={getattr(cur_lane, 'tool_loaded', False)})")
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
                 self._wait_for_feed_complete(slot, dist, self.retract_speed)
             except Exception as e:
