@@ -929,13 +929,24 @@ class afcACE(afcUnit):
                     f"{max_attempts} attempts: {e}")
 
     def eject_lane(self, lane: AFCLane):
-        """Retract filament back into ACE unit."""
+        """Retract filament back into the ACE unit.
+
+        From the hub-staged state the filament only spans the lane->hub gap, so
+        unwind dist_hub + a 200mm buffer to clear the hub sensor and fully pull
+        the filament back into the unit. If it's loaded past the hub (to the
+        toolhead) fall back to the full unload length (dist_hub + bowden)."""
         slot = self._get_slot(lane.name)
         if self._ace and self._ace.connected:
             try:
                 self._stop_feed_assist(slot)
                 self._wait_for_ace_ready()
-                dist = self._get_unload_length(lane)
+                if getattr(lane, 'tool_loaded', False):
+                    dist = self._get_unload_length(lane)
+                else:
+                    dist = lane.dist_hub + 200
+                self.logger.info(
+                    f"ACE eject {lane.name}: unwinding {dist:.0f}mm "
+                    f"(dist_hub={lane.dist_hub:.0f}mm)")
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
                 self._wait_for_feed_complete(slot, dist, self.retract_speed)
             except Exception as e:
