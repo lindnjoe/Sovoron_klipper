@@ -105,8 +105,11 @@ class afcACE(afcUnit):
                 f"Use '{MODE_COMBINED}' or '{MODE_DIRECT}'.")
         self.mode = mode
 
-        self.feed_speed = config.getfloat("feed_speed", 60.0)
-        self.retract_speed = config.getfloat("retract_speed", 50.0)
+        # The ACE firmware honors the feed/unwind speed up to ~90 mm/s and
+        # clamps anything above that (verified via ACE_FEED_TEST) — values over
+        # ~90 just run at the ceiling, while values below scale the rate.
+        self.feed_speed = config.getfloat("feed_speed", 80.0)
+        self.retract_speed = config.getfloat("retract_speed", 80.0)
         self.unload_preretract = config.getfloat("unload_preretract", 50.0)
         self._unit_load_to_hub = config.getboolean("load_to_hub", None)
         self._default_feed_assist = config.getboolean("use_feed_assist", True)
