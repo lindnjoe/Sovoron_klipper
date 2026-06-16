@@ -391,22 +391,24 @@ class AFC_autocal:
     def _check_staged_k_async(self, lane_name, sid):
         def worker():
             k = None
+            read_ok = False
             try:
                 client = self._spoolman()
                 if client is not None:
                     k = client.read_flow_k(sid)
+                    read_ok = True
             except Exception as e:
                 self.logger.debug("AFC_autocal: staged K read failed: %s" % e)
             self.reactor.register_async_callback(
-                lambda et: self._staged_k_ready(lane_name, sid, k))
+                lambda et: self._staged_k_ready(lane_name, sid, k, read_ok))
 
         threading.Thread(target=worker, name="afc-autocal-staged",
                          daemon=True).start()
 
-    def _staged_k_ready(self, lane_name, sid, k):
-        """Runs on the reactor with the staged spool's K. If it already has a K
-        there's nothing to calibrate — leave it staged. Otherwise load the lane
-        (CHANGE_TOOL), which fires tool_loaded and drives the calibrate path."""
+    def _staged_k_ready(self, lane_name, sid, k, read_ok):
+        """Runs on the reactor with the staged spool's K. Auto-load (to calibrate)
+        ONLY when we positively confirmed the spool has no stored K: a spool that
+        already has a K, or one whose K we couldn't read, is left staged."""
         try:
             lane = self.afc.lanes.get(lane_name) if self.afc else None
             if lane is None:
@@ -417,11 +419,20 @@ class AFC_autocal:
                 return  # got loaded in the meantime
             if k is not None:
                 self._set_lane_k(lane, k)
+                self.logger.info(
+                    "AFC autocal: %s spool %s already has K=%.6f — not auto-loading"
+                    % (lane_name, sid, k))
                 return  # already calibrated — don't force a load
+            if not read_ok:
+                self.logger.info(
+                    "AFC autocal: %s spool %s K unknown (Spoolman read failed) "
+                    "— not auto-loading" % (lane_name, sid))
+                return  # couldn't confirm there's no K — be conservative
             if not self._safe_to_calibrate():
                 return
             self.logger.info(
-                "AFC autocal: loading staged lane %s to calibrate" % lane_name)
+                "AFC autocal: %s spool %s has no stored K — loading to calibrate"
+                % (lane_name, sid))
             self.gcode.run_script("CHANGE_TOOL LANE=%s" % lane_name)
         except Exception as e:
             self.logger.warning("AFC_autocal: staged load error: %s" % e)
