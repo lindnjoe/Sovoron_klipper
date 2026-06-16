@@ -240,6 +240,9 @@ class afcACE(afcUnit):
         self.gcode.register_command(
             f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
             desc=f"Retract ACE lane filament back into unit ({self.name})")
+        self.gcode.register_command(
+            f'ACE_CMD_{unit_suffix}', self.cmd_ACE_CMD,
+            desc=f"Send a raw ACE protocol command and print the reply ({self.name})")
         # Register base commands (first unit wins for single-unit setups)
         for cmd, handler, desc in [
             ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
@@ -248,6 +251,7 @@ class afcACE(afcUnit):
             ('ACE_DRY', self.cmd_ACE_DRY, "Start ACE filament dryer"),
             ('ACE_DRY_STOP', self.cmd_ACE_DRY_STOP, "Stop ACE filament dryer"),
             ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
+            ('ACE_CMD', self.cmd_ACE_CMD, "Send a raw ACE protocol command and print the reply"),
         ]:
             try:
                 self.gcode.register_command(cmd, handler, desc=desc)
@@ -1513,6 +1517,39 @@ class afcACE(afcUnit):
             gcmd.respond_info(f"ACE Status: {status}")
         except Exception as e:
             gcmd.respond_info(f"Error querying ACE: {e}")
+
+    def cmd_ACE_CMD(self, gcmd):
+        """Send a raw ACE protocol command and print the reply — for probing
+        which protocol methods this firmware actually supports.
+
+        Usage: ACE_CMD METHOD=<method> [PARAMS=<json>]
+        PARAMS is JSON with NO spaces (gcode splits on whitespace), e.g.
+          ACE_CMD METHOD=get_status
+          ACE_CMD METHOD=set_fan_speed PARAMS={"fan_speed":7000}
+          ACE_CMD METHOD=drying PARAMS={"temp":50,"fan_speed":7000,"duration":90}
+        A supported method replies code=0; an unsupported one replies
+        code=400 InvalidCommand (shown as an error here) and is harmless."""
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        method = gcmd.get('METHOD', '')
+        if not method:
+            gcmd.respond_info("ACE_CMD: METHOD=<method> required")
+            return
+        raw = gcmd.get('PARAMS', '')
+        params = None
+        if raw:
+            try:
+                params = json.loads(raw)
+            except Exception as e:
+                gcmd.respond_info(f"ACE_CMD: bad PARAMS json ({e}) — "
+                                  f"use no spaces, e.g. PARAMS={{\"index\":0}}")
+                return
+        try:
+            resp = self._ace.send_command(method, params=params)
+            gcmd.respond_info(f"ACE_CMD {method}: OK -> {resp}")
+        except Exception as e:
+            gcmd.respond_info(f"ACE_CMD {method}: {e}")
 
     cmd_ACE_DRY_options = {
         "UNIT": {"type": "string", "default": ""},
