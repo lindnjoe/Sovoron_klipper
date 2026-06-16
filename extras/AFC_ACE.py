@@ -1884,9 +1884,14 @@ class afcACE(afcUnit):
             inv["extruder_temp"] = None
             inv["extruder_temp_min"] = inv["extruder_temp_max"] = None
         if isinstance(bed_temp, dict):
-            inv["bed_temp"] = bed_temp.get("max")
             inv["bed_temp_min"] = bed_temp.get("min")
             inv["bed_temp_max"] = bed_temp.get("max")
+            if bed_temp.get("min") and bed_temp.get("max"):
+                inv["bed_temp"] = (bed_temp["min"] + bed_temp["max"]) // 2
+            elif bed_temp.get("max"):
+                inv["bed_temp"] = bed_temp["max"]
+            else:
+                inv["bed_temp"] = None
         else:
             inv["bed_temp"] = inv["bed_temp_min"] = inv["bed_temp_max"] = None
         # Surface a real tag read once per change (not every poll). Live capture
