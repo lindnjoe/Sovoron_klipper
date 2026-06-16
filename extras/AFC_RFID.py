@@ -975,6 +975,9 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                     article_number=sku or None,
                 )
                 if filament is None:
+                    logger.warning(
+                        f"{prefix}: Spoolman create_filament FAILED for "
+                        f"'{filament_name}' (SKU {sku}) — check Spoolman/moonraker")
                     return
                 log_new_filament(logger, prefix, filament,
                                  brand, material, color_hex, diameter,
@@ -982,6 +985,8 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
 
             filament_id = (filament or {}).get("id")
             if filament_id is None:
+                logger.warning(
+                    f"{prefix}: resolved filament for SKU {sku} has no id — aborting")
                 return
 
             # Backfill any fields the tag has but the filament is missing.
@@ -1013,6 +1018,9 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                 spool_weight=spool_weight if spool_weight and spool_weight > 0 else None,
             )
             if spool is None:
+                logger.warning(
+                    f"{prefix}: Spoolman create_spool FAILED for filament "
+                    f"#{filament_id} (SKU {sku}) — check Spoolman/moonraker")
                 return
             log_new_spool(logger, prefix, spool,
                           default_filament_weight,
