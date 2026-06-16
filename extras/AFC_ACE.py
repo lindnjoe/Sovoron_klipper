@@ -2864,14 +2864,15 @@ class ACEConnection:
         return self.send_command("disable_rfid")
 
     # ---- Commands from Anycubic's ACE protocol (ace_proto.go) ----
-    # These exist in the Kobra3 firmware's protocol but are UNVERIFIED on the
-    # ACE Pro firmware — e.g. 'refresh_filament_info' returns 400 InvalidCommand
-    # there, so treat these as firmware-dependent (an unsupported method just
-    # returns an error code and is otherwise harmless).
+    # Verified on the ACE Pro firmware via ACE_CMD: set_filament_info works
+    # (code 0). set_fan_speed / continue_filament / switch_filament /
+    # refresh_filament_info all return 400 InvalidCommand on this firmware and
+    # were removed; probe new methods with ACE_CMD before adding wrappers.
 
     def set_filament_info(self, slot_index, filament_type, color_rgb):
-        """Write filament type + colour to a slot (SetFilamentInfo) — used for
-        slots without a readable RFID tag (custom filament).
+        """Write filament type + colour to a slot (SetFilamentInfo). Verified on
+        the ACE Pro firmware — useful to tell the ACE what's loaded in a slot
+        that has no readable RFID tag (custom filament).
 
         :param color_rgb: [r, g, b] (0-255).
         """
@@ -2879,20 +2880,6 @@ class ACEConnection:
             "set_filament_info",
             params={"index": slot_index, "type": filament_type,
                     "color": list(color_rgb)})
-
-    def set_fan_speed(self, fan_speed):
-        """Set the ACE enclosure fan speed (SetFanSpeed)."""
-        return self.send_command("set_fan_speed",
-                                 params={"fan_speed": fan_speed})
-
-    def continue_filament(self, auto=1):
-        """Resume/continue a paused feed (ContinueFilament)."""
-        return self.send_command("continue_filament", params={"auto": auto})
-
-    def switch_filament(self, slot_index):
-        """Select the active slot for feeding (SwitchFilament)."""
-        return self.send_command("switch_filament",
-                                 params={"index": slot_index})
 
 
 def load_config_prefix(config):
