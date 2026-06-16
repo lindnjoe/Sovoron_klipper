@@ -119,6 +119,16 @@ class AFC_U1_RFID:
         # filament_detect still owns tag-removal/clear (the daemon's
         # tag_not_present event only goes there), so that keeps working too.
         self._webhook_channels_seen: set = set()
+        # webhook_grace: seconds to defer a colour-lossy filament_detect read of
+        # a NEW tag so the OpenRFID full-colour webhook (if the daemon pushes)
+        # can land first and be the authoritative read — avoids a "misread" where
+        # filament_detect's primary-only colour wins the first scan of a tag.
+        # 0 = off (no deferral). Only ever delays the first read on a channel:
+        # once a webhook is seen, filament_detect reads are suppressed anyway.
+        # Set ~1.0 if you use the OpenRFID webhook. Harmless (just adds latency)
+        # if the daemon never pushes.
+        self._webhook_grace = config.getfloat('webhook_grace', 0.0, minval=0.0)
+        self._pending_defer: Dict[int, list] = {}  # channel -> uid awaiting grace
         try:
             webhooks = self.printer.lookup_object('webhooks')
             webhooks.register_endpoint('afc/u1_rfid', self._handle_webhook_scan)
@@ -587,6 +597,22 @@ class AFC_U1_RFID:
         if not is_scanner and getattr(lane, "status", "") in self._LOCKED_STATES:
             return
 
+        # Webhook-preference grace: defer a colour-lossy filament_detect ('poll')
+        # read of a NEW tag so the full-colour webhook can land first. Don't set
+        # _last_uid yet (so an arriving webhook isn't deduped); track the pending
+        # defer so repeat polls don't re-arm it. _grace_expired falls back to the
+        # filament_detect read only if no webhook arrived. ('poll-final' bypasses
+        # this so the deferred read actually processes.)
+        if (self._webhook_grace > 0 and source == 'poll'
+                and channel not in self._webhook_channels_seen):
+            if self._pending_defer.get(channel) != card_uid:
+                self._pending_defer[channel] = card_uid
+                self.reactor.register_callback(
+                    lambda et, ln=lane_name, ch=channel, uid=card_uid:
+                        self._grace_expired(ln, ch, uid),
+                    self.reactor.monotonic() + self._webhook_grace)
+            return
+
         self._last_uid[channel] = card_uid
 
         # Dump the raw tag dict so field-mapping issues (colour, temps, vendor)
@@ -636,6 +662,20 @@ class AFC_U1_RFID:
         self.afc.save_vars()
         if getattr(lane, 'tool_loaded', False):
             self.printer.send_event("afc:tool_loaded", lane)
+
+    def _grace_expired(self, lane_name, channel, card_uid):
+        """webhook_grace timer: process the deferred filament_detect read only if
+        no webhook arrived for the channel during the grace window."""
+        if self._pending_defer.get(channel) != card_uid:
+            return  # superseded by a newer tag, or already cleared
+        self._pending_defer.pop(channel, None)
+        if channel in self._webhook_channels_seen:
+            return  # a webhook landed during the grace and handled the tag
+        try:
+            self._check_channel(lane_name, channel, source='poll-final')
+        except Exception as e:
+            self.logger.warning(
+                f"U1 RFID: deferred read error ch{channel}: {e}")
 
     def _clear_lane(self, lane, lane_name: str):
         """Clear RFID data from a lane when tag is removed.
