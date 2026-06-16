@@ -517,12 +517,13 @@ class AFC_U1_RFID:
             except (ValueError, TypeError):
                 continue
         # First webhook on this channel: the daemon IS pushing full data, so
-        # make the webhook authoritative for it from now on. Drop any uid a
-        # pre-webhook filament_detect read may have latched, so this richer read
-        # isn't suppressed by the dedup.
+        # make the webhook authoritative for it from now on (future colour-lossy
+        # filament_detect reads are suppressed by the source check in
+        # _check_channel). Do NOT clear _last_uid here: if a filament_detect read
+        # already processed this exact tag, the UID dedup must still suppress this
+        # duplicate webhook so the same scan isn't synced/created twice.
         if channel not in self._webhook_channels_seen:
             self._webhook_channels_seen.add(channel)
-            self._last_uid[channel] = None
         lane_name = self._channel_to_lane.get(channel)
         try:
             self._check_channel(lane_name, channel, info=info, source='webhook')
