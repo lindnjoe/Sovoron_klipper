@@ -184,6 +184,10 @@ class afcACE(afcUnit):
         # ~90 just run at the ceiling, while values below scale the rate.
         self.feed_speed = config.getfloat("feed_speed", 80.0)
         self.retract_speed = config.getfloat("retract_speed", 80.0)
+        # Safety cap on the dryer set-point — ACE_DRY clamps the commanded temp
+        # to this to avoid cooking filament / over-driving the heater.
+        self.max_dryer_temperature = config.getfloat(
+            "max_dryer_temperature", 55.0, minval=0.0)
         self.unload_preretract = config.getfloat("unload_preretract", 50.0)
         self._unit_load_to_hub = config.getboolean("load_to_hub", None)
         self._default_feed_assist = config.getboolean("use_feed_assist", True)
@@ -1741,6 +1745,11 @@ class afcACE(afcUnit):
         temp = gcmd.get_float('TEMP', 50.0)
         duration = gcmd.get_float('DURATION', 90.0)
         fan = gcmd.get_int('FAN', 7000)
+        if temp > self.max_dryer_temperature:
+            gcmd.respond_info(
+                f"ACE dryer: TEMP {temp:.0f}°C capped to "
+                f"max_dryer_temperature {self.max_dryer_temperature:.0f}°C")
+            temp = self.max_dryer_temperature
         if not self._ace or not self._ace.connected:
             gcmd.respond_info("ACE not connected")
             return
