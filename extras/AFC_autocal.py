@@ -48,6 +48,7 @@ class AFC_autocal:
         self._k_fetch_inflight = set()   # lane names with a pending async read
         self._staged_handled = {}   # lane_name -> spool_id auto-loaded from stage
         self._staged_pending = set()   # lanes with a retry chain awaiting idle
+        self._cal_pending = set()   # lanes with a calibrate-when-idle chain
 
         # Two independent toggles. 'enabled' is a back-compat master that
         # defaults BOTH on when set.
@@ -446,11 +447,11 @@ class AFC_autocal:
             return
         sid = self._norm_spool_id(getattr(cur_lane, 'spool_id', None))
         if sid is None:
-            # No spool to look up — nothing to apply; calibrate if idle/enabled.
-            # Not gated to the active tool: calibrate_gcode (the configured
-            # flow-calibrate macro) switches to this lane's tool and loads it
-            # before measuring, so an inserted off-shuttle lane calibrates too.
-            if self.auto_calibrate and self._safe_to_calibrate():
+            # No spool to look up — nothing to apply; calibrate if enabled.
+            # _calibrate_when_loaded waits for the printer to settle to idle and
+            # skips during a print. Not gated to the active tool: calibrate_gcode
+            # switches to this lane's tool and loads it before measuring.
+            if self.auto_calibrate:
                 self._calibrate_when_loaded(cur_lane)
             return
         if not self.apply_stored_k:
@@ -500,13 +501,7 @@ class AFC_autocal:
             # calibrate_gcode switches to this lane's tool and loads it before
             # measuring, so an inserted off-shuttle lane calibrates too.
             if self.auto_calibrate:
-                if self._safe_to_calibrate():
-                    self._calibrate_when_loaded(lane)
-                else:
-                    self.logger.info(
-                        "AFC autocal: %s has no stored K but not safe to "
-                        "calibrate now (%s) — skipping"
-                        % (lane_name, self._cal_block_reason()))
+                self._calibrate_when_loaded(lane)
         except Exception as e:
             self.logger.warning("AFC_autocal: K apply error: %s" % e)
 
@@ -520,27 +515,61 @@ class AFC_autocal:
         ext = getattr(lane, 'extruder_obj', None)
         return bool(getattr(ext, 'load_active', False))
 
-    def _calibrate_when_loaded(self, lane, attempts=0):
-        """Calibrate once any in-flight async extruder load has finished. Waits
-        (bounded) for load_active to clear so the load's deferred cleanup can't
-        overlap the calibration's homing/drip move (see _extruder_load_in_flight)."""
+    def _is_printing(self):
         try:
-            reason = self._cal_block_reason()
-            if reason is not None:
+            return bool(self.afc.function.is_printing())
+        except Exception:
+            return False
+
+    def _calibrate_when_loaded(self, lane, attempts=0):
+        """Run the flow calibration once the printer settles to idle after the
+        load. The auto-load issues a full CHANGE_TOOL, so the AFC state stays
+        non-idle ('Loading') for the whole sequence (~90s) — wait (bounded) for
+        it to finish rather than skipping on the first non-idle read. Never
+        calibrate during a print, before prep, or in the startup grace, and wait
+        out any in-flight extruder load so its cleanup can't overlap the
+        calibration's homing/drip move (see _extruder_load_in_flight)."""
+        name = lane.name
+        if attempts == 0:
+            if name in self._cal_pending:
+                return  # a calibrate chain is already running for this lane
+            self._cal_pending.add(name)
+        try:
+            if self._is_printing():
                 self.logger.info(
-                    "AFC autocal: %s calibration deferred — %s"
-                    % (lane.name, reason))
-                return  # state changed while waiting (e.g. a print started)
-            if self._extruder_load_in_flight(lane) and attempts < 60:
-                self.reactor.register_callback(
-                    lambda et, l=lane, a=attempts + 1:
-                        self._calibrate_when_loaded(l, a),
-                    self.reactor.monotonic() + 0.5)
+                    "AFC autocal: %s calibration skipped — printing" % name)
+                self._cal_pending.discard(name)
                 return
+            reason = self._cal_block_reason()
+            # Hard stops we don't wait out: boot prep / startup grace.
+            if reason == "prep not done" or (
+                    reason is not None and reason.startswith("within startup")):
+                self.logger.info(
+                    "AFC autocal: %s calibration skipped — %s" % (name, reason))
+                self._cal_pending.discard(name)
+                return
+            # Transient: the tool change / load hasn't settled to idle yet, or an
+            # extruder load is still in flight. Wait for it (bounded ~4min).
+            if reason is not None or self._extruder_load_in_flight(lane):
+                if attempts < 240:
+                    self.reactor.register_callback(
+                        lambda et, l=lane, a=attempts + 1:
+                            self._calibrate_when_loaded(l, a),
+                        self.reactor.monotonic() + 1.0)
+                else:
+                    self.logger.info(
+                        "AFC autocal: %s calibration gave up waiting to settle "
+                        "(%s)" % (name, reason or "load in flight"))
+                    self._cal_pending.discard(name)
+                return
+            self._cal_pending.discard(name)
+            if not getattr(lane, 'tool_loaded', False):
+                return  # lane was unloaded while we waited
             self.logger.info(
-                "AFC autocal: running flow calibration for %s" % lane.name)
+                "AFC autocal: running flow calibration for %s" % name)
             self._calibrate(lane, runner=self.gcode.run_script)
         except Exception as e:
+            self._cal_pending.discard(name)
             self.logger.warning("AFC_autocal: deferred calibrate error: %s" % e)
 
     def _lane_on_active_toolhead(self, lane):
