@@ -1604,14 +1604,16 @@ class afcACE(afcUnit):
         "UNIT": {"type": "string", "default": ""},
         "TEMP": {"type": "float", "default": 50.0},
         "DURATION": {"type": "float", "default": 90.0},
-        "FAN": {"type": "int", "default": 800},
+        "FAN": {"type": "int", "default": 7000},
     }
 
     def cmd_ACE_DRY(self, gcmd):
-        """Start ACE filament dryer."""
+        """Start ACE filament dryer. NOTE: the ACE Pro firmware ignores the fan
+        speed and always runs its fan at 7000 — FAN is kept for compatibility
+        but has no effect."""
         temp = gcmd.get_float('TEMP', 50.0)
         duration = gcmd.get_float('DURATION', 90.0)
-        fan = gcmd.get_int('FAN', 800)
+        fan = gcmd.get_int('FAN', 7000)
         if not self._ace or not self._ace.connected:
             gcmd.respond_info("ACE not connected")
             return
@@ -2841,7 +2843,8 @@ class ACEConnection:
         )
 
     def start_drying(self, temp_c, fan_speed_rpm, duration_min):
-        """Start a filament drying cycle."""
+        """Start a filament drying cycle (verified on the ACE Pro firmware).
+        NOTE: the firmware ignores fan_speed and runs the fan fixed at 7000."""
         return self.send_command(
             "drying",
             params={
@@ -2870,9 +2873,10 @@ class ACEConnection:
     # were removed; probe new methods with ACE_CMD before adding wrappers.
 
     def set_filament_info(self, slot_index, filament_type, color_rgb):
-        """Write filament type + colour to a slot (SetFilamentInfo). Verified on
-        the ACE Pro firmware — useful to tell the ACE what's loaded in a slot
-        that has no readable RFID tag (custom filament).
+        """Write filament type + colour to a slot (SetFilamentInfo). Accepted by
+        the ACE Pro firmware (code 0) but had no observable effect on an EMPTY
+        slot in testing (get_filament_info still read blank) — likely only takes
+        on a slot that has filament present. Not wired into any flow.
 
         :param color_rgb: [r, g, b] (0-255).
         """
