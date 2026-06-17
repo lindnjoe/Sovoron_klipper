@@ -110,13 +110,13 @@
             "remember_spool": false,
             "spool_id": 46,
             "color": "#89A84F",
-            "weight": 9.485704724743536,
+            "weight": 9.223583629988354,
             "extruder_temp": 210,
             "bed_temp": 65,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 250.0,
             "td1_data": {}
         }
@@ -192,24 +192,24 @@
             "buffer_status": "Neutral",
             "lane": 3,
             "map": "T6",
-            "load": true,
-            "prep": true,
-            "tool_loaded": false,
-            "loaded_to_hub": true,
+            "load": false,
+            "prep": false,
+            "tool_loaded": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 190,
             "remember_spool": false,
-            "spool_id": 64,
-            "color": "#e94b3c",
-            "weight": 916.2945907741642,
-            "extruder_temp": 210,
-            "bed_temp": 45,
+            "spool_id": 55,
+            "color": "#9cdbd9",
+            "weight": 833.4152157741586,
+            "extruder_temp": 230,
+            "bed_temp": null,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "Not Ready",
+            "filament_status_led": "#ff0000",
+            "status": "None",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -224,7 +224,7 @@
             "map": "T7",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -237,8 +237,8 @@
             "extruder_temp": 220,
             "bed_temp": 60,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
@@ -391,7 +391,7 @@
         }
     },
     "system": {
-        "current_load": "lane3",
+        "current_load": "lane6",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -409,7 +409,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane7"
+                "lane_loaded": "lane6"
             },
             "extruder5": {
                 "lane_loaded": "lane8"
