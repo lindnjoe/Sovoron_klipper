@@ -6,7 +6,7 @@
   "beta_features": true,
   "brightness": 80,
   "completion_alert": true,
-  "config_version": 17,
+  "config_version": 18,
   "dark_mode": true,
   "display": {
     "bed_mesh_render_mode": 0,
@@ -32,6 +32,7 @@
       "d": 0.0,
       "e": 1.0,
       "f": 0.0,
+      "recheck_pending": false,
       "valid": false
     },
     "jitter_threshold": 5,
@@ -41,6 +42,9 @@
   },
   "language": "en",
   "led": {
+    "auto_state": {
+      "enabled": null
+    },
     "selected_strips": null
   },
   "log_path": "/tmp/helixscreen.log",
@@ -168,7 +172,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-17T00:40:36Z"
+          "timestamp": "2026-06-18T16:13:25Z"
         },
         "optional": []
       },
@@ -177,6 +181,9 @@
         "hotend": "extruder"
       },
       "leds": {
+        "auto_state": {
+          "mappings": null
+        },
         "color_presets": [
           "#FFFFFF",
           "#FFD700",
