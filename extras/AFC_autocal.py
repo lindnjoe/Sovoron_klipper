@@ -565,6 +565,22 @@ class AFC_autocal:
             self._cal_pending.discard(name)
             if not getattr(lane, 'tool_loaded', False):
                 return  # lane was unloaded while we waited
+            # FLOW_CALIBRATE only measures the ACTIVE toolhead extruder — it does
+            # not pick up a tool. So only calibrate when this lane's tool is the
+            # one mounted (a genuine insert is auto-loaded onto the toolhead
+            # first, so it passes; a lane merely marked loaded via SET_LANE_LOADED
+            # on an off-shuttle tool would otherwise calibrate the wrong extruder).
+            if not self._lane_on_active_toolhead(lane):
+                try:
+                    active = self.printer.lookup_object(
+                        'toolhead').get_extruder().get_name()
+                except Exception:
+                    active = '?'
+                self.logger.info(
+                    "AFC autocal: %s calibration skipped — its tool is not on "
+                    "the toolhead (active extruder=%s); pick up/load this lane's "
+                    "tool to calibrate it" % (name, active))
+                return
             self.logger.info(
                 "AFC autocal: running flow calibration for %s" % name)
             self._calibrate(lane, runner=self.gcode.run_script)
