@@ -100,21 +100,7 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {
-        "external_spool": {
-          "assigned": true,
-          "bed_temp": 0,
-          "brand": "Bambu",
-          "color_rgb": 16777215,
-          "material": "PLA",
-          "nozzle_temp_max": 0,
-          "nozzle_temp_min": 0,
-          "remaining_weight_g": 836.8829956054688,
-          "spool_name": "Bambu PLA - PLA",
-          "spoolman_id": 78,
-          "total_weight_g": 1000.0
-        }
-      },
+      "filament": {},
       "filament_sensors": {
         "sensors": null
       },
@@ -186,7 +172,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-21T15:27:10Z"
+          "timestamp": "2026-06-21T16:26:47Z"
         },
         "optional": []
       },

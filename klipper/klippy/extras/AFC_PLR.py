@@ -49,11 +49,21 @@
 #   z_check_interval: 1.0            # Seconds between Z/layer checks; also how
 #                                    # often a save is evaluated (min 0.1). For
 #                                    # sub-1s checkpoints, lower this too.
+#   save_on_layer_change: True       # Also checkpoint exactly at each layer
+#                                    # change (wraps SET_PRINT_STATS_INFO) so a
+#                                    # save lands on the clean layer boundary in
+#                                    # addition to the periodic saves.
 #   resume_z_hop: 5.0                # mm to raise Z during resume
 #   pre_resume_purge_length: 30      # mm of filament to purge on resume
 #   pre_resume_purge_speed: 3        # mm/s purge extrusion speed
 #   resume_x_offset: 0.0             # mm X trim applied on every resume via
 #   resume_y_offset: 0.0             # mm Y trim — see "XY recovery offset"
+#   resume_qgl: False                # Safe quad gantry level on a Z-home
+#                                    # resume — see "Safe QGL on resume"
+#   resume_qgl_max_z: 20.0           # mm; only QGL if the saved print height
+#                                    # is at/below this (gantry must clear it)
+#   resume_qgl_clearance: 5.0        # mm added to the print Z for the height
+#                                    # the nozzle travels between QGL corners
 #   save_file: <auto>                # Path to state file (auto = printer_data
 #                                    # root, OUTSIDE the config dir so frequent
 #                                    # rewrites don't clutter Mainsail). A
@@ -72,6 +82,31 @@
 # offset from the old (in mm, per axis), set resume_x/y_offset to the negative
 # of that, and re-test. Independent of the Z trims (z_home_offset is the
 # corner-vs-center Z delta; these are the XY home-repeatability delta).
+# ── Safe QGL on resume (resume_qgl) ──────────────────────────────────
+#
+# A power loss can leave the gantry un-leveled (or you simply want to re-level
+# before resuming). A normal QUAD_GANTRY_LEVEL travels between probe points at
+# its horizontal_move_z (a few mm above the bed), which would plough straight
+# into the existing print. resume_qgl runs a gantry level that instead travels
+# ABOVE the part between corners:
+#
+#   * Only on the Z-home resume path (AFC_PLR_RESUME Z_HOME=1) — it needs a Z
+#     reference to probe, and that path establishes one first. A normal resume
+#     (trusting the saved Z) never triggers it.
+#   * Only when the saved print height <= resume_qgl_max_z. Taller than that and
+#     it's skipped (a notice is logged) because the gantry can't safely clear
+#     the print to traverse.
+#   * Between probe points the nozzle travels at (print Z + resume_qgl_clearance)
+#     — i.e. the height you're resuming at plus a few mm — so it stays above the
+#     part. The QGL corner points themselves must be clear of the print (they
+#     normally are: they sit at the gantry pivots near the bed corners).
+#   * After QGL tilts the gantry, Z is re-homed so the resume continues from a
+#     correct Z zero.
+#
+# Requires a working [quad_gantry_level] whose probe can be used by
+# QUAD_GANTRY_LEVEL (e.g. cartographer/eddy, BLTouch, inductive). Inert with a
+# notice if [quad_gantry_level] isn't configured.
+#
 # ── Exclude-object recovery ──────────────────────────────────────────
 #
 # exclude_object state (the per-object definitions plus which objects the
@@ -200,10 +235,26 @@ class AFCPLR:
         # max(save_interval, z_check_interval) — lower both for sub-1s saves.
         self.save_interval = config.getfloat('save_interval', 5.0, minval=0.1)
         self.z_check_interval = config.getfloat('z_check_interval', 1.0, minval=0.1)
+        # Also force a checkpoint exactly at each layer change. The slicer emits
+        # SET_PRINT_STATS_INFO CURRENT_LAYER=N at every layer, so wrapping it
+        # lands a save right on the layer boundary (cleanest file position to
+        # resume from) on top of the periodic time-based saves. No slicer setup
+        # needed; inert if [print_stats] / the command isn't present.
+        self.save_on_layer_change = config.getboolean('save_on_layer_change', True)
         self.resume_z_hop = config.getfloat('resume_z_hop', 5.0, minval=0.0)
         self.purge_length = config.getfloat('pre_resume_purge_length', 30.0, minval=0.0)
         self.purge_speed = config.getfloat('pre_resume_purge_speed', 3.0, minval=0.1)
         self.double_home = config.getboolean('double_home', False)
+        # Safe QGL on a Z-home resume. Off by default. When enabled it only
+        # fires on the 'Resume - Z Home' path (AFC_PLR_RESUME Z_HOME=1), and
+        # only when the saved print height is at/below resume_qgl_max_z so the
+        # gantry can traverse above the print. The inter-corner travel height is
+        # the resume print Z plus resume_qgl_clearance, so the nozzle clears the
+        # part by that margin while moving between probe points. Needs a working
+        # [quad_gantry_level]; inert (with a notice) if it isn't configured.
+        self.resume_qgl = config.getboolean('resume_qgl', False)
+        self.resume_qgl_max_z = config.getfloat('resume_qgl_max_z', 20.0, minval=0.0)
+        self.resume_qgl_clearance = config.getfloat('resume_qgl_clearance', 5.0, minval=0.0)
         # "Resume - Z Home" recovery: instead of trusting the saved Z
         # (SET_KINEMATIC_POSITION), physically re-home Z at a safe spot so we
         # never drive a fixed G28 Z into the existing print. Pick ONE backend:
@@ -303,6 +354,11 @@ class AFCPLR:
         self._last_save_time = 0.0
         self._timer = None
         self._has_saved_state = False
+        # Layer-change checkpoint hook (see save_on_layer_change). _last_layer
+        # dedupes repeated SET_PRINT_STATS_INFO calls; the orig handler is the
+        # builtin we wrap so print_stats still updates normally.
+        self._last_layer = None
+        self._orig_set_print_stats_info = None
         # Cache the serialized bed mesh — it's static during a print, so we
         # avoid re-reading 900+ probe points and rebuilding the dict on every
         # checkpoint. Keyed on the ZMesh object identity; refreshed only if the
@@ -455,6 +511,50 @@ class AFCPLR:
             self._idle_check_cb,
             self.reactor.monotonic() + 5.0)
 
+        if self.save_on_layer_change:
+            self._hook_layer_change()
+
+    def _hook_layer_change(self):
+        """Wrap SET_PRINT_STATS_INFO so a layer change forces a checkpoint.
+
+        Uses the same unregister/re-register pattern AFC uses to rename PAUSE:
+        register_command(name, None) returns the builtin handler, which we keep
+        and call so print_stats behaves normally, then take our checkpoint.
+        """
+        prev = self.gcode.register_command('SET_PRINT_STATS_INFO', None)
+        if prev is None:
+            # print_stats not loaded — fall back to the timer's Z/layer saves.
+            self.logger.info(
+                "SET_PRINT_STATS_INFO not found; layer-change saves disabled "
+                "(periodic + Z-change saves still active)")
+            return
+        self._orig_set_print_stats_info = prev
+        self.gcode.register_command(
+            'SET_PRINT_STATS_INFO', self._cmd_SET_PRINT_STATS_INFO,
+            desc="print_stats info (wrapped by AFC_PLR for layer-change saves)")
+
+    def _cmd_SET_PRINT_STATS_INFO(self, gcmd):
+        # Run the builtin first so print_stats' current_layer is up to date.
+        self._orig_set_print_stats_info(gcmd)
+        # Then checkpoint on a real layer change, but never let a save error
+        # break the print's layer-change command.
+        try:
+            if (not self.save_on_layer_change
+                    or self._last_save_time == 0     # not actively tracking
+                    or not self._is_printing()):
+                return
+            cur = gcmd.get_int('CURRENT_LAYER', None)
+            if cur is None or cur == self._last_layer:
+                return
+            self._last_layer = cur
+            # We're on a new layer: anchor layer_z to the live height and save
+            # at the boundary. Reset the periodic clock so we don't double-save.
+            self.layer_z = self._get_current_z()
+            self._save_state()
+            self._last_save_time = self.reactor.monotonic()
+        except Exception as e:
+            self.logger.error("Layer-change save failed: %s" % e)
+
     def _idle_check_cb(self, eventtime):
         if self._is_printing() and self._last_save_time == 0:
             self._start_tracking()
@@ -578,6 +678,7 @@ class AFCPLR:
         self.layer_z = self._get_current_z()
         self._pending_layer_z = None
         self._z_up_ticks = 0
+        self._last_layer = None         # re-arm layer-change saves for this print
         self._mesh_cache_obj = None     # re-capture the mesh for the new print
         self._mesh_cache_data = None
         self._exclude_names_cache = None  # re-capture exclude objects too
@@ -982,6 +1083,50 @@ class AFCPLR:
 
     # ── Resume ──────────────────────────────────────────────────────
 
+    def _maybe_resume_qgl(self, gcmd, state):
+        """Safe quad gantry level for a Z-home resume.
+
+        Runs only when resume_qgl is enabled and the saved print height is at or
+        below resume_qgl_max_z (so the gantry can clear the part). Probes the
+        normal QGL corners but raises Z between points to (print_z + clearance)
+        so the nozzle travels above the existing print. Returns True if QGL ran
+        (so the caller can re-home Z afterwards), False if it was skipped.
+        """
+        if not self.resume_qgl:
+            return False
+        qgl = self.printer.lookup_object('quad_gantry_level', None)
+        if qgl is None:
+            gcmd.respond_info(
+                "AFC_PLR: resume_qgl is enabled but [quad_gantry_level] is not "
+                "configured — skipping QGL")
+            return False
+        layer_z = state.get('layer_z', self.layer_z) or 0.0
+        if layer_z > self.resume_qgl_max_z:
+            gcmd.respond_info(
+                "AFC_PLR: skipping resume QGL — print height %.2f mm is above "
+                "resume_qgl_max_z %.2f mm (gantry can't safely clear the print)"
+                % (layer_z, self.resume_qgl_max_z))
+            return False
+        travel_z = layer_z + self.resume_qgl_clearance
+        gcmd.respond_info(
+            "AFC_PLR: safe QGL — probing corners, travelling at Z=%.2f mm "
+            "(print %.2f + %.2f clearance)"
+            % (travel_z, layer_z, self.resume_qgl_clearance))
+        # Force the inter-point travel height up to travel_z. Set it on the
+        # probe helper (works on every Klipper/Kalico version) AND pass the
+        # HORIZONTAL_MOVE_Z param (stock); restore the original after.
+        ph = getattr(qgl, 'probe_helper', None)
+        orig_hmz = getattr(ph, 'horizontal_move_z', None) if ph is not None else None
+        try:
+            if orig_hmz is not None:
+                ph.horizontal_move_z = travel_z
+            self.gcode.run_script_from_command(
+                "QUAD_GANTRY_LEVEL HORIZONTAL_MOVE_Z=%.2f" % travel_z)
+        finally:
+            if orig_hmz is not None:
+                ph.horizontal_move_z = orig_hmz
+        return True
+
     def _run_z_home(self, gcmd):
         # Re-establish a true Z at the safe spot. Custom macro wins if set;
         # otherwise flag z_home_active and run a plain G28 Z, which the
@@ -1179,6 +1324,12 @@ class AFCPLR:
             # Physically re-home Z at the safe corner (not over the print),
             # recovering a true Z zero instead of trusting the saved value.
             self._run_z_home(gcmd)
+            # 4a2. Optional safe QGL: level the gantry by probing the corners,
+            # travelling above the print between points. Only on this Z-home
+            # path. The first Z-home above gives the probe a Z reference; QGL
+            # then tilts the gantry, so re-home Z afterwards to re-anchor it.
+            if self._maybe_resume_qgl(gcmd, state):
+                self._run_z_home(gcmd)
             # 4b. Re-apply the active tool's saved Z offset (the touch homes a
             # shared reference; this corrects for the specific tool mounted),
             # mirroring _ADJUST_Z_POSITION_WITH_TOOL_OFFSET but using the saved
