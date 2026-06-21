@@ -49,6 +49,10 @@
 #   z_check_interval: 1.0            # Seconds between Z/layer checks; also how
 #                                    # often a save is evaluated (min 0.1). For
 #                                    # sub-1s checkpoints, lower this too.
+#   save_on_layer_change: True       # Also checkpoint exactly at each layer
+#                                    # change (wraps SET_PRINT_STATS_INFO) so a
+#                                    # save lands on the clean layer boundary in
+#                                    # addition to the periodic saves.
 #   resume_z_hop: 5.0                # mm to raise Z during resume
 #   pre_resume_purge_length: 30      # mm of filament to purge on resume
 #   pre_resume_purge_speed: 3        # mm/s purge extrusion speed
@@ -200,6 +204,12 @@ class AFCPLR:
         # max(save_interval, z_check_interval) — lower both for sub-1s saves.
         self.save_interval = config.getfloat('save_interval', 5.0, minval=0.1)
         self.z_check_interval = config.getfloat('z_check_interval', 1.0, minval=0.1)
+        # Also force a checkpoint exactly at each layer change. The slicer emits
+        # SET_PRINT_STATS_INFO CURRENT_LAYER=N at every layer, so wrapping it
+        # lands a save right on the layer boundary (cleanest file position to
+        # resume from) on top of the periodic time-based saves. No slicer setup
+        # needed; inert if [print_stats] / the command isn't present.
+        self.save_on_layer_change = config.getboolean('save_on_layer_change', True)
         self.resume_z_hop = config.getfloat('resume_z_hop', 5.0, minval=0.0)
         self.purge_length = config.getfloat('pre_resume_purge_length', 30.0, minval=0.0)
         self.purge_speed = config.getfloat('pre_resume_purge_speed', 3.0, minval=0.1)
@@ -303,6 +313,11 @@ class AFCPLR:
         self._last_save_time = 0.0
         self._timer = None
         self._has_saved_state = False
+        # Layer-change checkpoint hook (see save_on_layer_change). _last_layer
+        # dedupes repeated SET_PRINT_STATS_INFO calls; the orig handler is the
+        # builtin we wrap so print_stats still updates normally.
+        self._last_layer = None
+        self._orig_set_print_stats_info = None
         # Cache the serialized bed mesh — it's static during a print, so we
         # avoid re-reading 900+ probe points and rebuilding the dict on every
         # checkpoint. Keyed on the ZMesh object identity; refreshed only if the
@@ -455,6 +470,50 @@ class AFCPLR:
             self._idle_check_cb,
             self.reactor.monotonic() + 5.0)
 
+        if self.save_on_layer_change:
+            self._hook_layer_change()
+
+    def _hook_layer_change(self):
+        """Wrap SET_PRINT_STATS_INFO so a layer change forces a checkpoint.
+
+        Uses the same unregister/re-register pattern AFC uses to rename PAUSE:
+        register_command(name, None) returns the builtin handler, which we keep
+        and call so print_stats behaves normally, then take our checkpoint.
+        """
+        prev = self.gcode.register_command('SET_PRINT_STATS_INFO', None)
+        if prev is None:
+            # print_stats not loaded — fall back to the timer's Z/layer saves.
+            self.logger.info(
+                "SET_PRINT_STATS_INFO not found; layer-change saves disabled "
+                "(periodic + Z-change saves still active)")
+            return
+        self._orig_set_print_stats_info = prev
+        self.gcode.register_command(
+            'SET_PRINT_STATS_INFO', self._cmd_SET_PRINT_STATS_INFO,
+            desc="print_stats info (wrapped by AFC_PLR for layer-change saves)")
+
+    def _cmd_SET_PRINT_STATS_INFO(self, gcmd):
+        # Run the builtin first so print_stats' current_layer is up to date.
+        self._orig_set_print_stats_info(gcmd)
+        # Then checkpoint on a real layer change, but never let a save error
+        # break the print's layer-change command.
+        try:
+            if (not self.save_on_layer_change
+                    or self._last_save_time == 0     # not actively tracking
+                    or not self._is_printing()):
+                return
+            cur = gcmd.get_int('CURRENT_LAYER', None)
+            if cur is None or cur == self._last_layer:
+                return
+            self._last_layer = cur
+            # We're on a new layer: anchor layer_z to the live height and save
+            # at the boundary. Reset the periodic clock so we don't double-save.
+            self.layer_z = self._get_current_z()
+            self._save_state()
+            self._last_save_time = self.reactor.monotonic()
+        except Exception as e:
+            self.logger.error("Layer-change save failed: %s" % e)
+
     def _idle_check_cb(self, eventtime):
         if self._is_printing() and self._last_save_time == 0:
             self._start_tracking()
@@ -578,6 +637,7 @@ class AFCPLR:
         self.layer_z = self._get_current_z()
         self._pending_layer_z = None
         self._z_up_ticks = 0
+        self._last_layer = None         # re-arm layer-change saves for this print
         self._mesh_cache_obj = None     # re-capture the mesh for the new print
         self._mesh_cache_data = None
         self._exclude_names_cache = None  # re-capture exclude objects too
