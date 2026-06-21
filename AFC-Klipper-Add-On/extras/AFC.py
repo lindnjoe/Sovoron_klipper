@@ -124,6 +124,10 @@ class afc:
         self.change_tool_pos = None
         self.in_toolchange = False
         self._unload_tool_parked = False
+        # True once park_pre_load_cmd has docked the tool for an in-progress
+        # load. Drives recover_docked_tool() so a failed load picks the tool
+        # back up BEFORE pausing instead of pausing while docked.
+        self._tool_docked_pre_load = False
         self.tool_start = None
 
         # Save/resume pos variables
@@ -1416,15 +1420,12 @@ class afc:
                     success = self.load_sequence(cur_lane, cur_hub, cur_extruder)
                     if not success:
                         # park_pre_load_cmd may have docked the tool before this
-                        # failed load (dock-purge setups). Run the recovery macro
-                        # to pick it back up so the toolchanger isn't left with
-                        # the tool stranded in its dock, which is hard to recover.
-                        if self.park_pre_load and self.park_pre_load_error_cmd is not None:
-                            try:
-                                self.gcode.run_script_from_command(self.park_pre_load_error_cmd)
-                            except Exception as e:
-                                self.logger.error(
-                                    "park_pre_load_error_cmd failed: {}".format(e))
+                        # failed load (dock-purge setups). Pick it back up so the
+                        # toolchanger isn't left with the tool stranded in its
+                        # dock. This is a no-op if the pause path already ran the
+                        # recovery (it clears the flag), and covers failures that
+                        # returned without pausing (e.g. homing errors).
+                        self.recover_docked_tool()
                         return success
 
                     # Activate the tool-loaded LED and handle filament operations if enabled.
@@ -1497,6 +1498,38 @@ class afc:
                     return False
         return True
 
+    def recover_docked_tool(self):
+        """
+        Pick a docked tool back up after a load/unload failure, BEFORE the print
+        is paused. For dock-purge toolchangers the tool is sitting in its dock
+        when a mid-load (park_pre_load) or mid-unload (park) failure occurs. If
+        PAUSE runs while the tool is still docked, the subsequent park/home moves
+        go out of range and the machine needs a restart. Running the user's pickup
+        macro first leaves the tool back on the shuttle so the pause is recoverable.
+
+        Idempotent: each side's recovery macro runs at most once per cycle (the
+        flag is cleared before the macro runs), so it is safe to call this from
+        both the pause path and the load/unload wrappers.
+        """
+        if self._tool_docked_pre_load and self.park_pre_load_error_cmd is not None:
+            self._tool_docked_pre_load = False
+            self.logger.error(
+                "Load failed with tool docked — running park_pre_load_error_cmd "
+                "to recover the tool before pausing")
+            try:
+                self.gcode.run_script_from_command(self.park_pre_load_error_cmd)
+            except Exception as e:
+                self.logger.error("park_pre_load_error_cmd failed: {}".format(e))
+        if self._unload_tool_parked and self.park_error_cmd is not None:
+            self._unload_tool_parked = False
+            self.logger.error(
+                "Unload failed with tool docked — running park_error_cmd "
+                "to recover the tool before pausing")
+            try:
+                self.gcode.run_script_from_command(self.park_error_cmd)
+            except Exception as e:
+                self.logger.error("park_error_cmd failed: {}".format(e))
+
     def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
         This function controls the loading sequence. The filament transport is
@@ -1507,8 +1540,14 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
+        # Clear any stale dock flag before this attempt; set it only once
+        # park_pre_load_cmd has actually docked the tool, so recover_docked_tool()
+        # can't try to pick up a tool that's still on the shuttle.
+        self._tool_docked_pre_load = False
         if self.park_pre_load:
             self.gcode.run_script_from_command(self.park_pre_load_cmd)
+            if self.park_pre_load_error_cmd is not None:
+                self._tool_docked_pre_load = True
 
         # Clear stale error state so retries aren't blocked by a prior failure
         if self.error_state:
@@ -1749,6 +1788,10 @@ class afc:
         cur_lane.enable_buffer(disable_fault=True)
         self.save_vars()
 
+        # Load succeeded; the normal toolchange flow owns the tool from here, so
+        # don't let a later unrelated pause trigger a spurious dock pickup.
+        self._tool_docked_pre_load = False
+
         return True
 
     cmd_TOOL_UNLOAD_help = "Unload from tool head"
@@ -1890,17 +1933,18 @@ class afc:
                 success = self.unload_sequence(cur_lane, cur_hub, cur_extruder)
                 if not success:
                     # If park_cmd docked the tool before this failed unload
-                    # (dock setups), run the recovery macro to pick it back up
-                    # so the tool isn't stranded in its dock.
-                    if self._unload_tool_parked and self.park_error_cmd is not None:
-                        try:
-                            self.gcode.run_script_from_command(self.park_error_cmd)
-                        except Exception as e:
-                            self.logger.error(
-                                "park_error_cmd failed: {}".format(e))
+                    # (dock setups), pick it back up so the tool isn't stranded
+                    # in its dock. No-op if the pause path already recovered it
+                    # (the flag is cleared); covers non-pausing failures too.
+                    self.recover_docked_tool()
                     return success
             finally:
                 self.restore_toolhead_temp(temp_state)
+
+            # Unload succeeded. A dock unload legitimately leaves the tool docked,
+            # so clear the recovery flag now — otherwise a later unrelated pause
+            # would wrongly pick the tool back up.
+            self._unload_tool_parked = False
 
             if cur_extruder.filament_sensor_obj is not None:
                 cur_extruder.filament_sensor_obj.runout_helper.note_filament_present(False)
