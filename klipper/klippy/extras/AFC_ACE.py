@@ -6,6 +6,11 @@
 
 """AFC unit driver for Anycubic ACE PRO filament changers."""
 
+# Stuck spool detection (see _check_stuck) is our own implementation of an idea
+# from the Kobra-S1/ACEPRO project: watch the ACE firmware's continuous
+# feed-assist run time instead of an encoder to spot a jam.
+#   https://github.com/Kobra-S1/ACEPRO
+
 from __future__ import annotations
 
 import collections
@@ -122,6 +127,15 @@ class afcACE(afcUnit):
         # active tool actually has its feed assist running, in case a pickup /
         # tool-change event didn't enable it.
         self._assist_watchdog = config.getboolean("assist_watchdog", True)
+        # Stuck-spool detection. A normal buffer refill makes the ACE feed-assist
+        # pump run for a fraction of a second; a jammed or tangled spool makes it
+        # run continuously. The firmware reports that continuous run time as
+        # cont_assist_time, so if it climbs past stuck_time while we're printing
+        # we treat the spool as stuck and pause. Encoder-independent and
+        # material-agnostic. Off by default (opt-in).
+        self._stuck_detection = config.getboolean("stuck_spool_detection", False)
+        self._stuck_time = config.getfloat(
+            "stuck_time", 4.0, minval=2.0)
         self.extruder_assist_length = config.getfloat("extruder_assist_length", 50.0)
         self.extruder_assist_speed = config.getfloat("extruder_assist_speed", 300.0)
         self.sensor_approach_margin = config.getfloat("sensor_approach_margin", 30.0)
@@ -139,6 +153,8 @@ class afcACE(afcUnit):
         self._ace: Optional[ACEConnection] = None
         self._slot_map: dict[str, int] = {}
         self._feed_assist_active: set[int] = set()
+        # One-shot latch so a sustained jam pauses once, not every heartbeat.
+        self._stuck_tripped = False
         self._slot_inventory: list[dict] = [{} for _ in range(self.SLOTS_PER_UNIT)]
         self._operation_active = False
         self._cached_hw_status = {}
@@ -180,6 +196,9 @@ class afcACE(afcUnit):
         self.gcode.register_command(
             f'ACE_FEED_TEST_{unit_suffix}', self.cmd_ACE_FEED_TEST,
             desc=f"Sweep feed speed to test whether it changes feed rate ({self.name})")
+        self.gcode.register_command(
+            f'ACE_STUCK_SPOOL_DETECTION_{unit_suffix}', self.cmd_ACE_STUCK_SPOOL_DETECTION,
+            desc=f"Enable/disable ACE stuck spool detection ({self.name})")
         # Register base commands (first unit wins for single-unit setups)
         for cmd, handler, desc in [
             ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
@@ -190,6 +209,7 @@ class afcACE(afcUnit):
             ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
             ('ACE_CMD', self.cmd_ACE_CMD, "Send a raw ACE protocol command and print the reply"),
             ('ACE_FEED_TEST', self.cmd_ACE_FEED_TEST, "Sweep feed speed to test whether it changes feed rate"),
+            ('ACE_STUCK_SPOOL_DETECTION', self.cmd_ACE_STUCK_SPOOL_DETECTION, "Enable/disable ACE stuck spool detection"),
         ]:
             try:
                 self.gcode.register_command(cmd, handler, desc=desc)
@@ -379,6 +399,7 @@ class afcACE(afcUnit):
             return
         self._sync_slot_states(result)
         self._maybe_assist_watchdog()
+        self._check_stuck(result)
 
     def _is_virtual_hub(self, lane) -> bool:
         hub = lane.hub_obj
@@ -1716,6 +1737,89 @@ class afcACE(afcUnit):
                 % (name, slot))
             self.afc.reactor.register_callback(
                 lambda et, n=name: self._reconcile_feed_assist(n))
+
+    def _check_stuck(self, result):
+        """Spot a stuck/tangled spool from the ACE's continuous assist time.
+
+        The firmware reports cont_assist_time — how long the feed-assist pump
+        has been running without stopping. A healthy buffer refill is a brief
+        blip; a jam keeps the pump running. If that time climbs past stuck_time
+        while we're printing with assist on, the spool is stuck: stop driving
+        the jam and pause. Runs only on idle heartbeats (the caller skips it
+        during load/unload, where long feeds are normal).
+        """
+        if not self._stuck_detection:
+            return
+        # Only meaningful during a real print with assist actually running.
+        # Outside those conditions, clear the latch so it re-arms cleanly.
+        if (not self.afc.function.in_print()
+                or self.afc.function.is_paused()
+                or not self._feed_assist_active):
+            self._stuck_tripped = False
+            return
+        cont = result.get("cont_assist_time")
+        if cont is None:
+            return
+        try:
+            cont = float(cont)
+        except (TypeError, ValueError):
+            return
+        if cont < self._stuck_time:
+            # Pump cycled normally — the previous jam (if any) cleared.
+            self._stuck_tripped = False
+            return
+        if self._stuck_tripped:
+            return  # already handled this jam; don't re-pause every heartbeat
+        self._stuck_tripped = True
+        # Defer the pause off the serial/heartbeat path onto the reactor.
+        self.afc.reactor.register_callback(
+            lambda et, c=cont: self._handle_stuck(c))
+
+    def _handle_stuck(self, cont_time):
+        name = self._active_assist_lane()
+        slot = self._slot_map.get(name) if name else None
+        # Stop driving the pump into the blockage before we pause.
+        if slot is not None:
+            try:
+                self._stop_feed_assist(slot)
+            except Exception:
+                pass
+        msg = (
+            "ACE stuck spool detected on {unit}{lane}: feed assist ran "
+            "continuously for {t:.1f}s (>= {thr:.1f}s threshold). The spool is "
+            "likely tangled or jammed at the unit. Clear the snag, then resume. "
+            "Run ACE_STUCK_SPOOL_DETECTION ENABLE=0 to disable this check.".format(
+                unit=self.name,
+                lane=" lane {}".format(name) if name else "",
+                t=cont_time, thr=self._stuck_time))
+        try:
+            # Route through AFC so it snapshots position and uses the AFC
+            # pause/resume path (z-hop, restore on AFC_RESUME).
+            self.afc.error.AFC_error(msg, pause=True)
+        except Exception:
+            self.logger.error(msg)
+            self.gcode.run_script_from_command("PAUSE")
+
+    cmd_ACE_STUCK_SPOOL_DETECTION_help = "Enable/disable ACE stuck spool detection"
+    def cmd_ACE_STUCK_SPOOL_DETECTION(self, gcmd):
+        """Toggle stuck spool detection or adjust its threshold at runtime.
+
+        Usage
+        -----
+        `ACE_STUCK_SPOOL_DETECTION [ENABLE=0|1] [STUCK_TIME=<seconds>]`
+        """
+        enable = gcmd.get_int('ENABLE', None, minval=0, maxval=1)
+        if enable is not None:
+            self._stuck_detection = bool(enable)
+            if not self._stuck_detection:
+                self._stuck_tripped = False
+        stuck_time = gcmd.get_float('STUCK_TIME', None, minval=2.0)
+        if stuck_time is not None:
+            self._stuck_time = stuck_time
+        self.logger.info(
+            "ACE stuck spool detection {state}: stuck_time={t:.1f}s".format(
+                state="ON" if self._stuck_detection else "OFF",
+                t=self._stuck_time))
 
     def _handle_extruder_activated(self):
         # A tool pickup (e.g. grabbing the probe tool during print start)
