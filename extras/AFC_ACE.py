@@ -202,7 +202,7 @@ class afcACE(afcUnit):
         # tool-change event didn't enable it.
         self._assist_watchdog = config.getboolean("assist_watchdog", True)
         # Stuck-spool detection. A normal buffer refill makes the ACE feed-assist
-        # pump run for a fraction of a second; a jammed or tangled spool makes it
+        # feed for a fraction of a second; a jammed or tangled spool makes it
         # run continuously. The firmware reports that continuous run time as
         # cont_assist_time, so if it climbs past stuck_time while we're printing
         # we treat the spool as stuck and pause. Encoder-independent and
@@ -1926,9 +1926,9 @@ class afcACE(afcUnit):
     def _check_stuck(self, result):
         """Spot a stuck/tangled spool from the ACE's continuous assist time.
 
-        The firmware reports cont_assist_time — how long the feed-assist pump
-        has been running without stopping. A healthy buffer refill is a brief
-        blip; a jam keeps the pump running. If that time climbs past stuck_time
+        The firmware reports cont_assist_time — how long the feed-assist has
+        been running without stopping. A healthy buffer refill is a brief
+        blip; a jam keeps the feed running. If that time climbs past stuck_time
         while we're printing with assist on, the spool is stuck: stop driving
         the jam and pause. Runs only on idle heartbeats (the caller skips it
         during load/unload, where long feeds are normal).
@@ -1963,7 +1963,7 @@ class afcACE(afcUnit):
     def _handle_stuck(self, cont_time):
         name = self._active_assist_lane()
         slot = self._slot_map.get(name) if name else None
-        # Stop driving the pump into the blockage before we pause.
+        # Stop driving the feed into the blockage before we pause.
         if slot is not None:
             try:
                 self._stop_feed_assist(slot)
