@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from extras.AFC_Toolchanger import AfcToolchanger
     from extras.AFC_functions import afcFunction
     from extras.AFC_utils import AFC_moonraker
+    from extras.AFC_lane import AFCLane
 
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
@@ -1072,6 +1073,24 @@ class AFCExtruder:
             are attached.
         """
         return self.no_lanes
+
+    def prep_on_shuttle_check(self, lane: AFCLane) -> str:
+        """
+        PREP-only helper: report whether this extruder's loaded lane is in the
+        toolhead (and, for toolchangers, whether the tool is on the shuttle) and
+        set the toolhead LEDs to match. Assumes this extruder's lane_loaded
+        already matches the given lane's name.
+
+        :param lane: AFCLane for this extruder, used to drive its unit's LEDs
+        :return str: status message fragment for the PREP report
+        """
+        on_shuttle = ""
+        if self.tool_obj and self.tc_unit_name:
+            lane.unit_obj.lane_tool_loaded_idle(lane)
+            if self.on_shuttle():
+                on_shuttle = " and toolhead on shuttle"
+                lane.unit_obj.lane_tool_loaded(lane)
+        return f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
 
     def on_shuttle(self):
         """
