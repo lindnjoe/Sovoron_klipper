@@ -216,21 +216,56 @@ class AFC_U1_RFID:
 
         Tries the AFC lane registry first (lane name). For individual-extruder
         tool setups the name is often the *extruder* name, so fall back to the
-        single lane driving that extruder. Returns None if it can't be resolved
-        unambiguously.
+        single lane driving that extruder — matching either the AFC_extruder
+        section name (extruder_obj.name) or the toolhead extruder name
+        (extruder_obj.th_extruder_name, added upstream in v1.1.22). Returns None
+        if it can't be resolved unambiguously, logging what IS available so a
+        config mismatch is obvious.
         """
         lane = self.afc.lanes.get(name)
         if lane is not None:
             return lane
-        matches = [l for l in self.afc.lanes.values()
-                   if getattr(getattr(l, 'extruder_obj', None), 'name', None)
-                   == name]
+
+        def _ext_names(l):
+            e = getattr(l, 'extruder_obj', None)
+            return {getattr(e, 'name', None),
+                    getattr(e, 'th_extruder_name', None)}
+
+        matches = [l for l in self.afc.lanes.values() if name in _ext_names(l)]
+        # Also consult the extruder registry directly, in case a lane's
+        # extruder_obj linkage isn't reflected in the scan above.
+        if not matches:
+            tools = getattr(self.afc, 'tools', {}) or {}
+            ext = tools.get(name)
+            if ext is None:
+                for e in tools.values():
+                    if name in {getattr(e, 'name', None),
+                                getattr(e, 'th_extruder_name', None)}:
+                        ext = e
+                        break
+            if ext is not None:
+                matches = list(getattr(ext, 'lanes', {}).values())
+
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
             self.logger.warning(
                 f"U1 RFID: '{name}' matches {len(matches)} lanes on that "
                 f"extruder — use the specific lane name instead")
+            return None
+
+        # Nothing matched — surface what's registered so the user can correct
+        # the config. (Upstream v1.1.22 made standalone lanes opt-in via
+        # 'standalone: True' instead of inferring from the lane name, so a
+        # standalone toolhead lane that's missing the flag may not be here.)
+        avail_lanes = sorted(self.afc.lanes.keys())
+        avail_ext = sorted(
+            {n for l in self.afc.lanes.values() for n in _ext_names(l) if n})
+        self.logger.warning(
+            f"U1 RFID: '{name}' resolved to no lanes. Available lanes="
+            f"{avail_lanes}; extruders={avail_ext}. If '{name}' is a standalone "
+            f"toolhead, ensure its [AFC_stepper] has 'standalone: True' and the "
+            f"[AFC_extruder {name}] section exists.")
         return None
 
     def register_lane(self, lane: AFCLane, channel: int):
