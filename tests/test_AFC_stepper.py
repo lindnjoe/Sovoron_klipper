@@ -16,12 +16,12 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 import pytest
 
-from extras.AFC_stepper import AFCExtruderStepper
+from extras.AFC_stepper import AFCExtruderStepper, TrapqAppendWrapper
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_stepper(name="lane1"):
+def _make_stepper(name="lane1", extruder_name="extruder"):
     """Build an AFCExtruderStepper bypassing the complex __init__."""
     stepper = AFCExtruderStepper.__new__(AFCExtruderStepper)
 
@@ -38,6 +38,9 @@ def _make_stepper(name="lane1"):
     stepper.fullname = name
     stepper.next_cmd_time = 0.0
     stepper._manual_axis_pos = 0.0
+    stepper.extruder_obj = MagicMock()
+    stepper.extruder_obj.th_extruder_name = stepper.extruder_obj.name = extruder_name
+    stepper.afc_extruder_name = extruder_name
 
     # Extruder stepper mock
     stepper.extruder_stepper = MagicMock()
@@ -284,32 +287,28 @@ class TestGetLastMoveTime:
 
 class TestSyncUnsync:
     def test_sync_calls_extruder_stepper_sync(self):
-        s = _make_stepper()
-        s.extruder_name = "extruder"
+        s = _make_stepper(extruder_name="extruder")
         s._set_current = MagicMock()
         s.set_print_current = MagicMock()
         s.sync_to_extruder(update_current=False)
         s.extruder_stepper.sync_to_extruder.assert_called_once_with("extruder")
 
     def test_sync_calls_set_print_current_when_update_current(self):
-        s = _make_stepper()
-        s.extruder_name = "extruder"
+        s = _make_stepper(extruder_name="extruder")
         s.set_print_current = MagicMock()
         s.sync_to_extruder(update_current=True)
         s.set_print_current.assert_called_once()
 
     def test_sync_skips_set_print_current_when_update_current_false(self):
-        s = _make_stepper()
-        s.extruder_name = "extruder"
+        s = _make_stepper(extruder_name="extruder")
         s.set_print_current = MagicMock()
         s.sync_to_extruder(update_current=False)
         s.set_print_current.assert_not_called()
 
     def test_sync_uses_override_extruder_name(self):
-        s = _make_stepper()
-        s.extruder_name = "extruder"
+        s = _make_stepper(extruder_name="extruder")
         s.set_print_current = MagicMock()
-        s.sync_to_extruder(update_current=False, extruder_name="extruder2")
+        s.sync_to_extruder(update_current=False, th_extruder_name="extruder2")
         s.extruder_stepper.sync_to_extruder.assert_called_once_with("extruder2")
 
     def test_unsync_calls_sync_with_none(self):
@@ -329,3 +328,93 @@ class TestSyncUnsync:
         s.set_load_current = MagicMock()
         s.unsync_to_extruder(update_current=False)
         s.set_load_current.assert_not_called()
+
+# ── TrapqAppendWrapper  ───────────────────────────────────────────────────
+ 
+import sys
+from types import ModuleType
+from unittest.mock import MagicMock, patch
+
+# chelper is imported at the top level of AFC_stepper.py, so it must exist
+# in sys.modules before we import the module, otherwise the import fails.
+_chelper_stub = ModuleType("chelper")
+_chelper_stub.get_ffi = MagicMock()
+sys.modules.setdefault("chelper", _chelper_stub)
+
+def _make_chelper_mock(num_args: int):
+    sig_mock = MagicMock()
+    sig_mock.args = [MagicMock()] * num_args
+
+    ffi_main = MagicMock()
+    ffi_main.typeof.return_value = sig_mock
+
+    ffi_lib = MagicMock()
+
+    chelper_mod = ModuleType("chelper")
+    chelper_mod.get_ffi = MagicMock(return_value=(ffi_main, ffi_lib))
+
+    return chelper_mod, ffi_main, ffi_lib
+
+
+def _make_wrapper(num_args: int):
+    chelper_mock, ffi_main, ffi_lib = _make_chelper_mock(num_args)
+    with patch("extras.AFC_stepper.chelper", chelper_mock):
+        obj = TrapqAppendWrapper()
+    return obj, chelper_mock, ffi_main, ffi_lib
+
+
+class TestSnapmakerTrapqAppendSig:
+
+    def test_get_ffi_is_called(self):
+        """chelper.get_ffi() must be called exactly once during construction."""
+        _, chelper_mod, _, _ = _make_wrapper(num_args=10)
+        chelper_mod.get_ffi.assert_called_once()
+
+    def test_typeof_called_with_trapq_append(self):
+        """ffi_main.typeof() must receive ffi_lib.trapq_append as its argument."""
+        _, _, ffi_main, ffi_lib = _make_wrapper(num_args=10)
+        ffi_main.typeof.assert_called_once_with(ffi_lib.trapq_append)
+
+    def test_false_when_args_less_than_snapmaker(self):
+        """14 args (one fewer than Snapmaker) must yield False."""
+        obj, *_ = _make_wrapper(num_args=14)
+        assert obj.snapmaker_trapq_append_sig is False
+
+    def test_false_when_args_greater_than_snapmaker(self):
+        """16 args (one more than Snapmaker) must yield False."""
+        obj, *_ = _make_wrapper(num_args=16)
+        assert obj.snapmaker_trapq_append_sig is False
+
+    def test_false_when_zero_args(self):
+        """Edge case: zero args must yield False."""
+        obj, *_ = _make_wrapper(num_args=0)
+        assert obj.snapmaker_trapq_append_sig is False
+
+    def test_true_when_exactly_snapmaker_len(self):
+        """Exactly 15 args must yield True."""
+        obj, *_ = _make_wrapper(num_args=15)
+        assert obj.snapmaker_trapq_append_sig is True
+
+
+class TestTrapqAppend:
+
+    def test_no_padding_on_standard_signature(self):
+        """Standard signature: args tuple must be passed through unchanged."""
+        obj, *_ = _make_wrapper(num_args=14)
+        fn = MagicMock()
+        obj.trapq_append(fn, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
+        fn.assert_called_once_with(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
+
+    def test_padding_added_on_snapmaker_signature(self):
+        """Snapmaker signature: a trailing 0 must be appended to args."""
+        obj, *_ = _make_wrapper(num_args=15)
+        fn = MagicMock()
+        obj.trapq_append(fn, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
+        fn.assert_called_once_with(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0)
+
+    def test_fn_called_exactly_once(self):
+        """trapq_append_fn must be called exactly once per invocation."""
+        obj, *_ = _make_wrapper(num_args=14)
+        fn = MagicMock()
+        obj.trapq_append(fn, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
+        assert fn.call_count == 1

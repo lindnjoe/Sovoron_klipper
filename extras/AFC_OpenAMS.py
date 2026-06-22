@@ -559,8 +559,9 @@ class afcAMS(afcUnit):
         except Exception:
             pass
 
-        # Defer hardware resolution until reactor is running
-        self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        # klippy:ready is registered by afcUnit.__init__ (upstream core) and
+        # dispatches to our handle_ready override below — don't register it
+        # again here or it would run twice (double poll timer / monitor init).
 
     def handle_connect(self):
         super().handle_connect()
@@ -635,6 +636,12 @@ class afcAMS(afcUnit):
 
     def handle_ready(self):
         """Resolve OAMS hardware and start sensor polling once reactor is running."""
+        # Let the upstream afcUnit ready handler run first (natural-orders the
+        # lanes for the Mainsail/Fluidd panels).
+        try:
+            super().handle_ready()
+        except Exception as e:
+            self.logger.debug(f"afcUnit.handle_ready: {e}")
         self.oams = self.printer.lookup_object(f"oams {self.oams_name}", None)
 
         if self.oams is None:

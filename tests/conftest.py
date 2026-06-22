@@ -192,6 +192,29 @@ def _make_force_move_mock():
 def _make_klippy_ready_mock():
     mod = types.ModuleType("klippy")
     mod.message_ready = "Printer is ready"
+    
+    class Printer:
+        pass
+    mod.Printer = Printer
+    return mod
+
+def _make_print_task_config():
+    config = {
+        "filament_vendor": ["NONE"] * 4,
+        "filament_type": ["NONE"] * 4,
+        "filament_sub_type": ["NONE"] * 4,
+        "filament_color": [0xFFFFFFFF] * 4,
+        "filament_color_rgba": ['FFFFFFFF'] * 4,
+        "filament_color_multi": [
+            {"nums": 1, "alpha": 0xFF, "mode": 0, "colors": ["FFFFFF"]}
+            for _ in range(4)
+        ],
+    }
+    mod = types.ModuleType("print_task_config")
+    mod.DEFAULT_PRINT_TASK_CONFIG = config
+    mod.print_task_config = config
+    mod.config_path = MagicMock()
+
     return mod
 
 
@@ -388,6 +411,12 @@ class MockAFC:
         self.function.HexConvert = lambda x: x
         self.toolhead = MagicMock()
 
+        self.save_pos = MagicMock()
+        self.CHANGE_TOOL = MagicMock()
+        self.restore_pos = MagicMock()
+
+        self.snapmaker_printer = False
+
 
 class MockPrinter:
     """Mock for Klipper's printer object."""
@@ -430,6 +459,8 @@ class MockPrinter:
         if name == "pins":
             return MagicMock()
         if name == "buttons":
+            return MagicMock()
+        if name == "extruder":
             return MagicMock()
         return default
 
