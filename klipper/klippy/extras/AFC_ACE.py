@@ -954,7 +954,7 @@ class afcACE(afcUnit):
                         cur_lane.loaded_to_hub = True
                         self._set_hub_state(cur_lane, True)
                         cur_lane.sync_to_extruder()
-                        msg += "<span class=primary--text> in ToolHead</span>"
+                        msg += cur_lane.extruder_obj.prep_on_shuttle_check(cur_lane)
 
                         if self.afc.current == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)

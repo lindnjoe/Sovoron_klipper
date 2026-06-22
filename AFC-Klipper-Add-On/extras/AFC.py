@@ -128,6 +128,9 @@ class afc:
         # load. Drives recover_docked_tool() so a failed load picks the tool
         # back up BEFORE pausing instead of pausing while docked.
         self._tool_docked_pre_load = False
+        # True once the infinite-runout ooze guard has docked the old tool, so
+        # the following load skips its park_pre_load_cmd (avoids double-docking).
+        self._infinite_runout_parked = False
         self.tool_start = None
 
         # Save/resume pos variables
@@ -207,6 +210,13 @@ class afc:
         # your pickup macro (e.g. CTC_DOCK_PICKUP) so a mid-unload failure doesn't
         # strand the tool in its dock. Only fires if park_cmd actually ran first.
         self.park_error_cmd         = config.get("park_error_cmd", None)
+        # Macro to dock/park the old tool off the print while the NEXT extruder
+        # heats during an infinite runout to a different toolhead (ooze guard).
+        # For dock-purge toolchangers point it at your dock-dropoff macro
+        # (e.g. CTC_DOCK_DROPOFF). When set, the subsequent load skips its
+        # park_pre_load_cmd (the tool is already docked) so it isn't docked
+        # twice. None = don't park during infinite-runout heat-up.
+        self.infinite_runout_park_cmd = config.get("infinite_runout_park_cmd", None)
         self.kick                   = config.getboolean("kick", False)              # Set to True to enable poop kicking after lane loads
         self.kick_cmd               = config.get('kick_cmd', None)                  # Macro to use when kicking. Change macro name if you would like to use your own kick macro
         self.wipe                   = config.getboolean("wipe", False)              # Set to True to enable nozzle wiping after lane loads
@@ -1545,9 +1555,17 @@ class afc:
         # can't try to pick up a tool that's still on the shuttle.
         self._tool_docked_pre_load = False
         if self.park_pre_load:
-            self.gcode.run_script_from_command(self.park_pre_load_cmd)
-            if self.park_pre_load_error_cmd is not None:
-                self._tool_docked_pre_load = True
+            if self._infinite_runout_parked:
+                # The infinite-runout ooze guard already docked the old tool;
+                # don't dock again. Still flag it docked so a failed load can
+                # recover it.
+                self._infinite_runout_parked = False
+                if self.park_pre_load_error_cmd is not None:
+                    self._tool_docked_pre_load = True
+            else:
+                self.gcode.run_script_from_command(self.park_pre_load_cmd)
+                if self.park_pre_load_error_cmd is not None:
+                    self._tool_docked_pre_load = True
 
         # Clear stale error state so retries aren't blocked by a prior failure
         if self.error_state:
@@ -2405,6 +2423,21 @@ class afc:
                             return
 
                 if adjusting_temperature:
+                    # Infinite-runout ooze guard: dock the old tool off the print
+                    # while the next extruder heats, so it doesn't ooze on the
+                    # part during the wait. The following TOOL_LOAD skips its
+                    # park_pre_load_cmd since the tool is already docked.
+                    if infinite_runout and self.infinite_runout_park_cmd is not None:
+                        self.logger.info(
+                            "Infinite runout: parking tool off the print while "
+                            "the next extruder heats")
+                        try:
+                            self.gcode.run_script_from_command(
+                                self.infinite_runout_park_cmd)
+                            self._infinite_runout_parked = True
+                        except Exception as e:
+                            self.logger.error(
+                                "infinite_runout_park_cmd failed: {}".format(e))
                     self.logger.info("Heating and waiting for {} for {}".format(next_extruder_obj.name,
                         "infinite runout" if infinite_runout else "tool change"))
                     next_heater = next_extruder_obj.get_heater()
