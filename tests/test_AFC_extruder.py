@@ -15,7 +15,10 @@ import pytest
 import sys
 import types
 
-from extras.AFC_extruder import AFCExtruderStats, AFCExtruder
+from extras.AFC_extruder import AFCExtruderStats, AFCExtruder, DETECT_PRESENT
+
+# Any value other than DETECT_PRESENT counts as "not present" to on_shuttle.
+_NOT_PRESENT = 0 if DETECT_PRESENT != 0 else -1
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -250,6 +253,19 @@ def _make_afc_extruder(name="extruder"):
     ext.tool = None
     ext.toolhead_leds = None
     ext.mutex = MagicMock()
+    # pp bespoke detect/park/homing fields (defaults mirror AFCExtruder.__init__)
+    ext.detect_pin_name = None
+    ext.detect_state = -1          # -1=unavailable, 0=absent, 1=present
+    ext.tc_unit_obj = None
+    ext.park_detector = None
+    ext.park_detector_obj = None
+    ext.params = {}
+    ext._homing = False
+    ext.filament_sensor_obj = None
+    ext.tool_number = -1
+    ext.fan_name = None
+    ext.resonance_chip = None
+    ext.extruder_stepper_name = None
     return ext
 
 
@@ -682,117 +698,77 @@ class TestOnShuttle_CustomMacros:
 # ── Branch 3: tool_obj has detect_state ──────────────────────────────────────
 
 class TestOnShuttle_WithDetectState:
-    """tool_obj carries detect_state; result depends on sensor or tool selection."""
+    """detect pin configured: on_shuttle follows detect_state, with the active
+    tool on the toolchanger unit as an override (pp uses self.detect_state and
+    self.tc_unit_obj.active_tool, not tool_obj.detect_state)."""
 
-    @pytest.fixture(autouse=True)
-    def patch_toolchanger_module(self):
-        """Inject a fake extras.toolchanger so the in-method import resolves."""
-        fake_mod = _make_toolchanger_module()
-        with patch.dict(sys.modules, {"extras.toolchanger": fake_mod}):
-            yield
-
-    def test_returns_true_when_detect_state_is_present(self):
+    def test_present_returns_true(self):
         ext = _make_afc_extruder()
         ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state("mounted", is_selected=False)
+        ext.detect_pin_name = "detect_pin"
+        ext.detect_state = DETECT_PRESENT
         assert ext.on_shuttle() is True
 
-    def test_returns_true_when_tool_is_selected_but_not_present(self):
+    def test_selected_but_absent_returns_true(self):
         ext = _make_afc_extruder()
         ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state("absent", is_selected=True)
+        ext.detect_pin_name = "detect_pin"
+        ext.detect_state = _NOT_PRESENT
+        ext.tc_unit_obj = MagicMock()
+        ext.tc_unit_obj.active_tool = ext
         assert ext.on_shuttle() is True
 
-    def test_returns_true_when_both_present_and_selected(self):
+    def test_present_and_selected_returns_true(self):
         ext = _make_afc_extruder()
         ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state("mounted", is_selected=True)
+        ext.detect_pin_name = "detect_pin"
+        ext.detect_state = DETECT_PRESENT
+        ext.tc_unit_obj = MagicMock()
+        ext.tc_unit_obj.active_tool = ext
         assert ext.on_shuttle() is True
 
-    def test_returns_false_when_not_present_and_not_selected(self):
+    def test_absent_and_not_selected_returns_false(self):
         ext = _make_afc_extruder()
         ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state("absent", is_selected=False)
-        assert ext.on_shuttle() is False
-    
-    def test_returns_false_when_not_present_and_not_selected_unavailable(self):
-        ext = _make_afc_extruder()
-        ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state("unavailable", is_selected=False)
-        assert ext.on_shuttle() is False
-
-    def test_get_selected_tool_called_once_per_invocation(self):
-        ext = _make_afc_extruder()
-        ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state("absent", is_selected=False)
-        ext.on_shuttle()
-        ext.tool_obj.main_toolchanger.get_selected_tool.assert_called_once()
-
-class TestOnShuttle_WithDetectStateOld:
-    """tool_obj carries detect_state; result depends on sensor or tool selection."""
-
-    @pytest.fixture(autouse=True)
-    def patch_toolchanger_module(self):
-        """Inject a fake extras.toolchanger so the in-method import resolves."""
-        fake_mod = _make_toolchanger_module_old()
-        with patch.dict(sys.modules, {"extras.toolchanger": fake_mod}):
-            yield
-
-    def test_returns_true_when_detect_state_is_present(self):
-        ext = _make_afc_extruder()
-        ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state(1, is_selected=False)
-        assert ext.on_shuttle() is True
-
-    def test_returns_true_when_tool_is_selected_but_not_present(self):
-        ext = _make_afc_extruder()
-        ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state(0, is_selected=True)
-        assert ext.on_shuttle() is True
-
-    def test_returns_true_when_both_present_and_selected(self):
-        ext = _make_afc_extruder()
-        ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state(1, is_selected=True)
-        assert ext.on_shuttle() is True
-
-    def test_returns_false_when_not_present_and_not_selected(self):
-        ext = _make_afc_extruder()
-        ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state(0, is_selected=False)
-        assert ext.on_shuttle() is False
-    
-    def test_returns_false_when_not_present_and_not_selected_unavailable(self):
-        ext = _make_afc_extruder()
-        ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state(-1, is_selected=False)
+        ext.detect_pin_name = "detect_pin"
+        ext.detect_state = _NOT_PRESENT
+        ext.tc_unit_obj = MagicMock()
+        ext.tc_unit_obj.active_tool = object()  # some other tool
         assert ext.on_shuttle() is False
 
-    def test_get_selected_tool_called_once_per_invocation(self):
+    def test_no_tc_unit_obj_uses_detect_state_only(self):
         ext = _make_afc_extruder()
         ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_with_detect_state(0, is_selected=False)
-        ext.on_shuttle()
-        ext.tool_obj.main_toolchanger.get_selected_tool.assert_called_once()
-
-
-# ── Branch 4: tool_obj exists but lacks detect_state ─────────────────────────
-
-class TestOnShuttle_WithoutDetectState:
-    """tool_obj present but no detect_state attr → returns False."""
-
-    def test_returns_false_when_no_detect_state(self):
-        ext = _make_afc_extruder()
-        ext.tc_unit_name = "unit_0"
-        ext.tool_obj = _tool_without_detect_state()
+        ext.detect_pin_name = "detect_pin"
+        ext.detect_state = _NOT_PRESENT
+        ext.tc_unit_obj = None
         assert ext.on_shuttle() is False
 
-    def test_returns_false_with_no_tc_unit_name(self):
-        """tool_obj set but tc_unit_name=None still reaches detect_state check."""
+    def test_no_tc_unit_obj_present_returns_true(self):
+        ext = _make_afc_extruder()
+        ext.tc_unit_name = "unit_0"
+        ext.detect_pin_name = "detect_pin"
+        ext.detect_state = DETECT_PRESENT
+        ext.tc_unit_obj = None
+        assert ext.on_shuttle() is True
+
+
+class TestOnShuttle_NoDetection:
+    """Toolchanger configured but no detection mechanism (custom swap/unselect
+    macros) -> assumed on shuttle (True). No toolchanger at all -> True."""
+
+    def test_no_detect_pin_no_park_detector_returns_true(self):
+        ext = _make_afc_extruder()
+        ext.tc_unit_name = "unit_0"
+        ext.detect_pin_name = None
+        ext.park_detector_obj = None
+        assert ext.on_shuttle() is True
+
+    def test_no_tc_unit_name_returns_true(self):
         ext = _make_afc_extruder()
         ext.tc_unit_name = None
-        ext.tool_obj = _tool_without_detect_state()
-        assert ext.on_shuttle() is False
+        assert ext.on_shuttle() is True
+
 
 # ── tool_start_callback helpers ───────────────────────────────────────────────
 
@@ -895,6 +871,8 @@ class TestToolStartCallback_StateChanged_WithToolchanger:
         ext.load_active      = load_active
         ext.printer.state_message = READY if printer_ready else "startup"
         ext.tc_lane._afc_prep_done = prep_done
+        # Runout branch only runs when not printing; default the mock to False.
+        ext.afc.function.is_printing.return_value = False
         return ext
 
     def test_tc_lane_load_state_updated(self):
@@ -950,11 +928,13 @@ class TestToolStartCallback_StateChanged_WithToolchanger:
         ext.tool_start_callback(100.0, True)
         ext.load_unload_sequence.assert_not_called()
 
-    def test_save_vars_called_after_load_sequence(self):
+    def test_save_vars_not_called_on_load_path(self):
+        # The load path delegates to load_unload_sequence, which persists state
+        # itself; the callback only calls save_vars on the runout path.
         ext = self._make_tc_ext(printer_ready=True, prep_done=True,
                                 state=True, load_active=False)
         ext.tool_start_callback(100.0, True)
-        ext.afc.save_vars.assert_called_once()
+        ext.afc.save_vars.assert_not_called()
 
     # ready + prep done + filament absent (runout) ──────────────────────────
 

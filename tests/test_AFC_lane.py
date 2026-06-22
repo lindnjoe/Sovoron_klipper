@@ -212,6 +212,7 @@ def _make_afc_lane(fullname="AFC_stepper lane1"):
     lane.drive_stepper = None
     lane.dist_hub = 900
     lane.remember_spool = False
+    lane.spool_id = None
     lane.short_moves_speed = 50
     lane.short_moves_accel = 100
     return lane
@@ -865,6 +866,9 @@ def _make_lane_for_auto_switch(weight=20.0, threshold=25.0, enabled=True,
     lane.save_counter = 0
     lane.UPDATE_WEIGHT_DELAY = 10.0
     lane.runout_lane = runout_lane
+    # Unit-level runout hook takes precedence when it returns truthy; default it
+    # off so the lane's own infinite/pause runout paths are exercised.
+    lane.unit_obj.handle_runout.return_value = False
     lane._perform_infinite_runout = MagicMock()
     lane._perform_pause_runout = MagicMock()
     return lane

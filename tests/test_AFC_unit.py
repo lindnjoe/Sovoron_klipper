@@ -67,6 +67,7 @@ def _make_lane(name="lane1", hub="hub1", extruder="ext1", buffer_name="buf1"):
     lane.led_tool_loaded = "0,1,0,0"
     lane.led_tool_unloaded = "0,1,0,0"
     lane.led_index = "1"
+    lane.led_spool_index = None
     lane.led_spool_illum = "1,1,1,0"
     lane.led_use_filament_color = False
     lane._load_state = True
@@ -261,15 +262,17 @@ class TestLaneStatusLeds:
 
 class TestLedUseFilamentColor:
     def test_filament_color_used_when_enabled_and_color_set(self):
-        """When led_use_filament_color=True and lane has a color, LED uses the filament color."""
+        """When led_use_filament_color=True and lane has a color, _get_lane_color
+        returns the filament colour (pp puts this on _get_lane_color, used by
+        lane_tool_unloaded / lane_tool_loaded_idle / spool LED updates)."""
         unit = _make_unit()
         lane = _make_lane()
         lane.led_use_filament_color = True
         lane.color = "#FF0000"
         unit.afc.function.HexToLedString.return_value = "1,0,0,0"
-        unit.lane_loaded(lane)
+        result = unit._get_lane_color(lane, lane.led_ready)
         unit.afc.function.HexToLedString.assert_called_once_with("FF0000")
-        unit.afc.function.afc_led.assert_called_once_with("1,0,0,0", lane.led_index)
+        assert result == "1,0,0,0"
 
     def test_fallback_to_state_color_when_enabled_but_no_color(self):
         """When led_use_filament_color=True but lane has no color, falls back to state color."""
@@ -296,8 +299,9 @@ class TestLedUseFilamentColor:
         lane.led_use_filament_color = True
         lane.color = "#00FF00"
         unit.afc.function.HexToLedString.return_value = "0,1,0,0"
-        unit.lane_loaded(lane)
+        result = unit._get_lane_color(lane, lane.led_ready)
         unit.afc.function.HexToLedString.assert_called_once_with("00FF00")
+        assert result == "0,1,0,0"
 
     def test_filament_color_invalid_hex_falls_back(self):
         """Invalid hex color falls back to state color."""

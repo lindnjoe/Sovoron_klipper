@@ -374,6 +374,11 @@ class MockAFC:
         self.bypass = MagicMock()
         self.save_vars = MagicMock()
         self.tool_cmds: dict = {}
+        # Tool-redirect mapping + flag (pp bespoke core)
+        self.tool_redirects: dict = {}
+        self.allow_tool_redirect = False
+        # Dock-recovery hook called from afcError.pause_print
+        self.recover_docked_tool = MagicMock()
         self.VarFile = "/tmp/afc_test_vars"
         # LED colour defaults
         self.led_fault = "1,0,0,0"
