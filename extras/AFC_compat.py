@@ -426,42 +426,9 @@ def _patch_afc_hub_virtual_load_check():
     HubCls._afc_virtual_load_check_patched = True
 
 
-def _patch_afc_lane_standalone_by_name():
-    """9. AFC_lane: restore the pre-1.1.22 behaviour where a lane whose name
-    contains 'extruder' is treated as a standalone toolhead lane.
-
-    Upstream replaced the name heuristic ("extruder" not in lane name) with an
-    explicit 'standalone: True' config flag. Existing standalone-toolhead lanes
-    that relied on the name (e.g. the U1 in-head feeder) would otherwise lose
-    their standalone status, set up a tool homing endstop during prep, and can
-    fail to register — which also breaks the U1 scanner that resolves them.
-    """
-    try:
-        from extras import AFC_lane as _lane_mod
-    except Exception:
-        return
-    LaneCls = getattr(_lane_mod, 'AFCLane', None)
-    if LaneCls is None or getattr(LaneCls, '_afc_standalone_byname_patched', False):
-        return
-    _orig_init = LaneCls.__init__
-
-    def _init(self, *args, **kwargs):
-        _orig_init(self, *args, **kwargs)
-        try:
-            if (not getattr(self, 'standalone_lane', False)
-                    and 'extruder' in (getattr(self, 'name', '') or '')):
-                self.standalone_lane = True
-        except Exception:
-            pass
-
-    LaneCls.__init__ = _init
-    LaneCls._afc_standalone_byname_patched = True
-
-
 def apply_compat_patches():
     """Apply all AFC compatibility shims. Idempotent; safe to call repeatedly
     and from multiple unit modules."""
-    _patch_afc_lane_standalone_by_name()
     _patch_afc_lane_virtual_hub()
     _patch_afc_buffer_steppermless()
     _patch_afc_hub_virtual_state()
