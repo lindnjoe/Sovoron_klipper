@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
 
 class AFCSpool:
+    SNAPMAKER_SET_PRINT_FILAMENT_CONFIG = "SET_PRINT_FILAMENT_CONFIG"
     def __init__(self, config):
         self.printer = config.get_printer()
         self.printer.register_event_handler("klippy:connect", self.handle_connect)

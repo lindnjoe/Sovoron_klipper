@@ -427,13 +427,21 @@ def _patch_afc_hub_virtual_load_check():
 
 
 def apply_compat_patches():
-    """Apply all AFC compatibility shims. Idempotent; safe to call repeatedly
-    and from multiple unit modules."""
-    _patch_afc_lane_virtual_hub()
-    _patch_afc_buffer_steppermless()
+    """Apply AFC compatibility shims. Idempotent; safe to call repeatedly and
+    from multiple unit modules.
+
+    As of the bring_in_openams upstream merge the core handles several of these
+    natively, so the matching shims are disabled to avoid double-applying:
+      * virtual-hub homing-endstop skip -> AFC_lane._set_homing_endstop guard
+      * stepperless buffer fault skip    -> AFC_buffer timer guard
+      * serial-unit bowden check         -> removed upstream
+      * virtual-hub load-sensor check    -> AFC_hub.handle_ready + SENSORLESS_UNITS
+    _patch_afc_hub_virtual_state stays: the native AFC_hub no longer marks the
+    hub state-driven inside switch_pin_callback (callers must call
+    set_state_driven()), but our ACE/OpenAMS switch_pin_callback callers don't —
+    this shim wraps switch_pin_callback to set the native _state_driven flag for
+    them, so no per-call-site edits are needed."""
     _patch_afc_hub_virtual_state()
     _patch_afc_unload_shared_phase()
-    _patch_afc_bowden_serial_unit()
     _patch_afc_lane_load_runout()
     _patch_afc_unit_filament_hooks()
-    _patch_afc_hub_virtual_load_check()

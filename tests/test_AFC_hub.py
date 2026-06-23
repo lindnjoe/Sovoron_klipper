@@ -40,6 +40,7 @@ def _make_hub(switch_pin="PA0", name="test_hub", extra_values=None):
     hub.unit = None
     hub.lanes = {}
     hub._state = False
+    hub._state_driven = False
     hub.switch_pin = switch_pin
 
     # Default config values
@@ -253,9 +254,14 @@ class TestHandleConnect:
         lane = MagicMock()
         lane.fullname = "AFC_stepper lane1"
         lane.load = None  # no load sensor
+        # The virtual-hub load-sensor check moved from handle_connect to
+        # handle_ready (and now skips SENSORLESS_UNITS); give the lane a
+        # non-sensorless type and a prep sensor so the check fires.
+        lane.unit_obj.type = "BoxTurtle"
+        lane.prep = object()
         hub.lanes = {"lane1": lane}
         with pytest.raises(config_error):
-            hub.handle_connect()
+            hub.handle_ready()
 
     def test_virtual_hub_no_error_when_all_lanes_have_load_sensor(self):
         hub = _make_hub(switch_pin="virtual")
