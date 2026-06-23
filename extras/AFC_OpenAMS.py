@@ -695,14 +695,14 @@ class afcAMS(afcUnit):
             f1s_present = bool(f1s_values[slot]) if slot < len(f1s_values) else False
             hub_present = bool(hub_values[slot]) if slot < len(hub_values) else False
 
-            # F1S is the steady "filament loaded in this lane" sensor (stays on
-            # while loaded) — it drives prep, load and the native virtual hub
-            # (any(lane.raw_load_state)). Hub HES is a transit sensor (pulses
-            # only while filament moves through, 0 at idle) so it must NOT gate
-            # the steady loaded state — it's tracked only for load/unload
-            # sequencing.
+            # Vivid model: prep_state = F1S (filament inserted in lane);
+            # raw_load_state = live hub HES (hub-junction occupancy, trips while
+            # filament is at the junction, 0 at idle). loaded_to_hub is a LATCHED
+            # logical flag — seeded here from F1S (a present spool is staged at
+            # the hub), then held until load/unload or the spool is removed; it
+            # is never clobbered by the transient hub HES.
             lane.prep_state = f1s_present
-            lane._load_state = f1s_present
+            lane._load_state = hub_present
             lane.loaded_to_hub = f1s_present
 
             if slot < len(f1s_values):
@@ -729,15 +729,16 @@ class afcAMS(afcUnit):
             if slot < 0:
                 continue
 
-            # F1S is the steady "filament loaded in lane" sensor — it drives
-            # prep + load + loaded_to_hub, and the native AFC_hub aggregates
-            # any(lane.raw_load_state). No switch_pin_callback / set_state_driven.
+            # F1S -> prep_state (filament inserted in lane). When the spool is
+            # removed (F1S lost) the lane can no longer be loaded to hub, so clear
+            # the latched loaded_to_hub (mirrors Vivid clearing it when the prep
+            # sensor is lost). loaded_to_hub is otherwise NOT sensor-derived.
             if slot < len(f1s_values):
                 new_f1s = bool(f1s_values[slot])
 
                 lane.prep_state = new_f1s
-                lane._load_state = new_f1s
-                lane.loaded_to_hub = new_f1s
+                if not new_f1s:
+                    lane.loaded_to_hub = False
 
                 if resync_prev:
                     self._last_f1s[slot] = new_f1s
@@ -755,10 +756,13 @@ class afcAMS(afcUnit):
 
                     self._last_f1s[slot] = new_f1s
 
-            # Hub HES is a transit sensor — track it for load/unload sequencing
-            # only; it must not gate the steady loaded state.
+            # Hub HES -> raw_load_state: live hub-junction occupancy aggregated by
+            # the native virtual hub (any(lane.raw_load_state)). 0 at idle is
+            # correct — filament is staged clear of the junction.
             if slot < len(hub_values):
-                self._last_hub[slot] = bool(hub_values[slot])
+                new_hub = bool(hub_values[slot])
+                lane._load_state = new_hub
+                self._last_hub[slot] = new_hub
 
         return eventtime + 2.0
 
@@ -950,14 +954,16 @@ class afcAMS(afcUnit):
         else:
             slot = self._spool_map.get(cur_lane.name, -1)
 
-            # Read state directly from OAMS hardware sensors. F1S is the steady
-            # loaded sensor (hub HES is transit-only, so not read here).
+            # Read OAMS sensors. prep_state = F1S (inserted); raw_load_state =
+            # live hub HES. loaded_to_hub is latched: seed it from F1S (a present
+            # spool is staged at the hub), force True if the lane is tool-loaded.
             f1s_values = getattr(self.oams, 'f1s_hes_value', None) or []
+            hub_values = getattr(self.oams, 'hub_hes_value', None) or []
             f1s_present = bool(f1s_values[slot]) if 0 <= slot < len(f1s_values) else False
+            hub_present = bool(hub_values[slot]) if 0 <= slot < len(hub_values) else False
 
-            # F1S drives prep + load + the native virtual hub.
             cur_lane.prep_state = f1s_present
-            cur_lane._load_state = f1s_present
+            cur_lane._load_state = hub_present
             cur_lane.loaded_to_hub = f1s_present
 
             if f1s_present:
@@ -1099,9 +1105,9 @@ class afcAMS(afcUnit):
         if not self._oams_load(cur_lane):
             return False
 
-        # Loaded to hub: drive raw_load_state so the native virtual hub reports it.
+        # Latch loaded_to_hub True; raw_load_state (live hub HES) is updated by
+        # the sensor poll as filament passes/clears the hub junction.
         cur_lane.loaded_to_hub = True
-        cur_lane._load_state = True
 
         return True
 
@@ -1462,14 +1468,15 @@ class afcAMS(afcUnit):
             if self._monitor:
                 self._monitor.notify_unload_complete()
 
-            # Refresh the steady loaded state from F1S (hub HES is transit-only).
+            # After unload the spool stays staged in the bay: latch loaded_to_hub
+            # to whether the spool is still present (F1S). raw_load_state (live
+            # hub HES) is refreshed by the sensor poll.
             if hasattr(self.oams, 'f1s_hes_value'):
                 f1s_values = self.oams.f1s_hes_value
                 if f1s_values and spool_index < len(f1s_values):
                     f1s_present = bool(f1s_values[spool_index])
-                    cur_lane.loaded_to_hub = f1s_present
-                    cur_lane._load_state = f1s_present
                     cur_lane.prep_state = f1s_present
+                    cur_lane.loaded_to_hub = f1s_present
 
             return success
 
