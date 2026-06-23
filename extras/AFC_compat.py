@@ -436,12 +436,10 @@ def apply_compat_patches():
       * stepperless buffer fault skip    -> AFC_buffer timer guard
       * serial-unit bowden check         -> removed upstream
       * virtual-hub load-sensor check    -> AFC_hub.handle_ready + SENSORLESS_UNITS
-    _patch_afc_hub_virtual_state stays: the native AFC_hub no longer marks the
-    hub state-driven inside switch_pin_callback (callers must call
-    set_state_driven()), but our ACE/OpenAMS switch_pin_callback callers don't —
-    this shim wraps switch_pin_callback to set the native _state_driven flag for
-    them, so no per-call-site edits are needed."""
-    _patch_afc_hub_virtual_state()
+      * virtual-hub state-driven flag     -> ACE/OpenAMS now call the native
+        AFC_hub.set_state_driven() directly (AFC_ACE._set_hub_state and
+        AFC_OpenAMS.handle_ready), so the switch_pin_callback wrapper shim is no
+        longer needed."""
     _patch_afc_unload_shared_phase()
     _patch_afc_lane_load_runout()
     _patch_afc_unit_filament_hooks()

@@ -562,6 +562,13 @@ class afcACE(afcUnit):
             try:
                 eventtime = self.afc.reactor.monotonic()
                 hub.switch_pin_callback(eventtime, state)
+                # Mark the hub state-driven so it reports the value we just set
+                # instead of falling back to any(lane.raw_load_state). The native
+                # AFC_hub.switch_pin_callback no longer does this implicitly, so
+                # drive it explicitly here (idempotent; replaces the old
+                # AFC_compat hub_virtual_state shim).
+                if hasattr(hub, 'set_state_driven'):
+                    hub.set_state_driven()
             except Exception:
                 pass
 

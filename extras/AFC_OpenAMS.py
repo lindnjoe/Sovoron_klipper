@@ -642,6 +642,16 @@ class afcAMS(afcUnit):
             super().handle_ready()
         except Exception as e:
             self.logger.debug(f"afcUnit.handle_ready: {e}")
+        # Mark each virtual hub state-driven so it reports the value our
+        # switch_pin_callback calls set rather than falling back to
+        # any(lane.raw_load_state). The native AFC_hub.switch_pin_callback no
+        # longer does this implicitly; driving it once here is permanent and
+        # idempotent (replaces the old AFC_compat hub_virtual_state shim).
+        for lane in self.lanes.values():
+            hub = getattr(lane, 'hub_obj', None)
+            if (hub is not None and hasattr(hub, 'set_state_driven')
+                    and hasattr(hub, 'is_virtual_pin') and hub.is_virtual_pin()):
+                hub.set_state_driven()
         self.oams = self.printer.lookup_object(f"oams {self.oams_name}", None)
 
         if self.oams is None:
@@ -990,7 +1000,7 @@ class afcAMS(afcUnit):
                 if (cur_lane.tool_loaded
                     and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
                     cur_lane.sync_to_extruder()
-                    msg += "<span class=primary--text> in ToolHead</span>"
+                    msg += cur_lane.extruder_obj.prep_on_shuttle_check(cur_lane)
                     if self.afc.current == cur_lane.name:
                         self.afc.spool.set_active_spool(cur_lane.spool_id)
                         self.lane_tool_loaded(cur_lane)
