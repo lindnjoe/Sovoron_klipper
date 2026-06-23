@@ -170,10 +170,29 @@ def _ams_box_logo_error(title, n_slots, name):
 
 
 class afcACE(afcUnit):
+    """AFC unit driver for Anycubic ACE PRO filament changers.
+
+    Drives a 4-slot ACE PRO over a USB serial connection (see ACEConnection
+    and the module docstring) rather than physical AFC steppers/sensors. All
+    filament transport (feed, unwind, feed assist) is issued as serial commands
+    to the ACE firmware; lane prep/load state, the virtual hub, RFID inventory
+    and Spoolman sync are derived from the ACE's reported slot status. Supports
+    'combined' and 'direct' toolhead modes, dryer control, stuck-spool
+    detection, feed/hub/TD-1 calibration, and a feed-assist watchdog that keeps
+    assist reconciled to the active lane.
+    """
     SLOTS_PER_UNIT = 4
     _LOGO_TITLE = "ACE PRO"   # AFC_ACE2 overrides this for the Pro 2 prep logo
 
     def __init__(self, config):
+        """Configure the ACE unit and register its gcode commands.
+
+        :param config: Klipper ConfigWrapper for this unit section. Reads the
+            serial port, mode, feed/retract speeds, dryer and stuck-detection
+            limits, feed-assist options, calibration step sizes and FPS
+            thresholds, then registers the per-unit and base ACE_* gcode
+            commands and the temperature_ace sensor factory.
+        """
         super().__init__(config)
         self.type = config.get('type', 'ACE')
 
@@ -304,6 +323,13 @@ class afcACE(afcUnit):
                 "use [temperature_ace <name>] config sections instead", e)
 
     def handle_connect(self):
+        """Build the prep logos, map lanes to ACE slots, and register the
+        deferred serial connect and feed-assist reconciliation event handlers.
+
+        Sets each lane's custom load/unload commands and seeds its loadless
+        ``_load_state`` to False so the native virtual hub reads clear until a
+        sync or load drives the loaded-to-hub state.
+        """
         super().handle_connect()
 
         self.logo = _ams_box_logo(self._LOGO_TITLE, len(self.lanes), self.name)
@@ -335,6 +361,14 @@ class afcACE(afcUnit):
             "extruder:activate_extruder", self._handle_extruder_activated)
 
     def _handle_tool_loaded(self, lane):
+        """Event handler for ``afc:tool_loaded`` — reconcile feed assist to the
+        newly loaded lane.
+
+        :param lane: Event payload, usually the loaded lane but sometimes the
+            extruder object; the active lane name is resolved from it (with
+            mode-specific fallbacks) and feed assist is reconciled on a
+            background reactor callback.
+        """
         # Resolve the active lane name. The payload is usually the loaded
         # lane, but at print start / with a tool already on the shuttle the
         # toolchanger fires this with the extruder object (name "extruder"):
@@ -367,6 +401,10 @@ class afcACE(afcUnit):
         ack, THEN start assist on the new slot. Both run in this background
         reactor callback — off the toolhead's gcode greenlet — so the acks
         never hold the toolhead over the wipe tower.
+
+        :param name: Name of the lane that should now have feed assist, or a
+            lane on another unit (ours is then stopped), or None to leave
+            assist untouched.
         """
         active_slot = self._slot_map.get(name)
         if active_slot is not None:
@@ -437,6 +475,9 @@ class afcACE(afcUnit):
         return None
 
     def _handle_ready(self):
+        """``klippy:ready`` handler: seed each lane's virtual hub from its
+        restored loaded_to_hub state, then defer the ACE serial connect onto a
+        reactor callback so it runs once the reactor is fully up."""
         # Seed each lane's virtual hub with its real loaded state up front.
         # Loadless serial lanes default _load_state=True upstream, so a virtual
         # hub (state = any(raw_load_state)) reads "loaded" until something drives
@@ -521,6 +562,9 @@ class afcACE(afcUnit):
         self._ace.reconnect_callback = self._on_ace_reconnect
 
     def _on_ace_reconnect(self):
+        """Reconnect callback: the ACE reset and forgot its feed-assist state,
+        so drop our stale tracking and defer a resync of assist for the lane
+        currently loaded on the active toolhead."""
         # The ACE forgot its feed-assist state across the reset. Drop our
         # stale tracking (otherwise the watchdog's "already active" guard would
         # never re-issue it) and immediately re-send assist for whatever lane
@@ -535,6 +579,12 @@ class afcACE(afcUnit):
         self.afc.reactor.register_callback(self._resync_assist_after_reconnect)
 
     def _resync_assist_after_reconnect(self, eventtime):
+        """Reactor callback that re-issues feed assist for the active lane after
+        a reconnect, unless a load/unload is in progress (which sets assist
+        itself on completion).
+
+        :param eventtime: Reactor event time (unused).
+        """
         # Don't fight an in-flight load/unload — it sets assist itself when it
         # finishes. Otherwise let the watchdog re-issue assist for the active
         # lane right now (its target is empty again, so it will reconcile).
@@ -542,7 +592,13 @@ class afcACE(afcUnit):
             self._maybe_assist_watchdog()
 
     def _on_hw_status_callback(self, response):
-        """Process heartbeat status from ACE — keep lane states in sync."""
+        """Process heartbeat status from ACE — keep lane states in sync.
+
+        :param response: Raw status dict from the ACE heartbeat. Its ``result``
+            payload (or the dict itself) is cached, and while no operation is
+            active it drives slot-state sync, the assist watchdog, and stuck
+            spool detection.
+        """
         if not isinstance(response, dict):
             return
         result = response.get("result", response)
@@ -556,6 +612,11 @@ class afcACE(afcUnit):
         self._check_stuck(result)
 
     def _is_virtual_hub(self, lane) -> bool:
+        """Return whether the lane's hub is a virtual (pinless) hub.
+
+        :param lane: Lane whose hub to inspect.
+        :return bool: True when the lane has a hub that reports is_virtual_pin().
+        """
         hub = lane.hub_obj
         return (hub is not None
                 and hasattr(hub, 'is_virtual_pin')
@@ -568,6 +629,9 @@ class afcACE(afcUnit):
         raw_load_state carries the loaded-to-hub state and the native AFC_hub
         reports any(lane.raw_load_state). prep_state (filament inserted in slot)
         is tracked separately. No switch_pin_callback / set_state_driven needed.
+
+        :param lane: Lane whose hub-presence signal to drive.
+        :param state: True if filament is staged at/past the hub.
         """
         lane._load_state = bool(state)
 
@@ -576,6 +640,10 @@ class afcACE(afcUnit):
 
         Uses _prev_slot_states (per-lane dict) and _prev_states_stale to
         avoid false insert/remove detection after load/unload operations.
+
+        :param hw_status: ACE hardware status dict containing the per-slot
+            ``slots`` list whose ``status`` field drives each lane's prep/load
+            state, insert/remove runout handling, and tooled-state restore.
         """
         slots = hw_status.get("slots", [])
 
@@ -652,7 +720,11 @@ class afcACE(afcUnit):
     # ── Lane parameter helpers ──────────────────────────────────────
 
     def _get_bowden_length(self, cur_lane) -> float:
-        """Total feed distance: dist_hub (lane→hub) + afc_bowden_length (hub→toolhead)."""
+        """Total feed distance: dist_hub (lane→hub) + afc_bowden_length (hub→toolhead).
+
+        :param cur_lane: Lane to compute the feed distance for.
+        :return float: dist_hub plus the hub's afc_bowden_length.
+        """
         dist = cur_lane.dist_hub
         hub = cur_lane.hub_obj
         if hub is not None:
@@ -660,7 +732,12 @@ class afcACE(afcUnit):
         return dist
 
     def _get_unload_length(self, cur_lane) -> float:
-        """Total retract distance: dist_hub + afc_unload_bowden_length."""
+        """Total retract distance: dist_hub + afc_unload_bowden_length.
+
+        :param cur_lane: Lane to compute the retract distance for.
+        :return float: dist_hub plus the hub's afc_unload_bowden_length
+            (falling back to afc_bowden_length).
+        """
         dist = cur_lane.dist_hub
         hub = cur_lane.hub_obj
         if hub is not None:
@@ -671,34 +748,64 @@ class afcACE(afcUnit):
         """Retract distance for an eject/unload. When the lane is loaded to the
         toolhead, retract the full path (dist_hub + bowden). When it's only
         staged at the hub, the filament just spans the lane->hub gap, so retract
-        dist_hub + a 200mm buffer to clear the hub and pull it into the unit."""
+        dist_hub + a 200mm buffer to clear the hub and pull it into the unit.
+
+        :param cur_lane: Lane to compute the eject distance for.
+        :return float: Full unload length when tool-loaded, else dist_hub + 200.
+        """
         if getattr(cur_lane, 'tool_loaded', False):
             return self._get_unload_length(cur_lane)
         return cur_lane.dist_hub + 200
 
     def _use_feed_assist(self, cur_lane) -> bool:
+        """Resolve whether feed assist should run for a lane.
+
+        :param cur_lane: Lane to check.
+        :return bool: The lane's per-lane use_feed_assist when set, else the
+            unit default.
+        """
         fa = getattr(cur_lane, 'use_feed_assist', None)
         if fa is not None:
             return fa
         return self._default_feed_assist
 
     def _get_slot(self, lane_name: str) -> int:
+        """Map a lane name to its 0-based ACE slot index.
+
+        :param lane_name: Name of the lane.
+        :return int: The mapped slot, or 0 if the lane is unknown.
+        """
         return self._slot_map.get(lane_name, 0)
 
     # ── Unit interface overrides ────────────────────────────────────
 
     def prep_load(self, lane: AFCLane):
+        """No-op for ACE: filament transport to the hub is handled in
+        prep_post_load via serial feed, not during prep_load.
+
+        :param lane: Lane being prepped (unused).
+        """
         pass
 
     def check_runout(self, cur_lane):
-        """ACE supports runout detection during printing."""
+        """ACE supports runout detection during printing.
+
+        :param cur_lane: Lane to check (unused beyond context).
+        :return bool: True when AFC reports a print in progress, else False.
+        """
         try:
             return self.afc.function.is_printing()
         except Exception:
             return False
 
     def on_filament_insert(self, lane):
-        """ACE-specific insertion: refresh RFID inventory, apply spool defaults, sync to spoolman."""
+        """ACE-specific insertion: refresh RFID inventory, apply spool defaults, sync to spoolman.
+
+        :param lane: Lane whose slot had filament inserted; its RFID inventory
+            is refreshed, filament defaults/Spoolman are applied, a freshly
+            staged or remembered spool id is restored, and the base
+            on_filament_insert is then called.
+        """
         slot = self._get_slot(lane.name)
         if slot >= self.SLOTS_PER_UNIT:
             return
@@ -738,7 +845,11 @@ class afcACE(afcUnit):
         super().on_filament_insert(lane)
 
     def on_filament_remove(self, lane):
-        """ACE-specific removal: clear slot inventory and hub state."""
+        """ACE-specific removal: clear slot inventory and hub state.
+
+        :param lane: Lane whose slot was emptied; its cached RFID inventory and
+            loaded-to-hub state are cleared.
+        """
         slot = self._get_slot(lane.name)
         if slot < self.SLOTS_PER_UNIT:
             self._clear_slot_inventory(slot)
@@ -749,7 +860,15 @@ class afcACE(afcUnit):
     # ── TD-1 support ────────────────────────────────────────────────
 
     def calibrate_td1(self, cur_lane, dis, tol):
-        """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament."""
+        """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament.
+
+        Wraps _calibrate_td1_inner with the _operation_active guard.
+
+        :param cur_lane: Lane to calibrate.
+        :param dis: Step size in mm for incremental feeding.
+        :param tol: Tolerance (unused for ACE).
+        :return tuple: (success, message, distance) from _calibrate_td1_inner.
+        """
         self._operation_active = True
         try:
             return self._calibrate_td1_inner(cur_lane, dis, tol)
@@ -762,13 +881,25 @@ class afcACE(afcUnit):
 
         Return non-None to prevent the base _prep_capture_td1 from running
         the stepper-based path.
+
+        :param cur_lane: Lane being prepped.
+        :return: (True, message) when TD-1 capture is handled elsewhere, else
+            None to fall through to the base stepper path.
         """
         if cur_lane.td1_when_loaded and cur_lane.loaded_to_hub:
             return True, "TD-1 capture handled by prep_post_load"
         return None
 
     def capture_td1_data(self, cur_lane):
-        """ACE TD-1 data capture using feed_filament instead of stepper moves."""
+        """ACE TD-1 data capture using feed_filament instead of stepper moves.
+
+        Wraps _capture_td1_data_inner with the _operation_active guard after
+        validating the connection and TD-1 device id.
+
+        :param cur_lane: Lane to capture TD-1 data for.
+        :return: None when prerequisites are unmet, else the
+            (success, message) tuple from _capture_td1_data_inner.
+        """
         if self._ace is None or not self._ace.connected:
             return None
         if cur_lane.td1_device_id is None:
@@ -788,6 +919,14 @@ class afcACE(afcUnit):
             self._operation_active = False
 
     def _capture_td1_data_inner(self, cur_lane, slot):
+        """Feed to the hub (if needed) and on to the TD-1 device, read the TD-1
+        data, then retract back. Implementation of capture_td1_data.
+
+        :param cur_lane: Lane to capture TD-1 data for.
+        :param slot: 0-based ACE slot index for the lane.
+        :return tuple: (True, message) if TD-1 data was captured, else
+            (False, message).
+        """
         dist_hub = cur_lane.dist_hub
 
         if not cur_lane.loaded_to_hub:
@@ -826,6 +965,15 @@ class afcACE(afcUnit):
         return False, "TD-1 data not captured (unload completed)"
 
     def _calibrate_td1_inner(self, cur_lane, dis, tol):
+        """Measure td1_bowden_length by feeding to the hub then incrementally on
+        from the hub until the TD-1 device detects filament, then save the
+        result to config. Implementation of calibrate_td1.
+
+        :param cur_lane: Lane to calibrate.
+        :param dis: Step size in mm (defaults to 50 when not positive).
+        :param tol: Tolerance (unused).
+        :return tuple: (success, message, measured_distance).
+        """
         if self._ace is None or not self._ace.connected:
             return False, "ACE not connected", 0
 
@@ -920,7 +1068,14 @@ class afcACE(afcUnit):
     # ── Prep and post-load ─────────────────────────────────────────
 
     def prep_post_load(self, lane: AFCLane):
-        """Stage filament to hub via ACE serial feed."""
+        """Stage filament to hub via ACE serial feed.
+
+        Feeds dist_hub from the slot when load_to_hub is enabled and the slot
+        is prepped but not yet staged, marking the lane loaded_to_hub and
+        optionally capturing TD-1 data. Retries the feed up to three times.
+
+        :param lane: Lane to stage to the hub.
+        """
         if self._unit_load_to_hub is not None:
             load_to_hub = self._unit_load_to_hub
         else:
@@ -985,7 +1140,10 @@ class afcACE(afcUnit):
         From the hub-staged state the filament only spans the lane->hub gap, so
         unwind dist_hub + a 200mm buffer to clear the hub sensor and fully pull
         the filament back into the unit. If it's loaded past the hub (to the
-        toolhead) fall back to the full unload length (dist_hub + bowden)."""
+        toolhead) fall back to the full unload length (dist_hub + bowden).
+
+        :param lane: Lane to eject/retract back into the unit.
+        """
         slot = self._get_slot(lane.name)
         if self._ace and self._ace.connected:
             try:

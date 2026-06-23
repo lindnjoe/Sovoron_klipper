@@ -42,18 +42,30 @@ apply_compat_patches()
 # ── Support classes used by external oams.py module ────────────────
 
 class AMSEventBus:
+    """Process-wide singleton publish/subscribe bus for OpenAMS events.
+
+    Subscribers are stored per event type ordered by descending priority and
+    invoked synchronously on ``publish``. A bounded, TTL-pruned history of
+    recent events is retained for diagnostics.
+    """
     _instance = None
     _lock = threading.RLock()
     _MAX_HISTORY = 500
     _HISTORY_TTL = 3600.0
 
     def __init__(self):
+        """Initialize an empty subscriber map, event history, and logger slot."""
         self._subscribers = {}
         self._event_history = []
         self.logger = None
 
     @classmethod
     def get_instance(cls, logger=None):
+        """Return the shared event bus singleton, creating it on first call.
+
+        :param logger: optional logger attached if the singleton has none yet.
+        :return AMSEventBus: the process-wide event bus instance.
+        """
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls()
@@ -62,6 +74,12 @@ class AMSEventBus:
             return cls._instance
 
     def subscribe(self, event_type, callback, *, priority=0):
+        """Register a callback for an event type, ordered by priority.
+
+        :param event_type: event name to listen for.
+        :param callback: callable invoked as ``callback(event_type=..., **kwargs)``.
+        :param priority: higher priority callbacks run earlier (default 0).
+        """
         with self._lock:
             if event_type not in self._subscribers:
                 self._subscribers[event_type] = []
@@ -75,6 +93,15 @@ class AMSEventBus:
             subscribers.insert(insert_idx, (callback, priority))
 
     def publish(self, event_type, **kwargs):
+        """Record an event in history and dispatch it to all subscribers.
+
+        Exceptions raised by individual subscribers are swallowed so one bad
+        callback cannot block the others.
+
+        :param event_type: event name to publish.
+        :param kwargs: event payload; ``eventtime`` defaults to ``time.time()``.
+        :return int: number of subscribers that handled the event successfully.
+        """
         eventtime = kwargs.get('eventtime', time.time())
         with self._lock:
             self._event_history.append((event_type, eventtime, dict(kwargs)))
@@ -97,9 +124,26 @@ class AMSEventBus:
 
 
 class LaneInfo:
+    """Immutable-ish record describing one registered OpenAMS lane.
+
+    Bundles the identifiers and optional hardware associations (FPS, hub, LED,
+    custom load/unload commands) used by ``LaneRegistry`` for lookups.
+    """
     def __init__(self, lane_name, unit_name, spool_index, extruder,
                  fps_name=None, hub_name=None, led_index=None,
                  custom_load_cmd=None, custom_unload_cmd=None):
+        """Store the lane's identifiers and optional hardware associations.
+
+        :param lane_name: AFC lane name.
+        :param unit_name: owning OpenAMS unit name.
+        :param spool_index: zero-based spool bay index within the unit.
+        :param extruder: extruder name the lane feeds.
+        :param fps_name: optional FPS buffer name.
+        :param hub_name: optional hub name.
+        :param led_index: optional LED index for the lane.
+        :param custom_load_cmd: optional gcode command used to load this lane.
+        :param custom_unload_cmd: optional gcode command used to unload this lane.
+        """
         self.lane_name = lane_name
         self.unit_name = unit_name
         self.spool_index = spool_index
@@ -112,10 +156,21 @@ class LaneInfo:
 
 
 class LaneRegistry:
+    """Per-printer registry mapping OpenAMS lanes to spools and extruders.
+
+    Maintains lookup indexes (by lane name, by (unit, spool) pair, by extruder)
+    so the hardware service can resolve lane identities from firmware events.
+    One instance exists per printer object.
+    """
     _instances = {}
     _lock = threading.RLock()
 
     def __init__(self, printer, logger=None):
+        """Initialize empty lane lists and lookup indexes.
+
+        :param printer: Klipper printer object this registry serves.
+        :param logger: optional AFC logger instance.
+        """
         self.printer = printer
         self.logger = logger
         self._lanes = []
@@ -127,6 +182,12 @@ class LaneRegistry:
 
     @classmethod
     def for_printer(cls, printer, logger=None):
+        """Return the registry for a printer, creating it on first use.
+
+        :param printer: Klipper printer object used as the instance key.
+        :param logger: optional logger attached/updated on the instance.
+        :return LaneRegistry: the per-printer registry singleton.
+        """
         with cls._lock:
             key = id(printer)
             if key not in cls._instances:
@@ -138,6 +199,21 @@ class LaneRegistry:
     def register_lane(self, lane_name, unit_name, spool_index, extruder, *,
                       fps_name=None, hub_name=None, led_index=None,
                       custom_load_cmd=None, custom_unload_cmd=None):
+        """Register (or re-register) a lane and index it for fast lookup.
+
+        Any existing registration for ``lane_name`` is removed first.
+
+        :param lane_name: AFC lane name.
+        :param unit_name: owning OpenAMS unit name.
+        :param spool_index: zero-based spool bay index.
+        :param extruder: extruder name the lane feeds.
+        :param fps_name: optional FPS buffer name.
+        :param hub_name: optional hub name.
+        :param led_index: optional LED index.
+        :param custom_load_cmd: optional load gcode command.
+        :param custom_unload_cmd: optional unload gcode command.
+        :return LaneInfo: the newly created lane record.
+        """
         with self._lock:
             existing = self._by_lane_name.get(lane_name)
             if existing is not None:
@@ -158,6 +234,10 @@ class LaneRegistry:
             return info
 
     def _unregister_lane(self, info):
+        """Remove a lane record from all lookup indexes.
+
+        :param info: the LaneInfo record to remove.
+        """
         if info in self._lanes:
             self._lanes.remove(info)
         self._by_lane_name.pop(info.lane_name, None)
@@ -170,30 +250,70 @@ class LaneRegistry:
                 self._by_extruder.pop(info.extruder, None)
 
     def get_by_lane(self, lane_name):
+        """Return the LaneInfo for a lane name, or None.
+
+        :param lane_name: AFC lane name to look up.
+        :return LaneInfo: matching record or None.
+        """
         with self._lock:
             return self._by_lane_name.get(lane_name)
 
     def get_by_spool(self, unit_name, spool_index):
+        """Return the LaneInfo for a (unit, spool) pair, or None.
+
+        :param unit_name: owning OpenAMS unit name.
+        :param spool_index: spool bay index.
+        :return LaneInfo: matching record or None.
+        """
         with self._lock:
             return self._by_spool.get((unit_name, spool_index))
 
     def resolve_lane_token(self, token):
+        """Resolve a lane name case-insensitively.
+
+        :param token: lane name token (any case).
+        :return LaneInfo: matching record or None.
+        """
         with self._lock:
             return self._by_lane_name_lower.get(token.lower())
 
     def resolve_lane_name(self, unit_name, spool_index):
+        """Return the lane name for a (unit, spool) pair, or None.
+
+        :param unit_name: owning OpenAMS unit name.
+        :param spool_index: spool bay index.
+        :return str: lane name or None.
+        """
         info = self.get_by_spool(unit_name, spool_index)
         return info.lane_name if info else None
 
     def resolve_extruder(self, lane_name):
+        """Return the extruder name a lane feeds, or None.
+
+        :param lane_name: AFC lane name.
+        :return str: extruder name or None.
+        """
         info = self.get_by_lane(lane_name)
         return info.extruder if info else None
 
 
 class AMSHardwareService:
+    """Per-(printer, unit) façade over the [oams] hardware controller.
+
+    Resolves and caches the ``[oams <name>]`` controller, polls its sensors on
+    a reactor timer, caches the latest status and per-lane snapshots, and
+    publishes f1s/hub/spool change events on the shared ``AMSEventBus``. One
+    instance exists per (printer, unit name) pair.
+    """
     _instances = {}
 
     def __init__(self, printer, name, logger=None):
+        """Initialize service state, lookup the AFC logger, and wire shared singletons.
+
+        :param printer: Klipper printer object.
+        :param name: OpenAMS unit name (matches the ``[oams <name>]`` section).
+        :param logger: optional logger; falls back to the AFC object's logger.
+        """
         self.printer = printer
         self.name = name
         if logger is not None:
@@ -221,6 +341,13 @@ class AMSHardwareService:
 
     @classmethod
     def for_printer(cls, printer, name="default", logger=None):
+        """Return the cached service for a (printer, name) pair, creating it if needed.
+
+        :param printer: Klipper printer object.
+        :param name: OpenAMS unit name.
+        :param logger: optional logger attached/updated on the instance.
+        :return AMSHardwareService: the per-(printer, name) service singleton.
+        """
         key = (id(printer), name)
         try:
             service = cls._instances[key]
@@ -233,6 +360,10 @@ class AMSHardwareService:
         return service
 
     def attach_controller(self, controller):
+        """Bind an [oams] controller and seed the status cache from it.
+
+        :param controller: the resolved ``[oams]`` controller object, or None.
+        """
         with self._lock:
             self._controller = controller
         if controller is not None:
@@ -244,6 +375,10 @@ class AMSHardwareService:
                 self._update_status(status)
 
     def resolve_controller(self):
+        """Return the [oams] controller, looking it up and caching it if needed.
+
+        :return: the ``[oams <name>]`` controller object, or None if not found.
+        """
         with self._lock:
             controller = self._controller
         if controller is not None:
@@ -258,11 +393,16 @@ class AMSHardwareService:
         return controller
 
     def _monotonic(self):
+        """Return the reactor monotonic time, caching the reactor on first use.
+
+        :return float: current reactor monotonic timestamp.
+        """
         if self._reactor is None:
             self._reactor = self.printer.get_reactor()
         return self._reactor.monotonic()
 
     def start_polling(self):
+        """Register the periodic sensor-poll timer (idempotent)."""
         if self._polling_timer is not None:
             return
         if self._reactor is None:
@@ -274,12 +414,21 @@ class AMSHardwareService:
             self._polling_callback, self._reactor.NOW + 1.0)
 
     def stop_polling(self):
+        """Disable polling and unregister the poll timer if running."""
         self._polling_enabled = False
         if self._polling_timer is not None and self._reactor is not None:
             self._reactor.unregister_timer(self._polling_timer)
             self._polling_timer = None
 
     def _polling_callback(self, eventtime):
+        """Reactor timer callback: poll status and publish sensor-change events.
+
+        Publishes ``f1s_changed``/``hub_changed`` events on transitions and
+        backs the poll interval off to the idle rate when nothing changes.
+
+        :param eventtime: reactor time the timer fired.
+        :return float: next scheduled reactor time, or ``NEVER`` if disabled.
+        """
         if not self._polling_enabled:
             return self._reactor.NEVER
         try:
@@ -317,6 +466,10 @@ class AMSHardwareService:
             return eventtime + self._polling_interval_idle
 
     def poll_status(self):
+        """Read the controller status (falling back to attribute reads) and cache it.
+
+        :return dict: the latest status mapping, or None if no controller.
+        """
         controller = self.resolve_controller()
         if controller is None:
             return None
@@ -337,10 +490,18 @@ class AMSHardwareService:
         return status
 
     def _update_status(self, status):
+        """Replace the cached status snapshot under lock.
+
+        :param status: status mapping to copy into the cache.
+        """
         with self._lock:
             self._status = dict(status)
 
     def latest_status(self):
+        """Return a copy of the most recently cached controller status.
+
+        :return dict: copy of the cached status mapping.
+        """
         with self._lock:
             return dict(self._status)
 
@@ -348,6 +509,20 @@ class AMSHardwareService:
                              hub_state, eventtime, *,
                              spool_index=None, tool_state=None,
                              emit_spool_event=True):
+        """Update the cached snapshot for a lane and emit spool load/unload events.
+
+        On a lane_state transition (with a known spool index) a
+        ``spool_loaded``/``spool_unloaded`` event is published unless suppressed.
+
+        :param unit_name: owning OpenAMS unit name.
+        :param lane_name: AFC lane name.
+        :param lane_state: truthy if filament is present in the lane.
+        :param hub_state: hub occupancy (None leaves it unset).
+        :param eventtime: timestamp recorded with the snapshot.
+        :param spool_index: optional spool index; negatives are ignored.
+        :param tool_state: optional tool-loaded flag to record.
+        :param emit_spool_event: set False to skip publishing spool events.
+        """
         key = f"{unit_name}:{lane_name}"
         normalized_index = None
         if spool_index is not None:
