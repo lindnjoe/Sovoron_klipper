@@ -36,6 +36,14 @@ class AFC_U1_RFID:
     and applies it to AFC lanes (material, color) and Spoolman."""
 
     def __init__(self, config):
+        """Configure the reader from its ``[AFC_U1_rfid]`` section.
+
+        Parses lane->channel maps, standalone scanner channels, auto-create
+        options and the OpenRFID webhook grace, registers the
+        ``afc/u1_rfid`` webhook endpoint, and defers wiring to ``klippy:ready``.
+
+        :param config: Klipper ConfigWrapper for the ``[AFC_U1_rfid]`` section.
+        """
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.logger = logging.getLogger('AFC_U1_rfid')
@@ -195,6 +203,16 @@ class AFC_U1_RFID:
             return
 
         def patched_rfid_cb(channel, info, is_clear=False):
+            """filament_detect callback wrapper that protects scanner channels.
+
+            Suppresses the native print_task_config write for configured scanner
+            channels (keeping the loaded lane's display + flow K); every other
+            channel passes straight through to the original callback unchanged.
+
+            :param channel: U1 filament_detect channel index.
+            :param info: RFID info dict for the channel.
+            :param is_clear: True when the event signals tag removal/clear.
+            """
             # Suppress the native write for scanner channels — keep the loaded
             # lane's display + flow K; everything else passes through unchanged.
             if channel in scanner_channels:
@@ -221,12 +239,22 @@ class AFC_U1_RFID:
         (extruder_obj.th_extruder_name, added upstream in v1.1.22). Returns None
         if it can't be resolved unambiguously, logging what IS available so a
         config mismatch is obvious.
+
+        :param name: configured name — an AFC lane name or an extruder name.
+        :return: the resolved AFCLane, or None if it can't be resolved
+            unambiguously.
         """
         lane = self.afc.lanes.get(name)
         if lane is not None:
             return lane
 
         def _ext_names(l):
+            """Return the set of extruder names associated with a lane.
+
+            :param l: an AFC lane object.
+            :return set: the lane's AFC_extruder section name and toolhead
+                extruder name (th_extruder_name), for matching by either.
+            """
             e = getattr(l, 'extruder_obj', None)
             return {getattr(e, 'name', None),
                     getattr(e, 'th_extruder_name', None)}
@@ -341,6 +369,8 @@ class AFC_U1_RFID:
         trigger the read. Fall back to appending to the raw _notify_data_update_cb
         list (where print_task_config's own RFID callback lives) for other
         firmware revs.
+
+        :param fd: the filament_detect Klipper object to register the callback on.
         """
         if self._fd_cb_registered:
             return
@@ -509,6 +539,8 @@ class AFC_U1_RFID:
         no None check. A tag can be read before moonraker finishes connecting
         (it connects async after klippy:ready), so skip the push until it's up —
         the data is re-sent on the next read / save_vars.
+
+        :param lane: the AFC lane whose data to push to moonraker.
         """
         if getattr(self.afc, 'moonraker', None) is None:
             return
@@ -534,6 +566,9 @@ class AFC_U1_RFID:
              "hotend_min_temp": int, "hotend_max_temp": int,
              "bed_temp": int, "weight_grams": int, "card_uid": [int, ...],
              "manufacturing_date": str}   # -> Spoolman lot_nr
+
+        :param web_request: Klipper webhook request carrying the JSON body
+            described above (read via its get_int/get accessors).
         """
         try:
             channel = web_request.get_int('channel')
@@ -700,7 +735,13 @@ class AFC_U1_RFID:
 
     def _grace_expired(self, lane_name, channel, card_uid):
         """webhook_grace timer: process the deferred filament_detect read only if
-        no webhook arrived for the channel during the grace window."""
+        no webhook arrived for the channel during the grace window.
+
+        :param lane_name: AFC lane name for the channel (None for scanner-only).
+        :param channel: U1 filament_detect channel index.
+        :param card_uid: the tag UID the deferral was armed for; the read is
+            skipped if a newer tag has since superseded it.
+        """
         if self._pending_defer.get(channel) != card_uid:
             return  # superseded by a newer tag, or already cleared
         self._pending_defer.pop(channel, None)
@@ -777,6 +818,9 @@ class AFC_U1_RFID:
         key that means "colour count" (contains COLOR/COLOUR and COUNT/NUM/NUMS)
         rather than hard-coding one name. The OpenRFID Bambu processor decodes
         this as "Color Count", so the forwarded info dict should expose it.
+
+        :param info: raw RFID info dict from filament_detect / the webhook.
+        :return: the declared colour count (>= 1), or None if no such field.
         """
         for k, v in info.items():
             ku = str(k).upper()
@@ -870,7 +914,11 @@ class AFC_U1_RFID:
     def _fmt_mfg_date(raw):
         """Normalize a tag manufacturing date to a clean string (lot_nr), or
         None if unset. Accepts YYYYMMDD (filament_detect) or ISO YYYY-MM-DD
-        (OpenRFID webhook); treats epoch/1970 as 'unset'."""
+        (OpenRFID webhook); treats epoch/1970 as 'unset'.
+
+        :param raw: the tag's raw manufacturing-date value (str/int/None).
+        :return: a normalised 'YYYY-MM-DD' string (Spoolman lot_nr), or None.
+        """
         if not raw:
             return None
         s = str(raw).strip()
@@ -883,7 +931,11 @@ class AFC_U1_RFID:
     @staticmethod
     def _fmt_uid(raw):
         """Format a card UID (list of byte ints, e.g. [123,240,175,255]) as an
-        uppercase hex string ('7BF0AFFF'); pass through a non-empty string."""
+        uppercase hex string ('7BF0AFFF'); pass through a non-empty string.
+
+        :param raw: a card UID as a list/tuple of byte ints, or a string.
+        :return: the formatted uppercase-hex UID string, or None if empty.
+        """
         if not raw:
             return None
         if isinstance(raw, (list, tuple)):
@@ -1009,4 +1061,9 @@ class AFC_U1_RFID:
 
 
 def load_config(config):
+    """Klipper config hook: instantiate the U1 RFID reader.
+
+    :param config: Klipper config wrapper for the [AFC_U1_rfid] section.
+    :return: the AFC_U1_RFID instance.
+    """
     return AFC_U1_RFID(config)
