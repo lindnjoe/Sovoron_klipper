@@ -317,6 +317,12 @@ class afcACE(afcUnit):
             self._slot_map[lane_name] = slot
             lane.custom_load_cmd = f"{self._custom_load_cmd_name} UNIT={self.name} LANE={lane_name}"
             lane.custom_unload_cmd = f"{self._custom_unload_cmd_name} UNIT={self.name} LANE={lane_name}"
+            # ACE lanes have no physical load pin, so raw_load_state (_load_state)
+            # would default True (loadless default). Start it False so the native
+            # virtual hub (any(lane.raw_load_state)) reads clear until a sync or
+            # load drives the loaded-to-hub state. _handle_ready seeds it from the
+            # restored loaded_to_hub.
+            lane._load_state = False
 
         # Defer serial connection until reactor is running (klippy:ready)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -556,21 +562,14 @@ class afcACE(afcUnit):
                 and hub.is_virtual_pin())
 
     def _set_hub_state(self, lane, state: bool):
-        """Set the virtual hub sensor state for an ACE lane."""
-        hub = lane.hub_obj
-        if hub and hasattr(hub, 'is_virtual_pin') and hub.is_virtual_pin():
-            try:
-                eventtime = self.afc.reactor.monotonic()
-                hub.switch_pin_callback(eventtime, state)
-                # Mark the hub state-driven so it reports the value we just set
-                # instead of falling back to any(lane.raw_load_state). The native
-                # AFC_hub.switch_pin_callback no longer does this implicitly, so
-                # drive it explicitly here (idempotent; replaces the old
-                # AFC_compat hub_virtual_state shim).
-                if hasattr(hub, 'set_state_driven'):
-                    hub.set_state_driven()
-            except Exception:
-                pass
+        """Drive the lane's hub presence (loaded-to-hub) signal.
+
+        Vivid-style: ACE has no physical hub sensor, so the lane's
+        raw_load_state carries the loaded-to-hub state and the native AFC_hub
+        reports any(lane.raw_load_state). prep_state (filament inserted in slot)
+        is tracked separately. No switch_pin_callback / set_state_driven needed.
+        """
+        lane._load_state = bool(state)
 
     def _sync_slot_states(self, hw_status):
         """Sync lane prep/load state from ACE hardware slot status.
@@ -598,8 +597,14 @@ class afcACE(afcUnit):
             slot_transient = slot_status in ("shifting", "feeding", "unwinding")
 
             if not slot_transient:
-                lane._load_state = slot_ready
+                # Vivid-style: slot "ready" means filament inserted -> prep_state.
+                # raw_load_state (loaded-to-hub) is driven separately via
+                # _set_hub_state by the load/unload paths. When the slot empties,
+                # nothing is inserted so nothing can be at the hub either.
                 lane.prep_state = slot_ready
+                if not slot_ready:
+                    lane.loaded_to_hub = False
+                    self._set_hub_state(lane, False)
 
             prep_done = getattr(lane, '_afc_prep_done', False)
 
@@ -949,6 +954,7 @@ class afcACE(afcUnit):
                 self._ace.feed_filament(slot, dist_hub, self.feed_speed)
                 self._wait_for_feed_complete(slot, dist_hub, self.feed_speed)
                 lane.loaded_to_hub = True
+                self._set_hub_state(lane, True)
                 self.afc.save_vars()
                 self.logger.info(
                     f"ACE prep_post_load: {lane.name} staged at hub "
@@ -1057,7 +1063,6 @@ class afcACE(afcUnit):
                     slots = hw_status.get("slots", [])
                     if slot < len(slots) and isinstance(slots[slot], dict):
                         slot_ready = slots[slot].get("status", "") == "ready"
-                        cur_lane._load_state = slot_ready
                         cur_lane.prep_state = slot_ready
                         if not slot_ready:
                             cur_lane.loaded_to_hub = False
@@ -1106,6 +1111,7 @@ class afcACE(afcUnit):
                                               getattr(self.afc, 'load_to_hub', False))
                         if load_to_hub:
                             cur_lane.loaded_to_hub = True
+                            self._set_hub_state(cur_lane, True)
 
                     if (cur_lane.tool_loaded
                         and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
@@ -1433,6 +1439,7 @@ class afcACE(afcUnit):
 
         # Set loaded_to_hub AFTER successful feed
         cur_lane.loaded_to_hub = True
+        self._set_hub_state(cur_lane, True)
 
         # Enable feed assist
         if self._use_feed_assist(cur_lane):
@@ -2324,8 +2331,10 @@ class afcACE(afcUnit):
                 slot_info = self._slot_inventory[slot]
                 slot_loaded = bool(
                     slot_info and slot_info.get("status", "") == "ready")
-                lane._load_state = slot_loaded
                 lane.prep_state = slot_loaded
+                if not slot_loaded:
+                    lane.loaded_to_hub = False
+                    self._set_hub_state(lane, False)
 
                 if apply_filament_defaults is not None:
                     apply_filament_defaults(
