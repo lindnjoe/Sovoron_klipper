@@ -49,6 +49,13 @@ MAX_PAYLOAD_LEN = 100
 
 
 class Cmd:
+    """ACE2 serial-protocol command opcodes.
+
+    Each attribute is the integer command byte sent to (or received from) the
+    ACE2 controller in a protocol frame. Grouped roughly by function: device
+    discovery/identity, status/info queries, feed/rollback motion, drying, RFID,
+    and miscellaneous hardware controls (valve, fan, temperature).
+    """
     DISCOVER_DEVICE = 0
     ASSIGN_DEVICE_ID = 1
     IAP_VERSION = 5
