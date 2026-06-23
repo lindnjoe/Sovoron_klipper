@@ -3190,6 +3190,11 @@ class FollowerController:
 
         if getattr(oams, "action_status", None) is not None:
             def _retry(eventtime):
+                """Timer callback: re-attempt the queue once the OAMS is no longer busy.
+
+                :param eventtime: reactor time the timer fired.
+                :return: ``reactor.NEVER`` (one-shot timer).
+                """
                 self._mcu_command_in_flight[oams_name] = False
                 self._process_mcu_command_queue(oams_name)
                 return self.reactor.NEVER
@@ -3211,6 +3216,11 @@ class FollowerController:
             self.logger.error(f"MCU command failed for {oams_name}: {e}")
 
         def _done(eventtime):
+            """Timer callback: mark the command complete and process the next one.
+
+            :param eventtime: reactor time the timer fired.
+            :return: ``reactor.NEVER`` (one-shot timer).
+            """
             self._mcu_command_in_flight[oams_name] = False
             self._process_mcu_command_queue(oams_name)
             return self.reactor.NEVER
