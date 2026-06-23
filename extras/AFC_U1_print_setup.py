@@ -55,6 +55,12 @@ class AFCU1PrintSetup:
     """Snapmaker U1 pre-print setup for AFC-managed filament."""
 
     def __init__(self, config) -> None:
+        """Set up the U1 print-setup module.
+
+        :param config: Klipper config wrapper for ``[AFC_U1_print_setup]``;
+            reads ``physical_extruders`` (number of physical extruders on the
+            U1, default 4).
+        """
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
         self.logger = logging.getLogger("AFC_U1_print_setup")
@@ -67,6 +73,10 @@ class AFCU1PrintSetup:
 
     @property
     def afc(self):
+        """The AFC object, looked up and cached on first access.
+
+        :return: the main AFC printer object.
+        """
         if self._afc is None:
             self._afc = self.printer.lookup_object("AFC")
         return self._afc
@@ -126,7 +136,12 @@ class AFCU1PrintSetup:
         return None
 
     def _get_physical_index(self, extruder_name: str) -> Optional[int]:
-        """Convert a Klipper extruder name to its 0-based physical index."""
+        """Convert a Klipper extruder name to its 0-based physical index.
+
+        :param extruder_name: Klipper extruder name (``extruder``,
+            ``extruder1`` …).
+        :return: the 0-based physical index, or None if it can't be parsed.
+        """
         if extruder_name == "extruder":
             return 0
         try:
@@ -137,6 +152,8 @@ class AFCU1PrintSetup:
     def _build_extruder_map(self, used_tools: Optional[set] = None):
         """Build U1 extruder_map_table entries from AFC's tool_cmds.
 
+        :param used_tools: optional set of 0-based logical tool indices to
+            include (filters to tools actually used this print); None = all.
         :return: (map_entries, used_physical, phys_to_lane, logical_indices)
         """
         map_entries = []
@@ -173,7 +190,12 @@ class AFCU1PrintSetup:
     def _build_lanes_per_extruder(
             self, used_tools: Optional[set] = None) -> Dict[int, list]:
         """Map each physical extruder to its [(logical_index, lane), ...] used
-        in this print (for per-lane flow calibration on shared extruders)."""
+        in this print (for per-lane flow calibration on shared extruders).
+
+        :param used_tools: optional set of logical tool indices to include;
+            None = all mapped tools.
+        :return dict: physical extruder index -> list of (logical_index, lane).
+        """
         result: Dict[int, list] = {}
         for tcmd, lane_name in self.afc.tool_cmds.items():
             if not tcmd.startswith("T"):
@@ -199,7 +221,12 @@ class AFCU1PrintSetup:
 
     def _afc_color_to_u1(self, color: Optional[str]):
         """Convert an AFC hex colour to (U1 ARGB int, RRGGBBAA string).
-        Defaults to white (0xFFFFFFFF) when missing/invalid."""
+        Defaults to white (0xFFFFFFFF) when missing/invalid.
+
+        :param color: AFC colour as a hex string (``RRGGBB`` or ``RRGGBBAA``,
+            optional leading ``#``), or None.
+        :return tuple: (ARGB integer, 8-char RRGGBBAA hex string).
+        """
         if not color:
             return 0xFFFFFFFF, "FFFFFFFF"
         color = color.lstrip("#").upper()
@@ -218,7 +245,12 @@ class AFCU1PrintSetup:
     def _sync_filament_to_ptc(self, ptc, phys_to_lane: Dict[int, "AFCLane"]):
         """Push AFC lane filament info into U1 print_task_config so the display
         and flow calibrator see AFC-managed filament. Backs up and saves to disk
-        so it survives the U1's async RFID-clear events."""
+        so it survives the U1's async RFID-clear events.
+
+        :param ptc: the print_task_config object to write into.
+        :param phys_to_lane: physical extruder index -> AFC lane providing its
+            filament.
+        """
         cfg = ptc.print_task_config
 
         for phys, lane in phys_to_lane.items():
@@ -270,7 +302,17 @@ class AFCU1PrintSetup:
                             flow_calibrate, bed_mesh, shaper_calibrate,
                             flow_calib_phys=None):
         """Write extruder map + calibration flags into print_task_config and
-        mirror them into reprint_info, then save to disk."""
+        mirror them into reprint_info, then save to disk.
+
+        :param ptc: the print_task_config object to write into.
+        :param map_entries: list of ``[logical_index, physical_index]`` pairs.
+        :param used_physical: iterable of physical extruder indices used.
+        :param flow_calibrate: whether flow calibration is requested.
+        :param bed_mesh: whether auto bed levelling is requested.
+        :param shaper_calibrate: whether input-shaper calibration is requested.
+        :param flow_calib_phys: optional set of physical extruders to flow
+            calibrate (defaults to all ``used_physical``).
+        """
         cfg = ptc.print_task_config
 
         for logical, physical in map_entries:
@@ -318,6 +360,8 @@ class AFCU1PrintSetup:
         setup = self
 
         def patched_update():
+            """Re-assert filament_exist=True for AFC-managed extruders after the
+            U1's own update resets them from the hardware feed sensors."""
             original_fn()
             cfg = ptc.print_task_config
             filament_exist = cfg.get("filament_exist")
@@ -351,6 +395,9 @@ class AFCU1PrintSetup:
         Usage
         -----
         `AFC_PRINT_SETUP_U1 BED_MESH=<0|1> FLOW_CALIBRATE=<0|1> SHAPER_CALIBRATE=<0|1> Z_OFFSET=<mm>`
+
+        :param gcmd: the G-code command, providing BED_MESH / FLOW_CALIBRATE /
+            SHAPER_CALIBRATE / Z_OFFSET parameters.
         """
         msm = self.printer.lookup_object("machine_state_manager", None)
         ptc = self.printer.lookup_object("print_task_config", None)
@@ -445,7 +492,10 @@ class AFCU1PrintSetup:
 
     def cmd_AFC_SYNC_FILAMENT_U1(self, gcmd: "GCodeCommand"):
         """Push current AFC lane filament data to U1 print_task_config without
-        running any calibrations (resync after RFID clears / manual changes)."""
+        running any calibrations (resync after RFID clears / manual changes).
+
+        :param gcmd: the G-code command (takes no parameters).
+        """
         ptc = self.printer.lookup_object("print_task_config", None)
         if ptc is None:
             return
@@ -456,6 +506,10 @@ class AFCU1PrintSetup:
     # ── Pre-print step helpers ───────────────────────────────────────
 
     def _run_home_z(self, z_offset=0.0):
+        """Home the Z axis, applying an optional Z offset.
+
+        :param z_offset: extra Z offset in mm to pass to G28 (0 = none).
+        """
         if z_offset:
             self.gcode.run_script_from_command(
                 "G28 Z Z_OFFSET {:.4f}".format(z_offset))
@@ -463,23 +517,33 @@ class AFCU1PrintSetup:
             self.gcode.run_script_from_command("G28 Z")
 
     def _run_bed_mesh(self, z_offset=0.0):
+        """Run an adaptive bed-mesh calibration.
+
+        :param z_offset: optional Z offset in mm applied during the mesh.
+        """
         cmd = "BED_MESH_CALIBRATE PROBE_COUNT=11,11 ADAPTIVE=1 ADAPTIVE_MARGIN=50"
         if z_offset:
             cmd += " Z_OFFSET={:.4f}".format(z_offset)
         self.gcode.run_script_from_command(cmd)
 
     def _run_shaper_calibrate(self):
+        """Run the U1 fast input-shaper calibration macro."""
         self.gcode.run_script_from_command("SM_FAST_SHAPER_CALIBRATE")
 
     def _run_defect_detection(self):
+        """Run the U1 bed defect-detection scan."""
         self.gcode.run_script_from_command("DEFECT_DETECTION_DETECT_BED")
 
     def _exit_discard_bin(self):
+        """Exit the U1 discard bin (SNAPMAKER_EXIT_DISCARD_BIN)."""
         self.gcode.run_script_from_command("SNAPMAKER_EXIT_DISCARD_BIN")
 
     def _ensure_feed_assist(self, lane):
         """Start an ACE/OpenAMS lane's feed assist if its unit supports it and
-        it isn't already running (used during flow calibration)."""
+        it isn't already running (used during flow calibration).
+
+        :param lane: the AFC lane whose unit feed assist to start.
+        """
         unit = getattr(lane, "unit_obj", None)
         if unit is None:
             return
@@ -503,7 +567,10 @@ class AFCU1PrintSetup:
 
     def _run_switch_check(self, used_physical):
         """Select each used extruder and clear the discard bin to confirm the
-        toolchanger docks/undocks for every extruder in this print."""
+        toolchanger docks/undocks for every extruder in this print.
+
+        :param used_physical: iterable of physical extruder indices to check.
+        """
         self.gcode.run_script_from_command(
             "SET_ACTION_CODE ACTION=PRINT_SWITCH_CHECKING")
         for ext in used_physical:
@@ -514,11 +581,17 @@ class AFCU1PrintSetup:
         self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=IDLE")
 
     def _run_nozzle_clean(self):
+        """Move to the discard position, roughly clean the nozzle, exit the bin."""
         self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
         self.gcode.run_script_from_command("ROUGHLY_CLEAN_NOZZLE")
         self._exit_discard_bin()
 
     def _run_preheat(self, used_physical, preheat_temp=150):
+        """Preheat each used extruder to a holding temperature.
+
+        :param used_physical: iterable of physical extruder indices to preheat.
+        :param preheat_temp: holding temperature in C (default 150).
+        """
         for ext in used_physical:
             self.gcode.run_script_from_command(
                 "SM_PRINT_EXTRUDER_PREHEAT EXTRUDER={ext} TEMP={temp}".format(
@@ -533,6 +606,12 @@ class AFCU1PrintSetup:
         feed assist, and run the measurement — AFC_autocal._calibrate() runs the
         calibrate command and stores/applies/persists the result. Bypasses the
         U1's SM_PRINT_FLOW_CALIBRATE (its ``T{ext} A0`` triggers RFID clears).
+
+        :param ptc: the print_task_config object (for per-lane filament sync).
+        :param flow_calib_phys: set of physical extruder indices to calibrate.
+        :param phys_to_lane: physical extruder index -> AFC lane fallback.
+        :param lanes_per_ext: physical extruder index -> [(logical_index, lane)]
+            for per-lane calibration on shared extruders.
         """
         autocal = self.printer.lookup_object("AFC_autocal", None)
         flow_cal = self.printer.lookup_object("flow_calibrator", None)
@@ -598,5 +677,9 @@ class AFCU1PrintSetup:
 
 
 def load_config(config):
-    """Klipper module entry point for [AFC_U1_print_setup]."""
+    """Klipper module entry point for [AFC_U1_print_setup].
+
+    :param config: Klipper config wrapper for the section.
+    :return: the AFCU1PrintSetup instance.
+    """
     return AFCU1PrintSetup(config)
