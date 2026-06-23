@@ -650,17 +650,20 @@ class afcAMS(afcUnit):
                 and hub.is_virtual_pin())
 
     def _sync_lanes_from_hardware(self):
-        """Read current OAMS sensor values and seed tracking arrays.
+        """Read current OAMS sensor values and seed lane state.
 
-        loaded_to_hub is a logical state managed by load/unload
-        operations and restored from the vars file — it is NOT derived
-        from hub HES here.  We only seed the hub object's virtual
-        switch so AFC sees the physical sensor at startup.
+        Vivid-style virtual hub: F1S (feeder) -> prep_state (filament inserted
+        in the lane); hub HES -> raw_load_state, which the native AFC_hub
+        aggregates as any(lane.raw_load_state). No switch_pin_callback /
+        set_state_driven needed.
+
+        loaded_to_hub is a LATCHED logical flag — seeded here from F1S (a
+        present spool is staged at the hub), then held until load/unload or the
+        spool is removed; it is never clobbered by the transient hub HES.
         """
         if self.oams is None:
             return
 
-        eventtime = self.afc.reactor.monotonic()
         f1s_values = getattr(self.oams, 'f1s_hes_value', None) or []
         hub_values = getattr(self.oams, 'hub_hes_value', None) or []
 
@@ -672,17 +675,13 @@ class afcAMS(afcUnit):
             f1s_present = bool(f1s_values[slot]) if slot < len(f1s_values) else False
             hub_present = bool(hub_values[slot]) if slot < len(hub_values) else False
 
-            lane._load_state = f1s_present
+            # Vivid model: prep_state = F1S (filament inserted in lane);
+            # raw_load_state = live hub HES (hub-junction occupancy, trips while
+            # filament is at the junction, 0 at idle). loaded_to_hub is LATCHED —
+            # seeded here from F1S (a present spool is staged at the hub).
             lane.prep_state = f1s_present
+            lane._load_state = hub_present
             lane.loaded_to_hub = f1s_present
-
-            # Seed hub virtual switch from hardware
-            hub = getattr(lane, 'hub_obj', None)
-            if hub is not None and hasattr(hub, 'switch_pin_callback'):
-                try:
-                    hub.switch_pin_callback(eventtime, hub_present)
-                except Exception:
-                    pass
 
             if slot < len(f1s_values):
                 self._last_f1s[slot] = f1s_present
@@ -708,13 +707,16 @@ class afcAMS(afcUnit):
             if slot < 0:
                 continue
 
-            # F1S sensor (filament in spool bay)
+            # F1S -> prep_state (filament inserted in lane). When the spool is
+            # removed (F1S lost) the lane can no longer be loaded to hub, so
+            # clear the latched loaded_to_hub. loaded_to_hub is otherwise NOT
+            # sensor-derived.
             if slot < len(f1s_values):
                 new_f1s = bool(f1s_values[slot])
 
-                lane._load_state = new_f1s
                 lane.prep_state = new_f1s
-                lane.loaded_to_hub = new_f1s
+                if not new_f1s:
+                    lane.loaded_to_hub = False
 
                 if resync_prev:
                     self._last_f1s[slot] = new_f1s
@@ -732,21 +734,12 @@ class afcAMS(afcUnit):
 
                     self._last_f1s[slot] = new_f1s
 
-            # Hub HES sensor — update the hub object's virtual switch so
-            # AFC sees the physical sensor state.  loaded_to_hub is a
-            # separate logical state managed by load/unload operations.
+            # Hub HES -> raw_load_state: live hub-junction occupancy aggregated
+            # by the native virtual hub (any(lane.raw_load_state)). 0 at idle is
+            # correct — filament is staged clear of the junction.
             if slot < len(hub_values):
                 new_hub = bool(hub_values[slot])
-                old_hub = self._last_hub[slot] if slot < len(self._last_hub) else None
-
-                if resync_prev or (old_hub is not None and new_hub != old_hub):
-                    hub = getattr(lane, 'hub_obj', None)
-                    if hub is not None and hasattr(hub, 'switch_pin_callback'):
-                        try:
-                            hub.switch_pin_callback(eventtime, new_hub)
-                        except Exception:
-                            pass
-
+                lane._load_state = new_hub
                 self._last_hub[slot] = new_hub
 
         return eventtime + 2.0
@@ -939,29 +932,18 @@ class afcAMS(afcUnit):
         else:
             slot = self._spool_map.get(cur_lane.name, -1)
 
-            # Read state directly from OAMS hardware sensors
+            # Read OAMS sensors. prep_state = F1S (inserted); raw_load_state =
+            # live hub HES. loaded_to_hub is latched: seed it from F1S (a present
+            # spool is staged at the hub).
             f1s_values = getattr(self.oams, 'f1s_hes_value', None) or []
             hub_values = getattr(self.oams, 'hub_hes_value', None) or []
 
             f1s_present = bool(f1s_values[slot]) if 0 <= slot < len(f1s_values) else False
             hub_present = bool(hub_values[slot]) if 0 <= slot < len(hub_values) else False
 
-            # Update lane state from hardware.
-            # loaded_to_hub = True when a spool is present (F1S) — OAMS
-            # feeds to hub on demand so a loaded bay is "at the hub."
-            # Hub HES is a transit sensor, not an idle-state indicator.
-            cur_lane._load_state = f1s_present
             cur_lane.prep_state = f1s_present
+            cur_lane._load_state = hub_present
             cur_lane.loaded_to_hub = f1s_present
-
-            # Seed hub virtual switch from hardware sensor
-            hub = getattr(cur_lane, 'hub_obj', None)
-            if hub is not None and hasattr(hub, 'switch_pin_callback'):
-                try:
-                    hub.switch_pin_callback(
-                        self.afc.reactor.monotonic(), hub_present)
-                except Exception:
-                    pass
 
             if f1s_present:
                 self.lane_loaded(cur_lane)
@@ -1102,10 +1084,9 @@ class afcAMS(afcUnit):
         if not self._oams_load(cur_lane):
             return False
 
+        # Latch loaded_to_hub True; raw_load_state (live hub HES) is updated by
+        # the sensor poll as filament passes/clears the hub junction.
         cur_lane.loaded_to_hub = True
-        hub_obj = getattr(cur_lane, "hub_obj", None)
-        if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
-            hub_obj.switch_pin_callback(self.afc.reactor.monotonic(), True)
 
         return True
 
@@ -1146,8 +1127,9 @@ class afcAMS(afcUnit):
                 cur_lane, f"OAMS unload failed for {cur_lane.name}")
             return False
 
-        # Finalize state
-        cur_lane.loaded_to_hub = True
+        # Finalize state. _oams_unload() already latched loaded_to_hub from the
+        # live F1S (spool present in bay = still staged; spool yanked = not
+        # staged) and settled the hub HES, so do NOT force it True here.
         self.lane_tool_unloaded(cur_lane)
         self._hub_load_suppressed.add(cur_lane.name)
 
@@ -1431,22 +1413,25 @@ class afcAMS(afcUnit):
             if self._monitor:
                 self._monitor.notify_unload_complete()
 
-            # Update hub state from hardware sensor
-            if hasattr(self.oams, 'hub_hes_value'):
-                hub_values = self.oams.hub_hes_value
-                if hub_values and spool_index < len(hub_values):
-                    cur_lane.loaded_to_hub = bool(hub_values[spool_index])
+            # After unload the spool stays staged in the bay: latch
+            # loaded_to_hub to whether the spool is still present (F1S).
+            # raw_load_state (live hub HES) is refreshed by the sensor poll.
+            if hasattr(self.oams, 'f1s_hes_value'):
+                f1s_values = self.oams.f1s_hes_value
+                if f1s_values and spool_index < len(f1s_values):
+                    f1s_present = bool(f1s_values[spool_index])
+                    cur_lane.prep_state = f1s_present
+                    cur_lane.loaded_to_hub = f1s_present
 
-                    # Update virtual hub sensor
-                    hub = cur_lane.hub_obj
-                    if hub and hasattr(hub, 'switch_pin_callback'):
-                        try:
-                            eventtime = self.afc.reactor.monotonic()
-                            hub.switch_pin_callback(
-                                eventtime,
-                                bool(hub_values[spool_index]))
-                        except Exception:
-                            pass
+            # The OAMS retract-past/push-back/back-off settle makes the hub HES
+            # bounce; wait for it to settle clear so the shared virtual hub reads
+            # clear before AFC's next-lane "hub clear?" load check — otherwise the
+            # swap errors "Hub not clear" on a transient reading. Reflect the
+            # settled value immediately instead of waiting for the 2s sensor poll.
+            if self._wait_for_hub_settle(spool_index):
+                cur_lane._load_state = False
+                if spool_index < len(self._last_hub):
+                    self._last_hub[spool_index] = False
 
             return success
 
@@ -2348,6 +2333,46 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
         self.logger.error("OAMS idle timeout")
         return False
+
+    def _wait_for_hub_settle(self, spool_index: int, timeout: float = 4.0,
+                             stable_time: float = 0.3) -> bool:
+        """Wait for a spool's hub HES to settle CLEAR after an unload.
+
+        The OAMS unload retracts filament past the hub HES, pushes it back to
+        the sensor, then backs off to idle — so the hub HES bounces before it
+        settles clear. Because the shared virtual hub reports
+        any(lane.raw_load_state), if AFC's next-lane "hub clear?" check runs
+        mid-bounce it falsely sees "Hub not clear". Poll the LIVE hub HES until
+        it has read clear continuously for ``stable_time`` (up to ``timeout``).
+
+        :return: True if it settled clear, False on timeout (a real obstruction).
+        """
+        if self.oams is None:
+            return True
+        reactor = self.afc.reactor
+        deadline = reactor.monotonic() + timeout
+        clear_since = None
+        while True:
+            now = reactor.monotonic()
+            try:
+                hub_values = getattr(self.oams, 'hub_hes_value', None) or []
+                hub_present = (bool(hub_values[spool_index])
+                               if spool_index < len(hub_values) else False)
+            except Exception:
+                hub_present = False
+            if not hub_present:
+                if clear_since is None:
+                    clear_since = now
+                elif now - clear_since >= stable_time:
+                    return True
+            else:
+                clear_since = None
+            if now >= deadline:
+                self.logger.warning(
+                    f"OAMS hub HES did not settle clear within {timeout}s "
+                    f"(spool {spool_index}); proceeding")
+                return False
+            reactor.pause(now + 0.05)
 
     def _get_monitor_state(self):
         """Get FPS state for follower/monitor interactions."""
