@@ -1478,6 +1478,16 @@ class afcAMS(afcUnit):
                     cur_lane.prep_state = f1s_present
                     cur_lane.loaded_to_hub = f1s_present
 
+            # The OAMS retract-past/push-back/back-off settle makes the hub HES
+            # bounce; wait for it to settle clear so the shared virtual hub reads
+            # clear before AFC's next-lane "hub clear?" load check — otherwise the
+            # swap errors "Hub not clear" on a transient reading. Reflect the
+            # settled value immediately instead of waiting for the 2s sensor poll.
+            if self._wait_for_hub_settle(spool_index):
+                cur_lane._load_state = False
+                if spool_index < len(self._last_hub):
+                    self._last_hub[spool_index] = False
+
             return success
 
         except Exception as e:
@@ -2378,6 +2388,46 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
         self.logger.error("OAMS idle timeout")
         return False
+
+    def _wait_for_hub_settle(self, spool_index: int, timeout: float = 4.0,
+                             stable_time: float = 0.3) -> bool:
+        """Wait for a spool's hub HES to settle CLEAR after an unload.
+
+        The OAMS unload retracts filament past the hub HES, pushes it back to
+        the sensor, then backs off to idle — so the hub HES bounces before it
+        settles clear. Because the shared virtual hub reports
+        any(lane.raw_load_state), if AFC's next-lane "hub clear?" check runs
+        mid-bounce it falsely sees "Hub not clear". Poll the LIVE hub HES until
+        it has read clear continuously for ``stable_time`` (up to ``timeout``).
+
+        :return: True if it settled clear, False on timeout (a real obstruction).
+        """
+        if self.oams is None:
+            return True
+        reactor = self.afc.reactor
+        deadline = reactor.monotonic() + timeout
+        clear_since = None
+        while True:
+            now = reactor.monotonic()
+            try:
+                hub_values = getattr(self.oams, 'hub_hes_value', None) or []
+                hub_present = (bool(hub_values[spool_index])
+                               if spool_index < len(hub_values) else False)
+            except Exception:
+                hub_present = False
+            if not hub_present:
+                if clear_since is None:
+                    clear_since = now
+                elif now - clear_since >= stable_time:
+                    return True
+            else:
+                clear_since = None
+            if now >= deadline:
+                self.logger.warning(
+                    f"OAMS hub HES did not settle clear within {timeout}s "
+                    f"(spool {spool_index}); proceeding")
+                return False
+            reactor.pause(now + 0.05)
 
     def _get_monitor_state(self):
         """Get FPS state for follower/monitor interactions."""
