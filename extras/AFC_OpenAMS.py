@@ -1165,8 +1165,9 @@ class afcAMS(afcUnit):
                 cur_lane, f"OAMS unload failed for {cur_lane.name}")
             return False
 
-        # Finalize state
-        cur_lane.loaded_to_hub = True
+        # Finalize state. _oams_unload() already latched loaded_to_hub from the
+        # live F1S (spool present in bay = still staged; spool yanked = not
+        # staged) and settled the hub HES, so do NOT force it True here.
         self.lane_tool_unloaded(cur_lane)
         self._hub_load_suppressed.add(cur_lane.name)
 
