@@ -26,7 +26,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 250.0,
             "td1_data": {}
         },
@@ -56,7 +56,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 250.0,
             "td1_data": {}
         },
@@ -86,7 +86,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 250.0,
             "td1_data": {}
         },
@@ -116,7 +116,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 250.0,
             "td1_data": {}
         }
@@ -143,7 +143,7 @@
             "remember_spool": false,
             "spool_id": 35,
             "color": "#328169",
-            "weight": 665.5034967664843,
+            "weight": 665.2107904530706,
             "extruder_temp": 210,
             "bed_temp": 60,
             "runout_lane": null,
