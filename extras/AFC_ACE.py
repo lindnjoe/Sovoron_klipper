@@ -1292,55 +1292,55 @@ class afcACE(afcUnit):
             else:
                 self.lane_loaded(cur_lane)
                 msg += "<span class=success--text>LOCKED</span>"
-                if not cur_lane.raw_load_state:
-                    msg += "<span class=error--text> NOT LOADED</span>"
-                    self.lane_not_ready(cur_lane)
-                    succeeded = False
-                else:
-                    cur_lane.status = AFCLaneState.LOADED
-                    msg += "<span class=success--text> AND LOADED</span>"
-                    self.lane_illuminate_spool(cur_lane)
+                # For ACE the slot "ready" status IS the load indicator (there's
+                # no separate load sensor), so a present/LOCKED spool is loaded
+                # and ready. Don't gate "LOADED" on raw_load_state — that now
+                # tracks the logical loaded-to-hub state for the virtual hub and
+                # is only set once a lane is fed to the toolhead.
+                cur_lane.status = AFCLaneState.LOADED
+                msg += "<span class=success--text> AND LOADED</span>"
+                self.lane_illuminate_spool(cur_lane)
 
-                    # Apply RFID data if available and not already set
-                    if apply_filament_defaults is not None:
-                        slot_info = self._slot_inventory[slot] if slot < self.SLOTS_PER_UNIT else {}
-                        apply_filament_defaults(
-                            cur_lane, slot_info,
-                            color_converter=rgb_array_to_hex,
-                            afc_defaults={
-                                "default_material_type": getattr(self.afc, "default_material_type", None),
-                                "default_color": getattr(self.afc, "default_color", None),
-                            })
+                # Apply RFID data if available and not already set
+                if apply_filament_defaults is not None:
+                    slot_info = self._slot_inventory[slot] if slot < self.SLOTS_PER_UNIT else {}
+                    apply_filament_defaults(
+                        cur_lane, slot_info,
+                        color_converter=rgb_array_to_hex,
+                        afc_defaults={
+                            "default_material_type": getattr(self.afc, "default_material_type", None),
+                            "default_color": getattr(self.afc, "default_color", None),
+                        })
 
-                    # Assume filament staged at hub on startup
-                    if not cur_lane.tool_loaded and not cur_lane.loaded_to_hub:
-                        load_to_hub = getattr(cur_lane, 'load_to_hub',
-                                              getattr(self.afc, 'load_to_hub', False))
-                        if load_to_hub:
-                            cur_lane.loaded_to_hub = True
-                            self._set_hub_state(cur_lane, True)
-
-                    if (cur_lane.tool_loaded
-                        and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+                # Assume filament staged at hub on startup
+                if not cur_lane.tool_loaded and not cur_lane.loaded_to_hub:
+                    load_to_hub = getattr(cur_lane, 'load_to_hub',
+                                          getattr(self.afc, 'load_to_hub', False))
+                    if load_to_hub:
                         cur_lane.loaded_to_hub = True
                         self._set_hub_state(cur_lane, True)
-                        cur_lane.sync_to_extruder()
-                        msg += "<span class=primary--text> in ToolHead</span>"
 
-                        if self.afc.current == cur_lane.name:
-                            self.afc.spool.set_active_spool(cur_lane.spool_id)
-                            self.lane_tool_loaded(cur_lane)
-                            cur_lane.status = AFCLaneState.TOOLED
-                            self.printer.send_event("afc:tool_loaded", cur_lane)
-                        else:
-                            self.lane_tool_loaded_idle(cur_lane)
-                        cur_lane.enable_buffer()
+                if (cur_lane.tool_loaded
+                    and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+                    cur_lane.loaded_to_hub = True
+                    self._set_hub_state(cur_lane, True)
+                    cur_lane.sync_to_extruder()
+                    msg += "<span class=primary--text> in ToolHead</span>"
 
-                        # Start feed assist for any lane confirmed in the
-                        # toolhead — don't gate on self.afc.current which
-                        # may be None on toolchangers during prep.
-                        if self._use_feed_assist(cur_lane):
-                            self._start_feed_assist(slot)
+                    if self.afc.current == cur_lane.name:
+                        self.afc.spool.set_active_spool(cur_lane.spool_id)
+                        self.lane_tool_loaded(cur_lane)
+                        cur_lane.status = AFCLaneState.TOOLED
+                        self.printer.send_event("afc:tool_loaded", cur_lane)
+                    else:
+                        self.lane_tool_loaded_idle(cur_lane)
+                    cur_lane.enable_buffer()
+
+                    # Start feed assist for any lane confirmed in the
+                    # toolhead — don't gate on self.afc.current which
+                    # may be None on toolchangers during prep.
+                    if self._use_feed_assist(cur_lane):
+                        self._start_feed_assist(slot)
 
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
