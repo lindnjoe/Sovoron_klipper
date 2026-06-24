@@ -263,7 +263,11 @@ class AFC_autocal:
             else:
                 self.logger.warning(msg)
             return None
-        ext_name = cur_lane.extruder_obj.name
+        # flow_calibrator keys _current_k by the Klipper toolhead extruder name,
+        # which differs from the AFC_extruder section name when the extruder is
+        # renamed (v1.1.22 'extruder_name'). Use the Klipper name.
+        ext_obj = cur_lane.extruder_obj
+        ext_name = getattr(ext_obj, 'th_extruder_name', None) or ext_obj.name
         k_before = flow_cal._current_k.get(ext_name)
         run = runner if runner is not None else self.gcode.run_script_from_command
         run(self.calibrate_gcode)
@@ -600,8 +604,14 @@ class AFC_autocal:
             if ext_obj is None:
                 return False
             active = self.printer.lookup_object('toolhead').get_extruder()
-            return (active is not None
-                    and active.get_name() == getattr(ext_obj, 'name', None))
+            if active is None:
+                return False
+            # The toolhead reports the Klipper extruder name; an AFC_extruder
+            # section can be renamed (v1.1.22 'extruder_name'), so match either
+            # the section name or the Klipper name (th_extruder_name).
+            return active.get_name() in (
+                getattr(ext_obj, 'name', None),
+                getattr(ext_obj, 'th_extruder_name', None))
         except Exception:
             return False
 
