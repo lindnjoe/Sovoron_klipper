@@ -243,14 +243,11 @@ class TemperatureACE:
             ``measured_max_temp``, the source ``ace_unit`` name, and
             ``humidity`` when the unit reports it (ACE 2 only).
         """
-        status = {
-            "temperature": round(self.temp, 2),
-            "measured_min_temp": round(self.measured_min, 2)
-            if self.measured_min != float("inf")
-            else 0.0,
-            "measured_max_temp": round(self.measured_max, 2),
-            "ace_unit": self.ace_unit_name,
-        }
+        # Mirror the OpenAMS sensor's status shape so Mainsail's card shows just
+        # temperature (plus humidity for ACE 2). measured_min/max were extra
+        # numeric fields Mainsail rendered as unlabeled values that cluttered the
+        # card. measured_min/max stay tracked internally for the shutdown limits.
+        status = {"temperature": round(self.temp, 2)}
         # Only present for ACE 2 (V1 ACE has no humidity sensor), matching how
         # the OpenAMS temperature sensor surfaces humidity.
         if self._has_humidity:
