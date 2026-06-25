@@ -542,6 +542,22 @@ class afcAMS(afcUnit):
                 self.gcode.register_command(cmd, handler, desc=desc)
             except Exception:
                 pass
+        # Suffix-free user-facing commands route by an optional UNIT= argument
+        # (default: the first/only unit) via _run_on_oams_unit, so multi-unit
+        # setups stay addressable by name without the parser-hostile suffixes.
+        for cmd, method_name, desc in [
+            ('AFC_OAMS_CALIBRATE_PTFE', 'cmd_AFC_OAMS_CALIBRATE_PTFE', "Calibrate OpenAMS PTFE length"),
+            ('AFC_OAMS_CALIBRATE_HUB_HES', 'cmd_AFC_OAMS_CALIBRATE_HUB_HES', "Calibrate OpenAMS hub HES for a spool"),
+            ('AFC_OAMS_CALIBRATE_HUB_HES_ALL', 'cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL', "Calibrate all loaded OpenAMS hub HES sensors"),
+            ('AFC_OAMS_CLEAR_ERRORS', 'cmd_AFC_OAMS_CLEAR_ERRORS', "Clear OpenAMS errors and resync state"),
+        ]:
+            try:
+                self.gcode.register_command(
+                    cmd,
+                    (lambda gcmd, m=method_name: self._run_on_oams_unit(gcmd, m)),
+                    desc=desc)
+            except Exception:
+                pass
 
         # Sensor polling state
         self._last_f1s = [None] * 4
@@ -1055,6 +1071,26 @@ class afcAMS(afcUnit):
         return cur_lane.get_toolhead_pre_sensor_state()
 
     # ── Custom load/unload gcode handlers ───────────────────────────
+
+    def _run_on_oams_unit(self, gcmd, method_name):
+        """Dispatch a base (suffix-free) command to the target OpenAMS unit.
+
+        Resolves the unit from an optional UNIT= argument; falls back to this
+        unit (the first registered, i.e. the only one in single-unit setups)
+        when UNIT is omitted or unmatched. Keeps the suffix-free commands
+        addressable by name without the per-unit suffixes Klipper's gcode parser
+        truncates for names like "oams2_1".
+
+        :param gcmd: the gcode command (read for an optional UNIT= argument).
+        :param method_name: name of the bound command method to invoke.
+        """
+        unit_name = gcmd.get('UNIT', None)
+        target = self
+        if unit_name:
+            cand = getattr(self.afc, 'units', {}).get(unit_name)
+            if cand is not None and hasattr(cand, method_name):
+                target = cand
+        return getattr(target, method_name)(gcmd)
 
     def _cmd_oams_custom_load(self, gcmd):
         """Handle _OAMS_CUSTOM_LOAD — filament transport to toolhead area."""
