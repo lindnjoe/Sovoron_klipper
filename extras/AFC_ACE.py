@@ -583,9 +583,17 @@ class afcACE(afcUnit):
         # Apply encoder feed-check tuning (ACE2 only; base is a no-op).
         self._apply_feed_check()
 
-        # Seed slot status from get_status
+        # The ACE runs its own load-to-toolhead-and-back detection cycle right
+        # after connect and won't answer queries until it finishes — firing the
+        # status/inventory burst into that busy window just times out and yields
+        # stale reads. Wait for it to report ready first.
+        self._wait_for_ace_ready(timeout=60.0)
+
+        # Seed slot status from a single get_status (covers all 4 slots, which is
+        # all we need for prep/loaded state). Per-slot RFID detail is pulled by
+        # _sync_inventory below, now that the unit is idle.
         try:
-            hw_status = self._ace.get_status(timeout=2.0)
+            hw_status = self._ace.get_status(timeout=3.0)
             if isinstance(hw_status, dict):
                 self._cached_hw_status = hw_status
                 for i, slot_data in enumerate(hw_status.get("slots", [])):
@@ -699,6 +707,13 @@ class afcACE(afcUnit):
         """
         slots = hw_status.get("slots", [])
 
+        # The unit reports overall 'busy' while it runs its own feed/unwind/
+        # detection cycles (notably the load-to-toolhead-and-back it does after
+        # connect). Its per-slot 'empty' reads are unreliable then, so we don't
+        # let them clear a staged lane or fire a runout — that flicker is what
+        # left ACE 2 lanes reading "detected but not loaded" after prep.
+        unit_busy = hw_status.get("status") == "busy"
+
         resync_prev = self._prev_states_stale
         if resync_prev:
             self._prev_states_stale = False
@@ -730,7 +745,8 @@ class afcACE(afcUnit):
                     # present; clearing on those would drop a loaded_to_hub
                     # restored from saved vars and leave the lane reading
                     # "detected but not loaded" after startup.
-                    if self._prev_slot_states.get(lane.name) and not resync_prev:
+                    if (self._prev_slot_states.get(lane.name)
+                            and not resync_prev and not unit_busy):
                         lane.loaded_to_hub = False
                         self._set_hub_state(lane, False)
                 elif (self._preloads_to_hub_on_insert
@@ -783,8 +799,10 @@ class afcACE(afcUnit):
                     lane.handle_load_runout(eventtime, True)
 
             # Filament removed — skip on first callback after operation
-            # to avoid false triggers from stale _prev_slot_states.
-            if not slot_ready and not slot_transient and not resync_prev:
+            # (stale _prev_slot_states) and while the unit is busy (its own
+            # cycle flickers slots 'empty', which would fire a false runout).
+            if (not slot_ready and not slot_transient
+                    and not resync_prev and not unit_busy):
                 self._hub_load_suppressed.discard(lane.name)
                 prev_ready = self._prev_slot_states.get(lane.name)
                 if prev_ready:
