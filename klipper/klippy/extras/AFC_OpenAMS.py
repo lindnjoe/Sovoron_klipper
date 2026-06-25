@@ -528,6 +528,20 @@ class afcAMS(afcUnit):
         self.gcode.register_command(
             f'AFC_OAMS_CLEAR_ERRORS_{unit_suffix}', self.cmd_AFC_OAMS_CLEAR_ERRORS,
             desc=f"Clear OpenAMS errors and resync state ({self.name})")
+        # Suffix-free internal load/unload aliases (first unit wins). Klipper's
+        # gcode parser truncates a name like "_OAMS_CUSTOM_LOAD_OAMS2_1" to
+        # "_OAMS_CUSTOM_LOAD_OAMS2" (it stops at the first number group), so a
+        # unit whose name has a digit before "_<n>" would be unreachable via the
+        # suffixed name. The base command dispatches to the correct unit via the
+        # lane's unit_obj (see _cmd_oams_custom_load), staying multi-unit safe.
+        for cmd, handler, desc in [
+            ('_OAMS_CUSTOM_LOAD', self._cmd_oams_custom_load, "OpenAMS internal load command"),
+            ('_OAMS_CUSTOM_UNLOAD', self._cmd_oams_custom_unload, "OpenAMS internal unload command"),
+        ]:
+            try:
+                self.gcode.register_command(cmd, handler, desc=desc)
+            except Exception:
+                pass
 
         # Sensor polling state
         self._last_f1s = [None] * 4
@@ -564,8 +578,11 @@ class afcAMS(afcUnit):
             if slot < 0:
                 slot = 0
             self._spool_map[lane_name] = slot
-            lane.custom_load_cmd = f"{self._custom_load_cmd_name} UNIT={self.name} LANE={lane_name}"
-            lane.custom_unload_cmd = f"{self._custom_unload_cmd_name} UNIT={self.name} LANE={lane_name}"
+            # Use the suffix-free base command so unit names with a digit before
+            # "_<n>" survive Klipper's gcode parser; the handler routes by LANE
+            # via the lane's unit_obj.
+            lane.custom_load_cmd = f"_OAMS_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
+            lane.custom_unload_cmd = f"_OAMS_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
             eng_len = getattr(lane, 'engagement_length', None)
             if eng_len is not None:
                 eng_speed = getattr(lane, 'engagement_speed', None) or self._engagement_speed
@@ -1045,8 +1062,12 @@ class afcAMS(afcUnit):
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
             raise gcmd.error(f"Unknown lane: {lane_name}")
+        # The base command is registered "first unit wins", so self may not own
+        # this lane. Dispatch to the lane's own OpenAMS unit so the correct
+        # follower / feed sequence is used.
+        unit = getattr(cur_lane, 'unit_obj', None) or self
         cur_extruder = cur_lane.extruder_obj
-        result = self._oams_load_sequence(cur_lane, cur_extruder)
+        result = unit._oams_load_sequence(cur_lane, cur_extruder)
         if not result:
             raise gcmd.error(f"OAMS load failed for {lane_name}")
 
@@ -1056,8 +1077,10 @@ class afcAMS(afcUnit):
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
             raise gcmd.error(f"Unknown lane: {lane_name}")
+        # Dispatch to the lane's own OpenAMS unit (see _cmd_oams_custom_load).
+        unit = getattr(cur_lane, 'unit_obj', None) or self
         cur_extruder = cur_lane.extruder_obj
-        result = self._oams_unload_sequence(cur_lane, cur_extruder)
+        result = unit._oams_unload_sequence(cur_lane, cur_extruder)
         if not result:
             raise gcmd.error(f"OAMS unload failed for {lane_name}")
 

@@ -199,8 +199,16 @@ class afcACE(afcUnit):
         self.gcode.register_command(
             f'ACE_STUCK_SPOOL_DETECTION_{unit_suffix}', self.cmd_ACE_STUCK_SPOOL_DETECTION,
             desc=f"Enable/disable ACE stuck spool detection ({self.name})")
-        # Register base commands (first unit wins for single-unit setups)
+        # Register base commands (first unit wins for single-unit setups).
+        # The load/unload commands are deliberately suffix-free: Klipper's gcode
+        # parser truncates a name like "_ACE_CUSTOM_LOAD_ACE2_1" to
+        # "_ACE_CUSTOM_LOAD_ACE2" (it stops at the first number group), which
+        # makes any unit whose name has a digit before "_<n>" unreachable. The
+        # base command dispatches to the correct unit via the lane's unit_obj
+        # (see _cmd_ace_custom_load), so it stays correct for multi-unit setups.
         for cmd, handler, desc in [
+            ('_ACE_CUSTOM_LOAD', self._cmd_ace_custom_load, "ACE internal load command"),
+            ('_ACE_CUSTOM_UNLOAD', self._cmd_ace_custom_unload, "ACE internal unload command"),
             ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
             ('ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB, "Calibrate ACE feed distance to hub"),
             ('ACE_STATUS', self.cmd_ACE_STATUS, "Query ACE hardware status"),
@@ -241,8 +249,12 @@ class afcACE(afcUnit):
             idx = getattr(lane, 'index', 0)
             slot = max(0, idx - 1)
             self._slot_map[lane_name] = slot
-            lane.custom_load_cmd = f"{self._custom_load_cmd_name} UNIT={self.name} LANE={lane_name}"
-            lane.custom_unload_cmd = f"{self._custom_unload_cmd_name} UNIT={self.name} LANE={lane_name}"
+            # Use the suffix-free base command (not self._custom_load_cmd_name)
+            # so unit names with a digit before "_<n>" (e.g. "Ace2_1") survive
+            # Klipper's gcode parser. UNIT is informational; the handler routes
+            # by LANE via the lane's unit_obj.
+            lane.custom_load_cmd = f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
+            lane.custom_unload_cmd = f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
             # ACE lanes have no physical load pin, so raw_load_state (_load_state)
             # would default True (loadless default). Start it False so the native
             # virtual hub (any(lane.raw_load_state)) reads clear until a sync or
@@ -1162,8 +1174,12 @@ class afcACE(afcUnit):
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
             raise gcmd.error(f"Unknown lane: {lane_name}")
+        # The base command is registered "first unit wins", so self may not be
+        # the unit that owns this lane. Dispatch to the lane's own ACE unit so
+        # the correct serial connection / feed sequence is used.
+        unit = getattr(cur_lane, 'unit_obj', None) or self
         cur_extruder = cur_lane.extruder_obj
-        result = self._ace_load_sequence(cur_lane, cur_extruder)
+        result = unit._ace_load_sequence(cur_lane, cur_extruder)
         if not result:
             raise gcmd.error(f"ACE load failed for {lane_name}")
 
@@ -1173,8 +1189,10 @@ class afcACE(afcUnit):
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
             raise gcmd.error(f"Unknown lane: {lane_name}")
+        # Dispatch to the lane's own ACE unit (see _cmd_ace_custom_load).
+        unit = getattr(cur_lane, 'unit_obj', None) or self
         cur_extruder = cur_lane.extruder_obj
-        result = self._ace_unload_sequence(cur_lane, cur_extruder)
+        result = unit._ace_unload_sequence(cur_lane, cur_extruder)
         if not result:
             raise gcmd.error(f"ACE unload failed for {lane_name}")
 
