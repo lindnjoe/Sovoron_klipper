@@ -83,6 +83,12 @@ class TemperatureACE:
             pass
 
         if self._ace_unit:
+            # Decide humidity support now (ACE 2 reports it, V1 ACE doesn't) so
+            # the field is present in get_status from the first query — Mainsail
+            # registers a sensor's humidity field early, before the first sample
+            # would otherwise set it.
+            if getattr(self._ace_unit, "type", "") == "ACE2":
+                self._has_humidity = True
             self._log().info(
                 f"temperature_ace: linked to AFC_ACE unit '{self.ace_unit_name}'"
             )
