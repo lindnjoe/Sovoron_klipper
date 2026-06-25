@@ -2017,6 +2017,28 @@ class afcACE(afcUnit):
         self.logger.warning(
             f"ACE: did not become ready within {timeout:.0f}s, proceeding anyway")
 
+    def _slot_is_moving(self, hw_status, slot_index):
+        """True while the ACE is physically moving filament for ``slot_index``.
+
+        Protocol-agnostic: V1 exposes the motor state in the slot's 'status'
+        field, while V2 keeps 'status' at 'ready'/'empty' and reports motion via
+        the overall 'busy' status and the slot's raw 'slot_status'. Used to track
+        feed/unwind start and completion so an operation isn't reported done the
+        moment its command is sent."""
+        if not isinstance(hw_status, dict):
+            return False
+        if hw_status.get("status") == "busy":
+            return True
+        slots = hw_status.get("slots", [])
+        if 0 <= slot_index < len(slots) and isinstance(slots[slot_index], dict):
+            slot_data = slots[slot_index]
+            if slot_data.get("status") not in ("ready", "empty", "", None):
+                return True
+            if slot_data.get("slot_status") in (
+                    "feeding", "rollback", "preloading", "winding", "unwinding"):
+                return True
+        return False
+
     def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_s,
                                  lane=None, poll_interval=0.5) -> bool:
         """Wait for ACE feed/unwind movement to complete by polling slot status."""
@@ -2024,34 +2046,35 @@ class afcACE(afcUnit):
         if ace is None or not ace.connected:
             return False
 
-        max_wait = (length_mm / max(speed_mm_s, 1)) + 10.0
+        # Bound the wait generously: the unit's real feed/unwind speed can lag
+        # the commanded speed, and timing out early would report "done" before
+        # the move finishes (the very bug this guards against).
+        max_wait = (length_mm / max(speed_mm_s, 1)) * 1.5 + 15.0
         deadline = self.afc.reactor.monotonic() + max_wait
 
-        # Phase 0: Wait for slot to leave ready/empty (motor starting)
+        # Phase 0: wait for the slot to start moving (see _slot_is_moving — it
+        # handles both V1's per-slot 'status' and V2's overall 'busy' signal).
         departure_deadline = self.afc.reactor.monotonic() + 3.0
         motor_started = False
         while self.afc.reactor.monotonic() < departure_deadline:
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            if lane is not None and self._toolhead_sensor_triggered(lane):
+                return True
             try:
-                hw_status = ace.get_status(timeout=2.0)
-                if isinstance(hw_status, dict):
-                    slots = hw_status.get("slots", [])
-                    if slot_index < len(slots):
-                        slot_data = slots[slot_index]
-                        if isinstance(slot_data, dict):
-                            status = slot_data.get("status", "")
-                            if status not in ("ready", "empty", ""):
-                                motor_started = True
-                                break
+                if self._slot_is_moving(ace.get_status(timeout=2.0), slot_index):
+                    motor_started = True
+                    break
             except Exception:
                 pass
         if not motor_started:
             self.logger.debug(
-                f"ACE wait: slot {slot_index} never left ready state "
-                f"after feed command — motor may not have started")
+                f"ACE wait: slot {slot_index} never reported motion after "
+                f"feed/unwind command — motor may not have started")
             return False
 
-        # Phase 1: Wait for slot to return to ready/empty (motor done)
+        # Phase 1: wait for movement to finish. Require two consecutive idle
+        # reads so a transient status frame doesn't report completion early.
+        idle_reads = 0
         while self.afc.reactor.monotonic() < deadline:
             self.afc.reactor.pause(
                 self.afc.reactor.monotonic() + poll_interval)
@@ -2062,15 +2085,12 @@ class afcACE(afcUnit):
                 return True
 
             try:
-                hw_status = ace.get_status(timeout=2.0)
-                if isinstance(hw_status, dict):
-                    slots = hw_status.get("slots", [])
-                    if slot_index < len(slots):
-                        slot_data = slots[slot_index]
-                        if isinstance(slot_data, dict):
-                            status = slot_data.get("status", "")
-                            if status in ("ready", "empty"):
-                                return True
+                if self._slot_is_moving(ace.get_status(timeout=2.0), slot_index):
+                    idle_reads = 0
+                else:
+                    idle_reads += 1
+                    if idle_reads >= 2:
+                        return True
             except Exception:
                 pass
 
