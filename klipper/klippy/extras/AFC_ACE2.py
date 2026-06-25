@@ -531,6 +531,10 @@ class afcACE2(afcACE):
     swaps the serial transport to the V2 protocol."""
 
     _LOGO_TITLE = "ACE 2 PRO"
+    # Unlike V1, the ACE 2's insert preload only grips the filament at the slot;
+    # it does not advance it to the hub. Defer to prep_post_load's dist_hub feed
+    # so the lane actually stages to the hub after a fresh insert settles.
+    _preloads_to_hub_on_insert = False
 
     def __init__(self, config):
         super().__init__(config)
