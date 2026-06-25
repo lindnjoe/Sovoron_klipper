@@ -38,6 +38,11 @@ class TemperatureACE:
         self.max_temp = 70.0
         self.measured_min = float("inf")
         self.measured_max = 0.0
+        # Humidity (%RH) from the dryer sensor — only ACE 2 reports it (V1 ACE
+        # omits the key). Surfaced in get_status when present so the UI shows it
+        # alongside temp, like the OpenAMS temperature sensor.
+        self.humidity = 0.0
+        self._has_humidity = False
 
         # AFC_ACE reference resolved on ready
         self._ace_unit = None
@@ -130,6 +135,10 @@ class TemperatureACE:
                 ace_temp = float(hw_status.get("temp", 0.0) or 0.0)
 
                 self.temp = ace_temp
+                # Only ACE 2 reports humidity; V1 ACE omits the key entirely.
+                if "humidity" in hw_status:
+                    self._has_humidity = True
+                    self.humidity = float(hw_status.get("humidity", 0.0) or 0.0)
 
                 if self.temp > 0:
                     self.measured_min = min(self.measured_min, self.temp)
@@ -167,7 +176,7 @@ class TemperatureACE:
         return False, "temperature_ace %s: temp=%.1f" % (self.name, self.temp)
 
     def get_status(self, eventtime):
-        return {
+        status = {
             "temperature": round(self.temp, 2),
             "measured_min_temp": round(self.measured_min, 2)
             if self.measured_min != float("inf")
@@ -175,6 +184,11 @@ class TemperatureACE:
             "measured_max_temp": round(self.measured_max, 2),
             "ace_unit": self.ace_unit_name,
         }
+        # Only present for ACE 2 (V1 ACE has no humidity sensor), matching how
+        # the OpenAMS temperature sensor surfaces humidity.
+        if self._has_humidity:
+            status["humidity"] = round(self.humidity, 2)
+        return status
 
 
 def load_config(config):
