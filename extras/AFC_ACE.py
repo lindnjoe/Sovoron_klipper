@@ -556,6 +556,9 @@ class afcACE(afcUnit):
             self.logger.warning(
                 f"ACE {self.name}: enable_rfid failed (non-fatal): {e}")
 
+        # Apply encoder feed-check tuning (ACE2 only; base is a no-op).
+        self._apply_feed_check()
+
         # Seed slot status from get_status
         try:
             hw_status = self._ace.get_status(timeout=2.0)
@@ -595,6 +598,12 @@ class afcACE(afcUnit):
         # Defer off the reconnect/serial path so the ACE acks don't block it.
         self.afc.reactor.register_callback(self._resync_assist_after_reconnect)
 
+    def _apply_feed_check(self):
+        """Push encoder feed-check tuning to the unit. No-op for V1 ACE;
+        afcACE2 overrides it to send the V2 SET_FEED_CHECK command.
+        """
+        pass
+
     def _resync_assist_after_reconnect(self, eventtime):
         """Reactor callback that re-issues feed assist for the active lane after
         a reconnect, unless a load/unload is in progress (which sets assist
@@ -607,6 +616,8 @@ class afcACE(afcUnit):
         # lane right now (its target is empty again, so it will reconcile).
         if not self._operation_active:
             self._maybe_assist_watchdog()
+        # The ACE forgets its feed-check window across a reset too — re-apply it.
+        self._apply_feed_check()
 
     def _on_hw_status_callback(self, response):
         """Process heartbeat status from ACE — keep lane states in sync.
