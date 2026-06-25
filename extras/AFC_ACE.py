@@ -226,6 +226,11 @@ class afcACE(afcUnit):
         # ~90 just run at the ceiling, while values below scale the rate.
         self.feed_speed = config.getfloat("feed_speed", 80.0)
         self.retract_speed = config.getfloat("retract_speed", 80.0)
+        # Max seconds to wait for the unit to finish its own load-to-toolhead-
+        # and-back cycle (on connect and on insert) before we issue commands.
+        # Scales with PTFE / hub distance, so make it tunable per unit.
+        self.prep_ready_timeout = config.getfloat(
+            "prep_ready_timeout", 90.0, minval=1.0)
         # Safety cap on the dryer set-point — ACE_DRY clamps the commanded temp
         # to this to avoid cooking filament / over-driving the heater.
         self.max_dryer_temperature = config.getfloat(
@@ -588,7 +593,7 @@ class afcACE(afcUnit):
         # status/inventory burst into that busy window just times out and yields
         # stale reads. Wait for it to report ready first (the cycle scales with
         # PTFE / hub distance, so give it the same generous window as insert).
-        self._wait_for_ace_ready(timeout=90.0)
+        self._wait_for_ace_ready(timeout=self.prep_ready_timeout)
 
         # Seed slot status from a single get_status (covers all 4 slots, which is
         # all we need for prep/loaded state). Per-slot RFID detail is pulled by
@@ -1205,7 +1210,7 @@ class afcACE(afcUnit):
                 # take well over a minute (longer with a long PTFE / hub dist);
                 # wait it out so the staging feed isn't sent while the unit is
                 # still busy (which the unit rejects with error_2).
-                self._wait_for_ace_ready(timeout=90.0)
+                self._wait_for_ace_ready(timeout=self.prep_ready_timeout)
                 self._ace.feed_filament(slot, dist_hub, self.feed_speed)
                 self._wait_for_feed_complete(slot, dist_hub, self.feed_speed)
                 lane.loaded_to_hub = True
