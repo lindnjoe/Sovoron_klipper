@@ -723,8 +723,16 @@ class afcACE(afcUnit):
                 # nothing is inserted so nothing can be at the hub either.
                 lane.prep_state = slot_ready
                 if not slot_ready:
-                    lane.loaded_to_hub = False
-                    self._set_hub_state(lane, False)
+                    # Only clear the staged state on a genuine ready -> not-ready
+                    # removal (same condition as the runout handler below). The
+                    # ACE 2 reports its slots 'empty' for a few polls while it
+                    # powers up, before it detects the filament that's actually
+                    # present; clearing on those would drop a loaded_to_hub
+                    # restored from saved vars and leave the lane reading
+                    # "detected but not loaded" after startup.
+                    if self._prev_slot_states.get(lane.name) and not resync_prev:
+                        lane.loaded_to_hub = False
+                        self._set_hub_state(lane, False)
                 elif (self._preloads_to_hub_on_insert
                       and not resync_prev
                       and not self._prev_slot_states.get(lane.name)
