@@ -732,7 +732,12 @@ class AFCLane:
             return
 
         if (self.unit_obj.type in EXCLUDE_TYPES
-            and "AFC_lane" in self.fullname):
+            and "AFC_lane" in self.fullname
+            and getattr(self.unit_obj, "drive_stepper_obj", None)):
+            # FORK: only selector units (ViViD, HTLF, …) have a shared
+            # drive_stepper_obj. Steppermless serial units (OpenAMS/ACE/ACE2 —
+            # now in EXCLUDE_TYPES via ONLY_LOAD_TYPES) have none, so guard the
+            # deref; their lanes correctly keep extruder_stepper = None.
             self.drive_stepper      = self.unit_obj.drive_stepper_obj
             self.extruder_stepper   = self.drive_stepper.extruder_stepper
             if (self.selector
