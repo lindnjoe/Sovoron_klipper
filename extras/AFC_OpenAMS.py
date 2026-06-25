@@ -34,11 +34,6 @@ except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.form
 # [oams ...] config section to that module name.
 
 
-# ── Compatibility shims for the frozen upstream core (see AFC_compat.py) ──
-from extras.AFC_compat import apply_compat_patches
-apply_compat_patches()
-
-
 # ── Support classes used by external oams.py module ────────────────
 
 class AMSEventBus:

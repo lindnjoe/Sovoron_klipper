@@ -13,7 +13,7 @@
 #   - flow-K / auto-calibration .......... AFC_autocal.py (+ SpoolmanClient)
 #   - RFID -> Spoolman sync / scanner .... AFC_U1_rfid.py / AFC_RFID.py
 #   - snapmaker filament colour .......... AFC_spool.set_snapmaker_filament_params
-#   - steppermless feed / unload phase ... AFC_OpenAMS / AFC_ACE / AFC_compat
+#   - steppermless feed / unload phase ... AFC_OpenAMS / AFC_ACE (native core)
 #   - pause/resume + temp restore ........ upstream
 #
 # This module delegates all flow-K storage/apply to [AFC_autocal]: it runs the
