@@ -1699,13 +1699,24 @@ class afcACE(afcUnit):
             self._wait_for_ace_ready()
             return
         if len(results) >= 2:
+            rates = [(spd, length / el if el > 0 else 0.0) for spd, el in results]
+            peak = max((r for _, r in rates), default=0.0) or 1.0
             t_slow, t_fast = results[0][1], results[-1][1]
             if t_slow > 0 and abs(t_slow - t_fast) / t_slow < 0.15:
                 verdict = ("times ~constant -> speed param appears "
                            "CLAMPED/IGNORED (like the fan)")
             else:
                 verdict = "times scale with speed -> speed param WORKS"
-            gcmd.respond_info(f"ACE_FEED_TEST done. {verdict}")
+            # Max effective speed: the lowest commanded speed that already
+            # reaches ~95% of the best measured rate. Commanding faster than
+            # that gains nothing (the unit is clamping / at its mechanical limit).
+            knee = next((spd for spd, r in rates if r >= 0.95 * peak),
+                        rates[-1][0])
+            gcmd.respond_info(
+                f"ACE_FEED_TEST done. {verdict}\n"
+                f"  peak measured rate ~{peak:.0f} mm/s\n"
+                f"  max effective commanded speed ~{knee} "
+                f"(higher stops improving the rate)")
         else:
             gcmd.respond_info("ACE_FEED_TEST done.")
 
