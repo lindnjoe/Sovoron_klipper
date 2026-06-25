@@ -369,8 +369,12 @@ def _decode_status(fields):
         slot_state = SLOT_STATES.get(_fval(sub, 1, 0), 'unknown')
         filament_state = FILAMENT_STATES.get(_fval(sub, 2, 0), 'empty')
         slots.append({
-            'index': len(slots),
-            'status': filament_state if filament_state != 'identified' else 'ready',
+            # Any non-empty filament state means filament is present in the
+            # slot. The unit only reports 'identified' once RFID is read; a plain
+            # insert (or a spool with no/again-unread tag) reports 'unknown' /
+            # 'identifying'. Treat all of those as 'ready' (present) so the lane
+            # loads — RFID identification is carried separately in 'rfid'.
+            'status': 'empty' if filament_state == 'empty' else 'ready',
             'slot_status': slot_state,
             'sku': '', 'type': '',
             'rfid': 2 if filament_state == 'identified' else 0,
