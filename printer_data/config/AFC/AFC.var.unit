@@ -27,7 +27,7 @@
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
             "status": "Loaded",
-            "dist_hub": 250.0,
+            "dist_hub": 1250.0,
             "td1_data": {}
         },
         "lane1": {
@@ -57,7 +57,7 @@
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
             "status": "Loaded",
-            "dist_hub": 250.0,
+            "dist_hub": 1250.0,
             "td1_data": {}
         },
         "lane2": {
@@ -87,7 +87,7 @@
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
             "status": "Loaded",
-            "dist_hub": 250.0,
+            "dist_hub": 1250.0,
             "td1_data": {}
         },
         "lane3": {
@@ -117,7 +117,7 @@
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
             "status": "Loaded",
-            "dist_hub": 250.0,
+            "dist_hub": 1250.0,
             "td1_data": {}
         }
     },
