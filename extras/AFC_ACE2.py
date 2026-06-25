@@ -225,6 +225,15 @@ def method_to_v2(method, params):
         slot = int(params.get('index', 0))
         enable = bool(params.get('enable', True))
         return Cmd.SET_RFID_ENABLE, pb_uint32(1, slot) + pb_bool(2, enable)
+    if method == 'set_feed_check':
+        # Encoder feed-check window: check_length samples, error_length is the
+        # minimum movement before a feed/assist error fires. Both 3..254, with
+        # error_length <= check_length. A wider window + error_length closer to
+        # check_length = fewer false assist errors.
+        check_len = int(params.get('check_length', 254))
+        error_len = int(params.get('error_length', 254))
+        return Cmd.SET_FEED_CHECK, (pb_uint32(1, check_len)
+                                    + pb_uint32(2, error_len))
     if method == 'filament_identify':
         return Cmd.FILAMENT_IDENTIFY, pb_uint32(1, int(params.get('index', 0)))
     if method == 'set_dry_temp':
@@ -533,6 +542,37 @@ class afcACE2(afcACE):
         # Pro 2 allows a higher dryer set-point than the Pro V1 (55C default).
         self.max_dryer_temperature = config.getfloat(
             "max_dryer_temperature", 70.0, minval=0.0)
+        # Encoder feed-check tuning (V2 SET_FEED_CHECK). Defaults to the
+        # community-recommended wider window (200/185) which cuts false assist
+        # errors vs the firmware default of 100/90. error_length must be <=
+        # check_length; set both to 254 to effectively disable the check.
+        self.feed_check_length = config.getint(
+            "feed_check_length", 200, minval=3, maxval=254)
+        self.feed_error_length = config.getint(
+            "feed_error_length", 185, minval=3, maxval=254)
+        if self.feed_error_length > self.feed_check_length:
+            raise config.error(
+                "[%s] feed_error_length (%d) must be <= feed_check_length (%d)"
+                % (config.get_name(), self.feed_error_length,
+                   self.feed_check_length))
+
+    def _apply_feed_check(self):
+        """Push the encoder feed-check window to the ACE (V2 only). The unit
+        forgets it across a reset, so this is sent on connect and reconnect."""
+        if self._ace is None:
+            return
+        try:
+            self._ace.send_command_async("set_feed_check", {
+                "check_length": self.feed_check_length,
+                "error_length": self.feed_error_length,
+            })
+            self.logger.info(
+                "ACE2 %s: feed check set check_length=%d error_length=%d"
+                % (self.name, self.feed_check_length, self.feed_error_length))
+        except Exception as e:
+            self.logger.warning(
+                "ACE2 %s: set_feed_check failed (non-fatal): %s"
+                % (self.name, e))
 
     def _make_connection(self, reactor, serial_port, logger, baud_rate):
         return ACE2Connection(reactor=reactor, serial_port=serial_port,
