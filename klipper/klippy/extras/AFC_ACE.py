@@ -200,27 +200,39 @@ class afcACE(afcUnit):
             f'ACE_STUCK_SPOOL_DETECTION_{unit_suffix}', self.cmd_ACE_STUCK_SPOOL_DETECTION,
             desc=f"Enable/disable ACE stuck spool detection ({self.name})")
         # Register base commands (first unit wins for single-unit setups).
-        # The load/unload commands are deliberately suffix-free: Klipper's gcode
-        # parser truncates a name like "_ACE_CUSTOM_LOAD_ACE2_1" to
+        # All these names are suffix-free on purpose: Klipper's gcode parser
+        # truncates a name like "_ACE_CUSTOM_LOAD_ACE2_1" to
         # "_ACE_CUSTOM_LOAD_ACE2" (it stops at the first number group), which
-        # makes any unit whose name has a digit before "_<n>" unreachable. The
-        # base command dispatches to the correct unit via the lane's unit_obj
-        # (see _cmd_ace_custom_load), so it stays correct for multi-unit setups.
+        # makes any unit whose name has a digit before "_<n>" unreachable.
+        # Internal load/unload route by LANE via the lane's unit_obj
+        # (see _cmd_ace_custom_load).
         for cmd, handler, desc in [
             ('_ACE_CUSTOM_LOAD', self._cmd_ace_custom_load, "ACE internal load command"),
             ('_ACE_CUSTOM_UNLOAD', self._cmd_ace_custom_unload, "ACE internal unload command"),
-            ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
-            ('ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB, "Calibrate ACE feed distance to hub"),
-            ('ACE_STATUS', self.cmd_ACE_STATUS, "Query ACE hardware status"),
-            ('ACE_DRY', self.cmd_ACE_DRY, "Start ACE filament dryer"),
-            ('ACE_DRY_STOP', self.cmd_ACE_DRY_STOP, "Stop ACE filament dryer"),
-            ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
-            ('ACE_CMD', self.cmd_ACE_CMD, "Send a raw ACE protocol command and print the reply"),
-            ('ACE_FEED_TEST', self.cmd_ACE_FEED_TEST, "Sweep feed speed to test whether it changes feed rate"),
-            ('ACE_STUCK_SPOOL_DETECTION', self.cmd_ACE_STUCK_SPOOL_DETECTION, "Enable/disable ACE stuck spool detection"),
         ]:
             try:
                 self.gcode.register_command(cmd, handler, desc=desc)
+            except Exception:
+                pass
+        # User-facing commands route by an optional UNIT= argument (default: the
+        # first/only unit) via _run_on_ace_unit, so multi-unit setups stay
+        # addressable by name without the parser-hostile suffixes.
+        for cmd, method_name, desc in [
+            ('ACE_CALIBRATE', 'cmd_ACE_CALIBRATE', "Calibrate ACE feed distance to toolhead"),
+            ('ACE_CALIBRATE_HUB', 'cmd_ACE_CALIBRATE_HUB', "Calibrate ACE feed distance to hub"),
+            ('ACE_STATUS', 'cmd_ACE_STATUS', "Query ACE hardware status"),
+            ('ACE_DRY', 'cmd_ACE_DRY', "Start ACE filament dryer"),
+            ('ACE_DRY_STOP', 'cmd_ACE_DRY_STOP', "Stop ACE filament dryer"),
+            ('ACE_LANE_RESET', 'cmd_ACE_LANE_RESET', "Retract ACE lane filament back into unit"),
+            ('ACE_CMD', 'cmd_ACE_CMD', "Send a raw ACE protocol command and print the reply"),
+            ('ACE_FEED_TEST', 'cmd_ACE_FEED_TEST', "Sweep feed speed to test whether it changes feed rate"),
+            ('ACE_STUCK_SPOOL_DETECTION', 'cmd_ACE_STUCK_SPOOL_DETECTION', "Enable/disable ACE stuck spool detection"),
+        ]:
+            try:
+                self.gcode.register_command(
+                    cmd,
+                    (lambda gcmd, m=method_name: self._run_on_ace_unit(gcmd, m)),
+                    desc=desc)
             except Exception:
                 pass
 
@@ -1408,6 +1420,27 @@ class afcACE(afcUnit):
         "LANE": {"type": "string", "default": ""},
     }
 
+    def _run_on_ace_unit(self, gcmd, method_name):
+        """Dispatch a base (suffix-free) command to the target ACE unit.
+
+        Resolves the unit from an optional UNIT= argument; when UNIT is omitted
+        or doesn't match a known ACE unit, falls back to this unit (the first
+        one registered, which is the only one in single-unit setups). This keeps
+        the suffix-free commands addressable by name without relying on the
+        per-unit command suffixes that Klipper's gcode parser truncates for
+        names like "Ace2_1".
+
+        :param gcmd: the gcode command (read for an optional UNIT= argument).
+        :param method_name: name of the bound command method to invoke.
+        """
+        unit_name = gcmd.get('UNIT', None)
+        target = self
+        if unit_name:
+            cand = getattr(self.afc, 'units', {}).get(unit_name)
+            if cand is not None and hasattr(cand, method_name):
+                target = cand
+        return getattr(target, method_name)(gcmd)
+
     def cmd_ACE_CALIBRATE(self, gcmd):
         """Calibrate ACE feed distance to toolhead for a lane."""
         lane_name = gcmd.get('LANE', '')
@@ -1984,6 +2017,28 @@ class afcACE(afcUnit):
         self.logger.warning(
             f"ACE: did not become ready within {timeout:.0f}s, proceeding anyway")
 
+    def _slot_is_moving(self, hw_status, slot_index):
+        """True while the ACE is physically moving filament for ``slot_index``.
+
+        Protocol-agnostic: V1 exposes the motor state in the slot's 'status'
+        field, while V2 keeps 'status' at 'ready'/'empty' and reports motion via
+        the overall 'busy' status and the slot's raw 'slot_status'. Used to track
+        feed/unwind start and completion so an operation isn't reported done the
+        moment its command is sent."""
+        if not isinstance(hw_status, dict):
+            return False
+        if hw_status.get("status") == "busy":
+            return True
+        slots = hw_status.get("slots", [])
+        if 0 <= slot_index < len(slots) and isinstance(slots[slot_index], dict):
+            slot_data = slots[slot_index]
+            if slot_data.get("status") not in ("ready", "empty", "", None):
+                return True
+            if slot_data.get("slot_status") in (
+                    "feeding", "rollback", "preloading", "winding", "unwinding"):
+                return True
+        return False
+
     def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_s,
                                  lane=None, poll_interval=0.5) -> bool:
         """Wait for ACE feed/unwind movement to complete by polling slot status."""
@@ -1991,34 +2046,35 @@ class afcACE(afcUnit):
         if ace is None or not ace.connected:
             return False
 
-        max_wait = (length_mm / max(speed_mm_s, 1)) + 10.0
+        # Bound the wait generously: the unit's real feed/unwind speed can lag
+        # the commanded speed, and timing out early would report "done" before
+        # the move finishes (the very bug this guards against).
+        max_wait = (length_mm / max(speed_mm_s, 1)) * 1.5 + 15.0
         deadline = self.afc.reactor.monotonic() + max_wait
 
-        # Phase 0: Wait for slot to leave ready/empty (motor starting)
+        # Phase 0: wait for the slot to start moving (see _slot_is_moving — it
+        # handles both V1's per-slot 'status' and V2's overall 'busy' signal).
         departure_deadline = self.afc.reactor.monotonic() + 3.0
         motor_started = False
         while self.afc.reactor.monotonic() < departure_deadline:
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            if lane is not None and self._toolhead_sensor_triggered(lane):
+                return True
             try:
-                hw_status = ace.get_status(timeout=2.0)
-                if isinstance(hw_status, dict):
-                    slots = hw_status.get("slots", [])
-                    if slot_index < len(slots):
-                        slot_data = slots[slot_index]
-                        if isinstance(slot_data, dict):
-                            status = slot_data.get("status", "")
-                            if status not in ("ready", "empty", ""):
-                                motor_started = True
-                                break
+                if self._slot_is_moving(ace.get_status(timeout=2.0), slot_index):
+                    motor_started = True
+                    break
             except Exception:
                 pass
         if not motor_started:
             self.logger.debug(
-                f"ACE wait: slot {slot_index} never left ready state "
-                f"after feed command — motor may not have started")
+                f"ACE wait: slot {slot_index} never reported motion after "
+                f"feed/unwind command — motor may not have started")
             return False
 
-        # Phase 1: Wait for slot to return to ready/empty (motor done)
+        # Phase 1: wait for movement to finish. Require two consecutive idle
+        # reads so a transient status frame doesn't report completion early.
+        idle_reads = 0
         while self.afc.reactor.monotonic() < deadline:
             self.afc.reactor.pause(
                 self.afc.reactor.monotonic() + poll_interval)
@@ -2029,15 +2085,12 @@ class afcACE(afcUnit):
                 return True
 
             try:
-                hw_status = ace.get_status(timeout=2.0)
-                if isinstance(hw_status, dict):
-                    slots = hw_status.get("slots", [])
-                    if slot_index < len(slots):
-                        slot_data = slots[slot_index]
-                        if isinstance(slot_data, dict):
-                            status = slot_data.get("status", "")
-                            if status in ("ready", "empty"):
-                                return True
+                if self._slot_is_moving(ace.get_status(timeout=2.0), slot_index):
+                    idle_reads = 0
+                else:
+                    idle_reads += 1
+                    if idle_reads >= 2:
+                        return True
             except Exception:
                 pass
 
