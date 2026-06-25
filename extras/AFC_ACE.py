@@ -231,6 +231,10 @@ class afcACE(afcUnit):
         # Scales with PTFE / hub distance, so make it tunable per unit.
         self.prep_ready_timeout = config.getfloat(
             "prep_ready_timeout", 90.0, minval=1.0)
+        # Extra mm (beyond dist_hub) to retract when ejecting a hub-staged lane,
+        # so the filament clears the hub and pulls fully back into the unit.
+        self.eject_buffer = config.getfloat(
+            "eject_buffer", 450.0, minval=0.0)
         # Safety cap on the dryer set-point — ACE_DRY clamps the commanded temp
         # to this to avoid cooking filament / over-driving the heater.
         self.max_dryer_temperature = config.getfloat(
@@ -849,14 +853,16 @@ class afcACE(afcUnit):
         """Retract distance for an eject/unload. When the lane is loaded to the
         toolhead, retract the full path (dist_hub + bowden). When it's only
         staged at the hub, the filament just spans the lane->hub gap, so retract
-        dist_hub + a 500mm buffer to clear the hub and pull it into the unit.
+        dist_hub + eject_buffer (config, default 450mm) to clear the hub and
+        pull it into the unit.
 
         :param cur_lane: Lane to compute the eject distance for.
-        :return float: Full unload length when tool-loaded, else dist_hub + 500.
+        :return float: Full unload length when tool-loaded, else
+            dist_hub + eject_buffer.
         """
         if getattr(cur_lane, 'tool_loaded', False):
             return self._get_unload_length(cur_lane)
-        return cur_lane.dist_hub + 500
+        return cur_lane.dist_hub + self.eject_buffer
 
     def _use_feed_assist(self, cur_lane) -> bool:
         """Resolve whether feed assist should run for a lane.
@@ -1243,7 +1249,7 @@ class afcACE(afcUnit):
         """Retract filament back into the ACE unit.
 
         From the hub-staged state the filament only spans the lane->hub gap, so
-        unwind dist_hub + a 500mm buffer to clear the hub sensor and fully pull
+        unwind dist_hub + eject_buffer (config, default 450mm) to clear the hub and pull
         the filament back into the unit. If it's loaded past the hub (to the
         toolhead) fall back to the full unload length (dist_hub + bowden).
 
