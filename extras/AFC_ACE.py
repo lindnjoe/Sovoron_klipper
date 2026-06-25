@@ -234,7 +234,7 @@ class afcACE(afcUnit):
         # Extra mm (beyond dist_hub) to retract when ejecting a hub-staged lane,
         # so the filament clears the hub and pulls fully back into the unit.
         self.eject_buffer = config.getfloat(
-            "eject_buffer", 450.0, minval=0.0)
+            "eject_buffer", 475.0, minval=0.0)
         # Safety cap on the dryer set-point — ACE_DRY clamps the commanded temp
         # to this to avoid cooking filament / over-driving the heater.
         self.max_dryer_temperature = config.getfloat(
@@ -853,7 +853,7 @@ class afcACE(afcUnit):
         """Retract distance for an eject/unload. When the lane is loaded to the
         toolhead, retract the full path (dist_hub + bowden). When it's only
         staged at the hub, the filament just spans the lane->hub gap, so retract
-        dist_hub + eject_buffer (config, default 450mm) to clear the hub and
+        dist_hub + eject_buffer (config, default 475mm) to clear the hub and
         pull it into the unit.
 
         :param cur_lane: Lane to compute the eject distance for.
@@ -1249,7 +1249,7 @@ class afcACE(afcUnit):
         """Retract filament back into the ACE unit.
 
         From the hub-staged state the filament only spans the lane->hub gap, so
-        unwind dist_hub + eject_buffer (config, default 450mm) to clear the hub and pull
+        unwind dist_hub + eject_buffer (config, default 475mm) to clear the hub and pull
         the filament back into the unit. If it's loaded past the hub (to the
         toolhead) fall back to the full unload length (dist_hub + bowden).
 
