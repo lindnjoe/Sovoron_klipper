@@ -98,6 +98,11 @@ def _ams_box_logo_error(title, n_slots, name):
 class afcACE(afcUnit):
     SLOTS_PER_UNIT = 4
     _LOGO_TITLE = "ACE PRO"   # AFC_ACE2 overrides this for the Pro 2 prep logo
+    # V1 ACE physically preloads filament to the hub on insert, so a fresh insert
+    # can be marked loaded_to_hub immediately. ACE 2 only grips the filament at
+    # the slot (its preload doesn't reach the hub), so it must defer to
+    # prep_post_load's explicit dist_hub feed — AFC_ACE2 overrides this to False.
+    _preloads_to_hub_on_insert = True
 
     def __init__(self, config):
         super().__init__(config)
@@ -490,16 +495,18 @@ class afcACE(afcUnit):
                 if not slot_ready:
                     lane.loaded_to_hub = False
                     self._set_hub_state(lane, False)
-                elif (not resync_prev
+                elif (self._preloads_to_hub_on_insert
+                      and not resync_prev
                       and not self._prev_slot_states.get(lane.name)
                       and not lane.tool_loaded):
-                    # empty -> ready: a fresh insert. The ACE preloads filament
+                    # empty -> ready: a fresh insert. V1 ACE preloads filament
                     # to the hub on insert (slot goes 'preloading' -> 'ready'),
                     # so a present spool is staged at the hub. Reflect that
                     # (honoring load_to_hub) so the lane reads loaded instead of
                     # "Filament detected, but not loaded". Only on the transition,
                     # so an unload (which clears loaded_to_hub while the spool
-                    # stays in the slot) is not re-staged.
+                    # stays in the slot) is not re-staged. ACE 2 sets the flag
+                    # False so prep_post_load does the real dist_hub feed instead.
                     load_to_hub = getattr(lane, 'load_to_hub',
                                           getattr(self.afc, 'load_to_hub', False))
                     if load_to_hub and not lane.loaded_to_hub:
