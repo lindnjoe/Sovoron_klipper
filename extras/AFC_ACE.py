@@ -2949,6 +2949,12 @@ class ACEConnection:
         """:return bool: True while the serial port is open and registered."""
         return self._connected
 
+    def _pre_info_handshake(self):
+        """Hook run on connect, just before the get_info query. No-op for V1;
+        ACE2Connection overrides it to send the V2 discover handshake.
+        """
+        pass
+
     def connect(self):
         """Open the serial port and register with Klipper's reactor for reads."""
         if self._connected:
@@ -2985,8 +2991,10 @@ class ACEConnection:
             f"ACE serial connected: {self._serial_port} @ {self._baud_rate}"
         )
 
-        # Query device info
+        # Query device info (V2 needs a discover handshake first — see the
+        # ACE2Connection._pre_info_handshake override; the base is a no-op).
         try:
+            self._pre_info_handshake()
             self.device_info = self.send_command("get_info", timeout=3.0)
             self._logger.info(f"ACE device info: {self.device_info}")
         except Exception as e:

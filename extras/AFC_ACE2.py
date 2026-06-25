@@ -530,6 +530,17 @@ class ACE2Connection(ACEConnection):
     get_filament_info, …) are inherited verbatim — they just call send_command,
     which here speaks V2 and returns the same V1-shaped result dicts."""
 
+    def _pre_info_handshake(self):
+        """ACE Pro 2 must be discovered before it answers other commands. The V2
+        initial handshake sends discover_device first (then get_info); without it
+        the unit ignores get_status/get_info and never replies.
+        """
+        try:
+            self.send_command("discover_device", timeout=3.0)
+        except Exception as e:
+            self._logger.debug(
+                f"ACE2 discover_device failed (non-fatal): {e}")
+
     def send_command(self, method, params=None, timeout=REQUEST_TIMEOUT):
         """
         Encode and send a V2 request, then block for its matching response.
@@ -647,6 +658,10 @@ class afcACE2(afcACE):
         """
         super().__init__(config)
         self.type = config.get('type', 'ACE2')
+        # ACE Pro 2 V2 serial runs at 230400 baud (the V1 ACE default is
+        # 115200); at the wrong baud the unit never sees a valid frame and
+        # never replies. Override the inherited default.
+        self.baud_rate = config.getint("baud_rate", 230400)
         # Pro 2 allows a higher dryer set-point than the Pro V1 (55C default).
         self.max_dryer_temperature = config.getfloat(
             "max_dryer_temperature", 70.0, minval=0.0)
