@@ -456,6 +456,21 @@ class afcACE(afcUnit):
                 if not slot_ready:
                     lane.loaded_to_hub = False
                     self._set_hub_state(lane, False)
+                elif (not resync_prev
+                      and not self._prev_slot_states.get(lane.name)
+                      and not lane.tool_loaded):
+                    # empty -> ready: a fresh insert. The ACE preloads filament
+                    # to the hub on insert (slot goes 'preloading' -> 'ready'),
+                    # so a present spool is staged at the hub. Reflect that
+                    # (honoring load_to_hub) so the lane reads loaded instead of
+                    # "Filament detected, but not loaded". Only on the transition,
+                    # so an unload (which clears loaded_to_hub while the spool
+                    # stays in the slot) is not re-staged.
+                    load_to_hub = getattr(lane, 'load_to_hub',
+                                          getattr(self.afc, 'load_to_hub', False))
+                    if load_to_hub and not lane.loaded_to_hub:
+                        lane.loaded_to_hub = True
+                        self._set_hub_state(lane, True)
 
             prep_done = getattr(lane, '_afc_prep_done', False)
 
