@@ -310,27 +310,39 @@ class afcACE(afcUnit):
             f'ACE_STUCK_SPOOL_DETECTION_{unit_suffix}', self.cmd_ACE_STUCK_SPOOL_DETECTION,
             desc=f"Enable/disable ACE stuck spool detection ({self.name})")
         # Register base commands (first unit wins for single-unit setups).
-        # The load/unload commands are deliberately suffix-free: Klipper's gcode
-        # parser truncates a name like "_ACE_CUSTOM_LOAD_ACE2_1" to
+        # All these names are suffix-free on purpose: Klipper's gcode parser
+        # truncates a name like "_ACE_CUSTOM_LOAD_ACE2_1" to
         # "_ACE_CUSTOM_LOAD_ACE2" (it stops at the first number group), which
-        # makes any unit whose name has a digit before "_<n>" unreachable. The
-        # base command dispatches to the correct unit via the lane's unit_obj
-        # (see _cmd_ace_custom_load), so it stays correct for multi-unit setups.
+        # makes any unit whose name has a digit before "_<n>" unreachable.
+        # Internal load/unload route by LANE via the lane's unit_obj
+        # (see _cmd_ace_custom_load).
         for cmd, handler, desc in [
             ('_ACE_CUSTOM_LOAD', self._cmd_ace_custom_load, "ACE internal load command"),
             ('_ACE_CUSTOM_UNLOAD', self._cmd_ace_custom_unload, "ACE internal unload command"),
-            ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
-            ('ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB, "Calibrate ACE feed distance to hub"),
-            ('ACE_STATUS', self.cmd_ACE_STATUS, "Query ACE hardware status"),
-            ('ACE_DRY', self.cmd_ACE_DRY, "Start ACE filament dryer"),
-            ('ACE_DRY_STOP', self.cmd_ACE_DRY_STOP, "Stop ACE filament dryer"),
-            ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
-            ('ACE_CMD', self.cmd_ACE_CMD, "Send a raw ACE protocol command and print the reply"),
-            ('ACE_FEED_TEST', self.cmd_ACE_FEED_TEST, "Sweep feed speed to test whether it changes feed rate"),
-            ('ACE_STUCK_SPOOL_DETECTION', self.cmd_ACE_STUCK_SPOOL_DETECTION, "Enable/disable ACE stuck spool detection"),
         ]:
             try:
                 self.gcode.register_command(cmd, handler, desc=desc)
+            except Exception:
+                pass
+        # User-facing commands route by an optional UNIT= argument (default: the
+        # first/only unit) via _run_on_ace_unit, so multi-unit setups stay
+        # addressable by name without the parser-hostile suffixes.
+        for cmd, method_name, desc in [
+            ('ACE_CALIBRATE', 'cmd_ACE_CALIBRATE', "Calibrate ACE feed distance to toolhead"),
+            ('ACE_CALIBRATE_HUB', 'cmd_ACE_CALIBRATE_HUB', "Calibrate ACE feed distance to hub"),
+            ('ACE_STATUS', 'cmd_ACE_STATUS', "Query ACE hardware status"),
+            ('ACE_DRY', 'cmd_ACE_DRY', "Start ACE filament dryer"),
+            ('ACE_DRY_STOP', 'cmd_ACE_DRY_STOP', "Stop ACE filament dryer"),
+            ('ACE_LANE_RESET', 'cmd_ACE_LANE_RESET', "Retract ACE lane filament back into unit"),
+            ('ACE_CMD', 'cmd_ACE_CMD', "Send a raw ACE protocol command and print the reply"),
+            ('ACE_FEED_TEST', 'cmd_ACE_FEED_TEST', "Sweep feed speed to test whether it changes feed rate"),
+            ('ACE_STUCK_SPOOL_DETECTION', 'cmd_ACE_STUCK_SPOOL_DETECTION', "Enable/disable ACE stuck spool detection"),
+        ]:
+            try:
+                self.gcode.register_command(
+                    cmd,
+                    (lambda gcmd, m=method_name: self._run_on_ace_unit(gcmd, m)),
+                    desc=desc)
             except Exception:
                 pass
 
@@ -1879,6 +1891,27 @@ class afcACE(afcUnit):
         "UNIT": {"type": "string", "default": ""},
         "LANE": {"type": "string", "default": ""},
     }
+
+    def _run_on_ace_unit(self, gcmd, method_name):
+        """Dispatch a base (suffix-free) command to the target ACE unit.
+
+        Resolves the unit from an optional UNIT= argument; when UNIT is omitted
+        or doesn't match a known ACE unit, falls back to this unit (the first
+        one registered, which is the only one in single-unit setups). This keeps
+        the suffix-free commands addressable by name without relying on the
+        per-unit command suffixes that Klipper's gcode parser truncates for
+        names like "Ace2_1".
+
+        :param gcmd: the gcode command (read for an optional UNIT= argument).
+        :param method_name: name of the bound command method to invoke.
+        """
+        unit_name = gcmd.get('UNIT', None)
+        target = self
+        if unit_name:
+            cand = getattr(self.afc, 'units', {}).get(unit_name)
+            if cand is not None and hasattr(cand, method_name):
+                target = cand
+        return getattr(target, method_name)(gcmd)
 
     def cmd_ACE_CALIBRATE(self, gcmd):
         """Calibrate ACE feed distance to toolhead for a lane.
