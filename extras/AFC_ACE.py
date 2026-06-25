@@ -384,8 +384,9 @@ class afcACE(afcUnit):
         # The ACE runs its own load-to-toolhead-and-back detection cycle right
         # after connect and won't answer queries until it finishes — firing the
         # status/inventory burst into that busy window just times out and yields
-        # stale reads. Wait for it to report ready first.
-        self._wait_for_ace_ready(timeout=60.0)
+        # stale reads. Wait for it to report ready first (the cycle scales with
+        # PTFE / hub distance, so give it the same generous window as insert).
+        self._wait_for_ace_ready(timeout=90.0)
 
         # Seed slot status from a single get_status (covers all 4 slots, which is
         # all we need for prep/loaded state). Per-slot RFID detail is pulled by
@@ -881,9 +882,10 @@ class afcACE(afcUnit):
         for attempt in range(max_attempts):
             try:
                 # ACE 2 runs a load-to-toolhead-and-back cycle on insert that can
-                # take well over 30s; wait longer here so the staging feed isn't
-                # sent while the unit is still busy (which the unit rejects).
-                self._wait_for_ace_ready(timeout=60.0)
+                # take well over a minute (longer with a long PTFE / hub dist);
+                # wait it out so the staging feed isn't sent while the unit is
+                # still busy (which the unit rejects with error_2).
+                self._wait_for_ace_ready(timeout=90.0)
                 self._ace.feed_filament(slot, dist_hub, self.feed_speed)
                 self._wait_for_feed_complete(slot, dist_hub, self.feed_speed)
                 lane.loaded_to_hub = True
