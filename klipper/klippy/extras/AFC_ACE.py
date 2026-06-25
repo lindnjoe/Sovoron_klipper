@@ -854,7 +854,10 @@ class afcACE(afcUnit):
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                self._wait_for_ace_ready(timeout=30.0)
+                # ACE 2 runs a load-to-toolhead-and-back cycle on insert that can
+                # take well over 30s; wait longer here so the staging feed isn't
+                # sent while the unit is still busy (which the unit rejects).
+                self._wait_for_ace_ready(timeout=60.0)
                 self._ace.feed_filament(slot, dist_hub, self.feed_speed)
                 self._wait_for_feed_complete(slot, dist_hub, self.feed_speed)
                 lane.loaded_to_hub = True
