@@ -843,14 +843,14 @@ class afcACE(afcUnit):
         """Retract distance for an eject/unload. When the lane is loaded to the
         toolhead, retract the full path (dist_hub + bowden). When it's only
         staged at the hub, the filament just spans the lane->hub gap, so retract
-        dist_hub + a 550mm buffer to clear the hub and pull it into the unit.
+        dist_hub + a 500mm buffer to clear the hub and pull it into the unit.
 
         :param cur_lane: Lane to compute the eject distance for.
-        :return float: Full unload length when tool-loaded, else dist_hub + 550.
+        :return float: Full unload length when tool-loaded, else dist_hub + 500.
         """
         if getattr(cur_lane, 'tool_loaded', False):
             return self._get_unload_length(cur_lane)
-        return cur_lane.dist_hub + 550
+        return cur_lane.dist_hub + 500
 
     def _use_feed_assist(self, cur_lane) -> bool:
         """Resolve whether feed assist should run for a lane.
@@ -1236,7 +1236,7 @@ class afcACE(afcUnit):
         """Retract filament back into the ACE unit.
 
         From the hub-staged state the filament only spans the lane->hub gap, so
-        unwind dist_hub + a 550mm buffer to clear the hub sensor and fully pull
+        unwind dist_hub + a 500mm buffer to clear the hub sensor and fully pull
         the filament back into the unit. If it's loaded past the hub (to the
         toolhead) fall back to the full unload length (dist_hub + bowden).
 
