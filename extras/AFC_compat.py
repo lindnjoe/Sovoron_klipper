@@ -438,13 +438,25 @@ def _patch_afc_hub_virtual_load_check():
 
 
 def apply_compat_patches():
-    """Apply all AFC compatibility shims. Idempotent; safe to call repeatedly
-    and from multiple unit modules."""
+    """Apply AFC compatibility shims. Idempotent; safe to call repeatedly and
+    from multiple unit modules.
+
+    As of the latest bring_in_openams convergence ALL of these are handled
+    natively by the (re-frozen) upstream core, so every shim is disabled:
+      * unload_shared_phase  -> AFC.load/unload_sequence run the shared toolhead
+        phase natively (heat, lane_unloading, post_unload_macro). The one extra
+        our serial custom-unload lanes need — quick-pull/buffer/sync/select +
+        cut/park/form_tip on a custom unload — is added directly in the re-frozen
+        AFC.py custom_unload_cmd branch (a documented FORK edit), not here.
+      * lane_load_runout     -> native AFC_lane.handle_load_runout (+ ONLY_LOAD_TYPES
+        now includes ACE/ACE2 in the re-frozen AFC_lane.py).
+      * unit_filament_hooks  -> native afcUnit.on_filament_insert/on_filament_remove.
+      * the other 5 were already native (see the first convergence)."""
     # _patch_afc_lane_virtual_hub()
     # _patch_afc_buffer_steppermless()
     # _patch_afc_hub_virtual_state()
-    _patch_afc_unload_shared_phase()
+    # _patch_afc_unload_shared_phase()
     # _patch_afc_bowden_serial_unit()
-    _patch_afc_lane_load_runout()
-    _patch_afc_unit_filament_hooks()
+    # _patch_afc_lane_load_runout()
+    # _patch_afc_unit_filament_hooks()
     # _patch_afc_hub_virtual_load_check()
