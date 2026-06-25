@@ -31,6 +31,12 @@ class TemperatureACE:
         self.reactor = self.printer.get_reactor()
         self.name = config.get_name().split()[-1]
         self.ace_unit_name = config.get("ace_unit", "Ace1")
+        # Register under a Mainsail-recognized sensor name so the web UI shows
+        # temperature AND humidity. Mainsail reads humidity only from sensors it
+        # knows (e.g. aht3x); a plain temperature_ace object surfaces temp only.
+        # Mirrors temperature_oams' simulate_supported_sensor_mainsail option.
+        self.simulate_aht3x = config.getboolean(
+            "simulate_supported_sensor_mainsail", True)
 
         # Temperature state
         self.temp = 0.0
@@ -53,8 +59,13 @@ class TemperatureACE:
         # Klipper temperature callback
         self._callback = None
 
-        # Register object
-        self.printer.add_object("temperature_ace " + self.name, self)
+        # Register object. Registering as "aht3x <name>" makes Mainsail treat
+        # this as a humidity-capable sensor and display the humidity field
+        # (ACE 2); falls back to the plain name when simulation is disabled.
+        if self.simulate_aht3x:
+            self.printer.add_object("aht3x " + self.name, self)
+        else:
+            self.printer.add_object("temperature_ace " + self.name, self)
 
         # Skip timers in debug mode
         if self.printer.get_start_args().get("debugoutput") is not None:
