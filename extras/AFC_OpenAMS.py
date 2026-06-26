@@ -829,13 +829,10 @@ class afcAMS(afcUnit):
             if slot < 0:
                 slot = 0
             self._spool_map[lane_name] = slot
-            # Use the suffix-free base command so unit names with a digit before
-            # "_<n>" survive Klipper's gcode parser; the handler routes by LANE
-            # via the lane's unit_obj.
-            lane.custom_load_cmd = f"_OAMS_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
-            # Unload goes through unit_unload_lane (below), not custom_unload_cmd,
-            # so the shared toolhead phase lives in the unit driver and AFC.py
-            # needs no fork. Leave custom_unload_cmd unset to take that branch.
+            # Load and unload both go through the unit_load_lane / unit_unload_lane
+            # hooks (below), not custom_load_cmd / custom_unload_cmd, so the shared
+            # toolhead phase lives in the unit driver and AFC.py needs no fork.
+            # Leave both custom_*_cmd unset so those upstream branches are taken.
             eng_len = getattr(lane, 'engagement_length', None)
             if eng_len is not None:
                 eng_speed = getattr(lane, 'engagement_speed', None) or self._engagement_speed
@@ -1442,6 +1439,40 @@ class afcAMS(afcUnit):
             if cand is not None and hasattr(cand, method_name):
                 target = cand
         return getattr(target, method_name)(gcmd)
+
+    def unit_load_lane(self, cur_lane, cur_extruder) -> bool:
+        """Full toolhead load for a stepperless OpenAMS lane.
+
+        AFC.load_sequence calls this via the unit_load_lane hook (upstream), so
+        OpenAMS load lives in the unit driver, symmetric with unit_unload_lane.
+        Runs the OpenAMS transport (via the internal _OAMS_CUSTOM_LOAD command,
+        which raises on transport failure), then verifies the pre-extruder
+        toolhead sensor and finalizes — the load_sequence elif branch does no
+        check of its own, so a sensor miss is surfaced here (pause + raise).
+
+        :param cur_lane: Lane to load.
+        :param cur_extruder: Extruder the lane loads into.
+        :return bool: True once the toolhead sensor is triggered.
+        """
+        afc = self.afc
+        # Transport to the toolhead area (raises on transport failure).
+        self.gcode.run_script_from_command(
+            f"_OAMS_CUSTOM_LOAD UNIT={self.name} LANE={cur_lane.name}")
+        if cur_lane.get_toolhead_pre_sensor_state():
+            cur_lane.status = AFCLaneState.TOOL_LOADED
+            afc.save_vars()
+            return True
+        message = ('Load did not trigger pre extruder gear toolhead sensor, '
+                   'CHECK FILAMENT PATH\n||=====||====||==>--||\n'
+                   'TRG   LOAD   HUB   TOOL')
+        message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
+        message += '\nManually move filament until filament is right before toolhead extruder gears,'
+        message += '\nthen load into extruder gears with extrude button in your gui of choice until the color fully changes'
+        if afc.function.in_print():
+            message += '\nOnce filament is fully loaded click resume to continue printing'
+        afc.error.handle_lane_failure(cur_lane, message)
+        raise self.gcode.error(
+            f"{cur_lane.name} load failed: toolhead sensor not triggered")
 
     def _cmd_oams_custom_load(self, gcmd):
         """Handle _OAMS_CUSTOM_LOAD — filament transport to toolhead area.
