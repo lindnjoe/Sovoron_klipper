@@ -797,7 +797,14 @@ class FPSEndstopWrapper:
         """
         return 1 if self._trigger_func() else 0
 
-class AFCFPSBuffer:
+# FORK: inherit AFCBuffer so super().__init__(config) below resolves to the
+# shared buffer setup (printer/afc/reactor/gcode/name/type, klippy:ready handler,
+# common buffer macros). Upstream (jimmyjon711 16574b3) declares this as a bare
+# `class AFCFPSBuffer:`, so super() hits object.__init__ and load fails with
+# "object.__init__() takes exactly one argument". AFCBuffer.__init__ is
+# type-aware (its switched-only pin block is gated on type=="switched"), so FPS
+# inherits cleanly. Report upstream.
+class AFCFPSBuffer(AFCBuffer):
     """
     FPS-based buffer driver for AFC.
 
