@@ -699,11 +699,6 @@ class afcAMS(afcUnit):
         self.type = config.get('type', 'OpenAMS')
         self.stepperless_drive: bool = True
 
-        # Enable per-unit Spoolman flow-K sync (read by AFC_flow_k via
-        # getattr(unit, 'spoolman_flow_sync', ...)). Kept on the custom unit
-        # modules so frozen AFC_unit.py stays byte-clean to openams.
-        self.spoolman_flow_sync = config.getboolean('spoolman_flow_sync', False)
-
         # Hardware identifier
         self.oams_name = config.get("oams", "oams1")
 
