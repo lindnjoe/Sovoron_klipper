@@ -2151,6 +2151,13 @@ class AFCLane:
         response['buffer_status'] = self.buffer_status()
         response['lane'] = self.index
         response['map'] = self.map
+        # FORK: surface which tool command currently redirects to this lane
+        afc = self.printer.lookup_object('AFC', None)
+        if afc and getattr(afc, 'allow_tool_redirect', False):
+            for src, tgt in afc.tool_redirects.items():
+                if afc.tool_cmds.get(src) == self.name:
+                    response['redirect_from'] = src
+                    break
         response['load'] = self.load_state
         response["prep"] =bool(self.prep_state)
         if self._selector_state is not None:

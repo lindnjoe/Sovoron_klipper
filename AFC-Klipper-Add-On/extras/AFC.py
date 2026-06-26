@@ -110,6 +110,8 @@ class afc:
         self.hubs       = {}
         self.buffers    = {}
         self.tool_cmds  = {}
+        self.tool_redirects = {}      # FORK: session tool redirects (T# -> T#) for multi-color on fewer lanes
+        self.print_used_tools = None  # FORK: set of tools used in current print (M10x gating); None = no gating
         self.led_obj    = {}
         self.led_state  = True
         self.bypass     = None
@@ -240,6 +242,7 @@ class afc:
         self.spool_ratio            = config.getfloat("spool_ratio",2)              # gear ratio for printed gearbox between N20 and spooler wheels
         self.full_weight            = config.getfloat("full_weight",1000, minval=1) # full weight of filament spool (not counting spool itself)
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", False) # Set to True to show all sensor switches as filament sensors in mainsail/fluidd gui
+        self.allow_tool_redirect    = config.getboolean("allow_tool_redirect", False) # FORK: enable SET_REDIRECT/SET_TOOL_REDIRECT tool-redirect commands
         self.ignore_spoolman_material_temps = config.getboolean("ignore_spoolman_material_temps", False)  # When True, AFC will ignore temperatures set in Spoolman and use default_material_temps instead.
         self.led_use_filament_color:bool = config.getboolean('led_use_filament_color', False)  # When True, uses filament color from color field for lane LEDs instead of configured LED colors
         self.restore_extruder_temp_on_load_or_unload = config.getboolean(
@@ -596,6 +599,7 @@ class afc:
         self.gcode.run_script_from_command("CLEAR_PAUSE")
         self.number_of_toolchanges = 0
         self.current_toolchange    = -1
+        self.print_used_tools      = None  # FORK: clear per-print used-tool gating at print start
         self.save_vars()
 
     def in_print_reactor_timer(self, eventtime):
@@ -663,6 +667,31 @@ class afc:
                     using_min_value = False
                     break
         return float(temp_value), using_min_value
+
+    def _reassert_extruder_temp(self, cur_lane: AFCLane) -> None:
+        """FORK: re-apply the active extruder's target temperature after a
+        redirected tool change that didn't actually switch lanes.
+
+        The slicer may have emitted M104 S0 for the "old" tool before the T#
+        command. Since no actual switch happens, re-assert the active
+        extruder's temperature so it doesn't cool down.
+        """
+        try:
+            extruder = cur_lane.extruder_obj
+            heater = extruder.get_heater()
+            self.heater = heater
+            target, _ = self._get_default_material_temps(cur_lane)
+            if target <= 0:
+                target = heater.max_temp * 0.5
+            cur_temp = heater.target_temp
+            if cur_temp < target - 5:
+                pheaters = self.printer.lookup_object('heaters')
+                pheaters.set_temperature(heater, target, False)
+                self.logger.info(
+                    f"Redirect: re-asserting {extruder.name} to {target:.0f}C "
+                    f"(was {cur_temp:.0f}C)")
+        except Exception as e:
+            self.logger.debug(f"Redirect temp reassert failed: {e}")
 
     def _check_extruder_temp(self, cur_lane: AFCLane, no_wait: bool=False):
         """
@@ -2235,6 +2264,10 @@ class afc:
             self.error.AFC_error("I did not understand the change -- " + cmd, pause=self.function.in_print())
             return
 
+        # FORK: resolve any active tool redirect before changing tools
+        if self.allow_tool_redirect:
+            Tcmd = self.tool_redirects.get(Tcmd, Tcmd)
+
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length, new_extruder_temp=new_extruder_temp)
 
     def CHANGE_TOOL(self, cur_lane: AFCLane, purge_length: Optional[float]=None, restore_pos: bool=True, new_extruder_temp: Optional[float]=None) -> None:
@@ -2362,6 +2395,12 @@ class afc:
                 self.logger.info("{} already loaded".format(cur_lane.name))
                 if not self.error_state and self.current_toolchange == -1:
                     self.current_toolchange += 1
+
+                # FORK: a redirected tool change may resolve to the lane that is
+                # already loaded. The slicer can have cooled the "old" tool with
+                # M104 S0, so re-assert the active extruder's target temperature.
+                if self.allow_tool_redirect and self.tool_redirects:
+                    self._reassert_extruder_temp(cur_lane)
         # Copilot yes this is a bare exception, ignore please since this is being done on purpose
         # to make sure all exceptions are catched
         except Exception:
@@ -2420,6 +2459,7 @@ class afc:
         str['units'] = list(unitdisplay)
         str['lanes'] = list(self.lanes.keys())
         str["maps"] = list(self.tool_cmds.keys())
+        str["tool_redirects"] = dict(self.tool_redirects)  # FORK: expose active redirects in status
         str["extruders"] = [e.name for e in self.tools.values()]
         str["hubs"] = list(self.hubs.keys())
         str["buffers"] = list(self.buffers.keys())
@@ -2538,6 +2578,19 @@ class afc:
 
         if toolnum is not None:
             map = "T{}".format(toolnum)
+
+            # FORK: resolve tool redirect for M10x temperature commands
+            if self.allow_tool_redirect and map in self.tool_redirects:
+                resolved = self.tool_redirects[map]
+                self.logger.debug(f"Redirect: M10x {map} -> {resolved}")
+                map = resolved
+                toolnum = int(resolved[1:])
+
+            # FORK: block M10x for tools not used in the current print (used-tool gating)
+            if self.print_used_tools is not None and map not in self.print_used_tools:
+                self.logger.info(f"Blocking M10x for {map} — not used in current print")
+                return
+
             lane = self.function.get_lane_by_map(map)
             # If A(n) is in commandline and AFC is running on a snapmaker printer lookup extruder
             # by T param. For snapmaker printers M109/M104 normally passes in `A0` when resuming, or
