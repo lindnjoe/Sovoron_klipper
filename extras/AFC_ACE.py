@@ -393,7 +393,9 @@ class afcACE(afcUnit):
             # Klipper's gcode parser. UNIT is informational; the handler routes
             # by LANE via the lane's unit_obj.
             lane.custom_load_cmd = f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
-            lane.custom_unload_cmd = f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
+            # Unload goes through unit_unload_lane (below), not custom_unload_cmd,
+            # so the shared toolhead phase lives in the unit driver and AFC.py
+            # needs no fork. Leave custom_unload_cmd unset to take that branch.
             # ACE lanes have no physical load pin, so raw_load_state (_load_state)
             # would default True (loadless default). Start it False so the native
             # virtual hub (any(lane.raw_load_state)) reads clear until a sync or
@@ -1659,6 +1661,42 @@ class afcACE(afcUnit):
         result = unit._ace_load_sequence(cur_lane, cur_extruder)
         if not result:
             raise gcmd.error(f"ACE load failed for {lane_name}")
+
+    def unit_unload_lane(self, cur_lane, cur_extruder) -> bool:
+        """Full toolhead unload for a stepperless ACE lane.
+
+        AFC.unload_sequence calls this via the unit_unload_lane hook (upstream),
+        so the shared toolhead phase lives here in the unit driver instead of as
+        a fork in the frozen AFC.py custom-unload branch. Runs quick-pull,
+        buffer/sync/select and cut/tip-form, then the ACE serial unwind (via the
+        internal _ACE_CUSTOM_UNLOAD command, which raises on failure), the
+        post-unload macro, and finalizes the lane state.
+
+        :param cur_lane: Lane to unload.
+        :param cur_extruder: Extruder the lane is synced to on entry.
+        :return bool: True on success (the serial unwind raises on failure).
+        """
+        afc = self.afc
+        cur_lane.status = AFCLaneState.TOOL_UNLOADING
+        # Shared toolhead phase. do_tool_cut_tip_form self-gates on
+        # tool_cut/form_tip, so it's a no-op when both are disabled.
+        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull",
+                       wait_tool=False)
+        cur_lane.disable_buffer()
+        cur_lane.sync_to_extruder()
+        cur_lane.select_lane()
+        afc.do_tool_cut_tip_form(cur_lane, cur_extruder)
+        # ACE serial unwind. The internal command raises gcmd.error on failure,
+        # aborting the unload — the unit_unload_lane caller does no error
+        # checking of its own.
+        self.gcode.run_script_from_command(
+            f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={cur_lane.name}")
+        if afc.post_unload_macro is not None:
+            self.gcode.run_script_from_command(afc.post_unload_macro)
+        cur_lane.set_tool_unloaded(normal_toolchange=True)
+        cur_lane.status = AFCLaneState.NONE
+        afc.save_vars()
+        return True
 
     def _cmd_ace_custom_unload(self, gcmd):
         """Handle _ACE_CUSTOM_UNLOAD — filament transport from toolhead.

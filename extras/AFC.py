@@ -1898,19 +1898,6 @@ class afc:
             self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
 
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
-
-            # FORK: run the shared toolhead phase our serial custom-unload lanes
-            # (ACE/OpenAMS) rely on, which upstream runs only in the normal
-            # branch: quick pull, buffer/sync/select, then cut/park/form_tip
-            # (do_tool_cut_tip_form is internally gated on tool_cut/form_tip, so
-            # this is a no-op when both are disabled).
-            self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull",
-                            wait_tool=False)
-            cur_lane.disable_buffer()
-            cur_lane.sync_to_extruder()
-            cur_lane.select_lane()
-            self.do_tool_cut_tip_form(cur_lane, cur_extruder)
-
             self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
 
             if self.post_unload_macro is not None:
