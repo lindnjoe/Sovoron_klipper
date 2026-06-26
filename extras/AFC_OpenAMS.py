@@ -1441,20 +1441,14 @@ class afcAMS(afcUnit):
         return getattr(target, method_name)(gcmd)
 
     def unit_load_lane(self, cur_lane, cur_extruder) -> bool:
-        """Full toolhead load for a stepperless OpenAMS lane.
-
-        AFC.load_sequence calls this via the unit_load_lane hook (upstream), so
-        OpenAMS load lives in the unit driver, symmetric with unit_unload_lane.
-        The internal _OAMS_CUSTOM_LOAD command runs the transport AND verifies
-        the toolhead sensor (_oams_load_inner uses _toolhead_sensor_triggered —
-        which is U1-aware — and fails via handle_lane_failure), so it already
-        raises on a failed load. No separate sensor check is done here: it would
-        duplicate AFC.py's wording (drift risk) and, being non-U1-aware, could
-        false-fail a good U1 load.
+        """Full toolhead load for a stepperless OpenAMS lane (AFC.load_sequence's
+        unit_load_lane hook). The internal _OAMS_CUSTOM_LOAD command runs the
+        transport and verifies the toolhead sensor itself, raising on failure,
+        so this just runs it and finalizes the lane state.
 
         :param cur_lane: Lane to load.
         :param cur_extruder: Extruder the lane loads into.
-        :return bool: True on a verified load (the command raises on failure).
+        :return bool: True on a verified load.
         """
         afc = self.afc
         self.gcode.run_script_from_command(

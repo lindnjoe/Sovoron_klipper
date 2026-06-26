@@ -1640,20 +1640,14 @@ class afcACE(afcUnit):
     # ── Custom load/unload gcode handlers ───────────────────────────
 
     def unit_load_lane(self, cur_lane, cur_extruder) -> bool:
-        """Full toolhead load for a stepperless ACE lane.
-
-        AFC.load_sequence calls this via the unit_load_lane hook (upstream), so
-        ACE load lives in the unit driver, symmetric with unit_unload_lane. The
-        internal _ACE_CUSTOM_LOAD command runs the serial transport AND verifies
-        the toolhead sensor (_ace_load_inner pulses until
-        _toolhead_sensor_triggered — which is U1-aware — then fails via
-        handle_lane_failure), so it already raises on a failed load. No separate
-        sensor check is done here: it would duplicate AFC.py's wording (drift
-        risk) and, being non-U1-aware, could false-fail a good U1 load.
+        """Full toolhead load for a stepperless ACE lane (AFC.load_sequence's
+        unit_load_lane hook). The internal _ACE_CUSTOM_LOAD command runs the
+        serial transport and verifies the toolhead sensor itself, raising on
+        failure, so this just runs it and finalizes the lane state.
 
         :param cur_lane: Lane to load.
         :param cur_extruder: Extruder the lane loads into.
-        :return bool: True on a verified load (the command raises on failure).
+        :return bool: True on a verified load.
         """
         afc = self.afc
         self.gcode.run_script_from_command(
