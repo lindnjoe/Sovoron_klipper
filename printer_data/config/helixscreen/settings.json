@@ -103,15 +103,15 @@
       "filament": {
         "external_spool": {
           "assigned": true,
-          "bed_temp": 90,
-          "brand": "Bambu Lab",
-          "color_rgb": 44610,
-          "material": "ABS",
+          "bed_temp": 65,
+          "brand": "Inland",
+          "color_rgb": 15861768,
+          "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 527.3015747070313,
-          "spool_name": "Bambu Lab ABS - Bambu Green",
-          "spoolman_id": 15,
+          "remaining_weight_g": 386.5196533203125,
+          "spool_name": "Inland PLA - True Red",
+          "spoolman_id": 5,
           "total_weight_g": 1000.0
         }
       },
@@ -186,7 +186,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-26T17:04:23Z"
+          "timestamp": "2026-06-26T17:18:17Z"
         },
         "optional": []
       },

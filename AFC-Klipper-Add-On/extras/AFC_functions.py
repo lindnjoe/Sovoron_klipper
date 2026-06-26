@@ -524,21 +524,38 @@ class afcFunction:
         # self.reactor.update_timer( self.activate_extruder_cb, self.reactor.monotonic() + 5 )
         self._handle_activate_extruder(0)
 
-    def _handle_activate_extruder(self, eventtime):
+    def _handle_activate_extruder(self, eventtime, lane=None):
         """
         Supposed to be a callback function from timer, currently this is not called from timer event.
         TODO: Update this functionality before pushing to main/dev or once fully moved away from KTC
+
+        FORK: optional `lane` activates that lane's klipper extruder first — the
+        custom toolchanger passes it for multi-toolhead changes.
         """
+        if lane is not None:
+            lane.activate_toolhead_extruder()
 
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
+        # FORK: don't disable a buffer that other lanes still share (e.g. BoxTurtle
+        # lanes on one FPS buffer) when switching among them.
+        active_buffer_obj = getattr(cur_lane_loaded, "buffer_obj", None) if cur_lane_loaded is not None else None
+        active_buffer_name = getattr(cur_lane_loaded, "buffer_name", None) if cur_lane_loaded is not None else None
 
         self.afc.spool.set_active_spool('')
         # Disable extruder steppers for non active lanes
         for key, obj in self.afc.lanes.items():
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
                 obj.do_enable(False)
-                obj.disable_buffer()
+                if (  # FORK: keep a buffer enabled if another lane still shares it
+                    cur_lane_loaded is None
+                    or not (
+                        (active_buffer_obj is not None and getattr(obj, "buffer_obj", None) is active_buffer_obj)
+                        or (active_buffer_name is not None
+                            and getattr(obj, "buffer_name", None) == active_buffer_name)
+                    )
+                ):
+                    obj.disable_buffer()
                 if (cur_lane_loaded is None
                     or (obj.unit_obj.name != cur_lane_loaded.unit_obj.name)):
                     obj.unit_obj.return_to_home()

@@ -2368,11 +2368,29 @@ class afcACE(afcUnit):
                     f"Failed to start feed assist slot {slot} after "
                     f"{attempts} attempts: {e}")
             except Exception as e:
+                msg = str(e)
+                # error_2 (code=2) means the ACE momentarily rejected the command
+                # because it's still busy — e.g. settling a previous slot's assist
+                # when several loaded slots are reconciled in quick succession at
+                # prep (direct-to-many-tools). Treat it like a timeout: wait for
+                # the unit to report ready and retry, rather than leaving a loaded
+                # lane with assist OFF.
+                if 'error_2' in msg or 'code=2' in msg:
+                    if attempt < attempts:
+                        self.logger.debug(
+                            f"start feed assist slot {slot} rejected as busy "
+                            f"(error_2, attempt {attempt}/{attempts}), retrying: {e}")
+                        self._wait_for_ace_ready(timeout=self.prep_ready_timeout)
+                        continue
+                    self.logger.error(
+                        f"Failed to start feed assist slot {slot} after "
+                        f"{attempts} attempts (still busy): {e}")
+                    return
                 # FORBIDDEN means the ACE refused assist for a moment (slot
                 # state still settling, e.g. right after boot). The heartbeat
                 # watchdog re-issues it on the next status tick and it succeeds,
                 # so log at debug — it's transient and self-healing, not a fault.
-                if 'FORBIDDEN' in str(e).upper():
+                if 'FORBIDDEN' in msg.upper():
                     self.logger.debug(
                         f"Feed assist slot {slot} not permitted yet "
                         f"(FORBIDDEN); watchdog will retry: {e}")
