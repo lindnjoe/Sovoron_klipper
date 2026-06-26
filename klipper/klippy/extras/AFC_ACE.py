@@ -867,13 +867,39 @@ class afcACE(afcUnit):
         """Resolve whether feed assist should run for a lane.
 
         :param cur_lane: Lane to check.
-        :return bool: The lane's per-lane use_feed_assist when set, else the
-            unit default.
+        :return bool: The lane's per-lane use_feed_assist when set, else the unit
+            default — AND only for the single active tool. The ACE/ACE2 can
+            feed-assist just one lane at a time, so assisting idle loaded lanes
+            only churns against that limit (the unit rejects the extras with
+            error_2).
         """
         fa = getattr(cur_lane, 'use_feed_assist', None)
-        if fa is not None:
-            return fa
-        return self._default_feed_assist
+        if fa is None:
+            fa = self._default_feed_assist
+        if not fa:
+            return False
+        return self._lane_is_active_tool(cur_lane)
+
+    def _lane_is_active_tool(self, cur_lane) -> bool:
+        """True only for the lane that is the current active tool.
+
+        The ACE/ACE2 can only feed-assist one lane at a time, so feed assist
+        should follow whichever tool is actually engaged:
+
+        * Toolchanger units — the tool currently on the shuttle. on_shuttle()
+          returns False for docked-but-loaded tools (so prep stops trying to
+          assist all of them) and True only for the active one. It also returns
+          True for single-toolhead setups, which fall through to the combined-
+          mode check below.
+        * Combined-mode units (non-toolchanger, shared toolhead) — the lane
+          currently loaded into the toolhead, tracked by afc.current.
+        """
+        ext = getattr(cur_lane, 'extruder_obj', None)
+        if ext is not None and getattr(ext, 'tc_unit_name', None) is not None:
+            on_shuttle = getattr(ext, 'on_shuttle', None)
+            return bool(on_shuttle()) if callable(on_shuttle) else True
+        cur = getattr(self.afc, 'current', None)
+        return cur is None or cur == cur_lane.name
 
     def _get_slot(self, lane_name: str) -> int:
         """Map a lane name to its 0-based ACE slot index.
@@ -2369,22 +2395,31 @@ class afcACE(afcUnit):
                     f"{attempts} attempts: {e}")
             except Exception as e:
                 msg = str(e)
-                # error_2 (code=2) means the ACE momentarily rejected the command
-                # because it's still busy — e.g. settling a previous slot's assist
-                # when several loaded slots are reconciled in quick succession at
-                # prep (direct-to-many-tools). Treat it like a timeout: wait for
-                # the unit to report ready and retry, rather than leaving a loaded
-                # lane with assist OFF.
+                # error_2 (code=2) is the ACE refusing to START assist — NOT a
+                # transient/busy condition, so retrying can't clear it. It means
+                # either the slot is already assisting, or the unit's concurrent-
+                # assist limit (the ACE2 allows 2) is reached as several loaded
+                # direct-tool slots are reconciled at once. If the slot is in fact
+                # already assisting, mark it tracked so the watchdog stops
+                # re-requesting it; otherwise accept the refusal quietly — the
+                # active lane keeps its assist and idle slots over the limit go
+                # without (which is fine; they aren't feeding).
                 if 'error_2' in msg or 'code=2' in msg:
-                    if attempt < attempts:
+                    try:
+                        slots = (self._cached_hw_status or {}).get('slots', [])
+                        already = (slot < len(slots)
+                                   and slots[slot].get('slot_status') == 'assisting')
+                    except Exception:
+                        already = False
+                    if already:
+                        self._feed_assist_active.add(slot)
                         self.logger.debug(
-                            f"start feed assist slot {slot} rejected as busy "
-                            f"(error_2, attempt {attempt}/{attempts}), retrying: {e}")
-                        self._wait_for_ace_ready(timeout=self.prep_ready_timeout)
-                        continue
-                    self.logger.error(
-                        f"Failed to start feed assist slot {slot} after "
-                        f"{attempts} attempts (still busy): {e}")
+                            f"Feed assist slot {slot} already assisting (error_2); "
+                            f"marked tracked")
+                    else:
+                        self.logger.debug(
+                            f"Feed assist slot {slot} refused (error_2 — concurrent-"
+                            f"assist limit or slot state); leaving off")
                     return
                 # FORBIDDEN means the ACE refused assist for a moment (slot
                 # state still settling, e.g. right after boot). The heartbeat
