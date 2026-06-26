@@ -1258,12 +1258,17 @@ class afcACE(afcUnit):
         """
         afc = self.afc
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
+        # Shared toolhead phase. do_tool_cut_tip_form self-gates on
+        # tool_cut/form_tip, so it's a no-op when both are disabled.
         afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull",
                        wait_tool=False)
         cur_lane.disable_buffer()
         cur_lane.sync_to_extruder()
         cur_lane.select_lane()
         afc.do_tool_cut_tip_form(cur_lane, cur_extruder)
+        # ACE serial unwind. The internal command raises gcmd.error on failure,
+        # aborting the unload — the unit_unload_lane caller does no error
+        # checking of its own.
         self.gcode.run_script_from_command(
             f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={cur_lane.name}")
         if afc.post_unload_macro is not None:
