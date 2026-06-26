@@ -214,6 +214,11 @@ class afcACE(afcUnit):
         self.type = config.get('type', 'ACE')
         self.stepperless_drive: bool = True
 
+        # Enable per-unit Spoolman flow-K sync (read by AFC_flow_k via
+        # getattr(unit, 'spoolman_flow_sync', ...)). Inherited by afcACE2.
+        # Kept on the custom unit modules so frozen AFC_unit.py stays byte-clean.
+        self.spoolman_flow_sync = config.getboolean('spoolman_flow_sync', False)
+
         self.serial_port = config.get("serial_port")
         mode = config.get("mode", MODE_COMBINED).lower().strip()
         if mode not in (MODE_COMBINED, MODE_DIRECT):
