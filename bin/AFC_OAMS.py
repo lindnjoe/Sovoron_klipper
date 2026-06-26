@@ -7,6 +7,8 @@
 # This file include code inspired/modified from OpenAms Project. https://github.com/OpenAMSOrg/klipper_openams
 # Originally authored by JR Lomas(aka KnightRadiant) and licensed under the MIT license
 # Full license text available at: https://mit-license.org/
+
+# This code was updated and contributed by lindnjoe(aka J0eB0l)
 from __future__ import annotations
 
 import mcu
