@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from extras.AFC_buffer import (
-    AFCTrigger,
+    AFCBuffer,
     TRAILING_STATE_NAME,
     ADVANCING_STATE_NAME,
     CHECK_RUNOUT_TIMEOUT,
@@ -33,8 +33,8 @@ from tests.test_AFC_lane import _make_afc_lane
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_buffer(name="TN", error_sensitivity=0.0):
-    """Build an AFCTrigger by bypassing __init__ and setting attributes."""
-    buf = AFCTrigger.__new__(AFCTrigger)
+    """Build an AFCBuffer by bypassing __init__ and setting attributes."""
+    buf = AFCBuffer.__new__(AFCBuffer)
 
     from tests.conftest import MockAFC, MockReactor, MockLogger
 
@@ -48,6 +48,7 @@ def _make_buffer(name="TN", error_sensitivity=0.0):
     buf.gcode = afc.gcode
     buf.logger = afc.logger
     buf.name = name
+    buf.type = "switched"
     buf.lanes = {}
     buf.last_state = "Unknown"
     buf.enable = False
