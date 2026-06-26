@@ -36,11 +36,11 @@ except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.form
 
 # FollowerController, OAMSMonitor and FPSLoadState/FPSState are defined inline
 # at the bottom of this file so the OpenAMS unit is self-contained. The [oams]
-# hardware controller lives in its own oams.py because Klipper resolves the
-# [oams ...] config section to that module name.
+# hardware controller lives in its own AFC_OAMS.py because Klipper resolves the
+# [AFC_OAMS ...] config section to that module name.
 
 
-# ── Support classes used by external oams.py module ────────────────
+# ── Support classes used by external AFC_OAMS.py module ────────────────
 
 class AMSEventBus:
     """Process-wide singleton publish/subscribe bus for OpenAMS events.
@@ -301,7 +301,7 @@ class LaneRegistry:
 class AMSHardwareService:
     """Per-(printer, unit) façade over the [oams] hardware controller.
 
-    Resolves and caches the ``[oams <name>]`` controller, polls its sensors on
+    Resolves and caches the ``[AFC_OAMS <name>]`` controller, polls its sensors on
     a reactor timer, caches the latest status and per-lane snapshots, and
     publishes f1s/hub/spool change events on the shared ``AMSEventBus``. One
     instance exists per (printer, unit name) pair.
@@ -312,7 +312,7 @@ class AMSHardwareService:
         """Initialize service state, lookup the AFC logger, and wire shared singletons.
 
         :param printer: Klipper printer object.
-        :param name: OpenAMS unit name (matches the ``[oams <name>]`` section).
+        :param name: OpenAMS unit name (matches the ``[AFC_OAMS <name>]`` section).
         :param logger: optional logger; falls back to the AFC object's logger.
         """
         self.printer = printer
@@ -378,13 +378,13 @@ class AMSHardwareService:
     def resolve_controller(self):
         """Return the [oams] controller, looking it up and caching it if needed.
 
-        :return: the ``[oams <name>]`` controller object, or None if not found.
+        :return: the ``[AFC_OAMS <name>]`` controller object, or None if not found.
         """
         with self._lock:
             controller = self._controller
         if controller is not None:
             return controller
-        lookup_name = f"oams {self.name}"
+        lookup_name = f"AFC_OAMS {self.name}"
         try:
             controller = self.printer.lookup_object(lookup_name, None)
         except Exception:
@@ -907,11 +907,11 @@ class afcAMS(afcUnit):
         # Vivid-style hub: each lane's raw_load_state carries the hub HES and the
         # native AFC_hub reports any(lane.raw_load_state). The hub stays
         # non-driven (_state_driven False) — no set_state_driven needed.
-        self.oams = self.printer.lookup_object(f"oams {self.oams_name}", None)
+        self.oams = self.printer.lookup_object(f"AFC_OAMS {self.oams_name}", None)
 
         if self.oams is None:
             self.logger.warning(
-                f"OpenAMS hardware '[oams {self.oams_name}]' not found for "
+                f"OpenAMS hardware '[AFC_OAMS {self.oams_name}]' not found for "
                 f"'{self.name}'. Sensor state will not update.")
             return
 
@@ -2666,7 +2666,7 @@ class afcAMS(afcUnit):
 
         self.logger.raw(f"TD-1 calibration: continuous load for {cur_lane.name}")
 
-        from extras.oams import OAMSStatus
+        from extras.AFC_OAMS import OAMSStatus
         FPS_STOP_THRESHOLD = 0.45
         TD1_POLL_INTERVAL = 2.0
 
@@ -2819,7 +2819,7 @@ class afcAMS(afcUnit):
             return False, "Another OpenAMS hub already loaded"
 
         # Load the spool to move filament to hub
-        from extras.oams import OAMSStatus
+        from extras.AFC_OAMS import OAMSStatus
         self.oams.action_status = OAMSStatus.LOADING
         try:
             self.oams.oams_load_spool_cmd.send([spool_index])
@@ -3085,7 +3085,7 @@ class afcAMS(afcUnit):
 # ══════════════════════════════════════════════════════════════════════
 # Helpers for the OpenAMS unit, kept here so it's self-contained: the follower
 # motor controller and the real-time stuck/clog monitor. The [oams] hardware
-# controller lives in oams.py because Klipper maps the [oams ...] config
+# controller lives in AFC_OAMS.py because Klipper maps the [AFC_OAMS ...] config
 # section to that module name.
 # ══════════════════════════════════════════════════════════════════════
 
