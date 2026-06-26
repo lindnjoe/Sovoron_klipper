@@ -712,6 +712,9 @@ class AFCLane:
                 and not any(x in s for x in INVALID_UNIT_NAMES))
             self.unit_obj: afcUnit = self.printer.load_object(config, unit_cfg.get_name())
 
+            if getattr(self.unit_obj, "stepperless_drive", False):
+                return
+
             drive_stepper = self
             if not config.get("step_pin", None):
                 self.only_lane = True
@@ -732,12 +735,7 @@ class AFCLane:
             return
 
         if (self.unit_obj.type in EXCLUDE_TYPES
-            and "AFC_lane" in self.fullname
-            and getattr(self.unit_obj, "drive_stepper_obj", None)):
-            # FORK: only selector units (ViViD, HTLF, …) have a shared
-            # drive_stepper_obj. Steppermless serial units (OpenAMS/ACE/ACE2 —
-            # now in EXCLUDE_TYPES via ONLY_LOAD_TYPES) have none, so guard the
-            # deref; their lanes correctly keep extruder_stepper = None.
+            and "AFC_lane" in self.fullname):
             self.drive_stepper      = self.unit_obj.drive_stepper_obj
             self.extruder_stepper   = self.drive_stepper.extruder_stepper
             if (self.selector
