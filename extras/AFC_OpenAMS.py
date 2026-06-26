@@ -1,8 +1,14 @@
-# Armored Turtle Automated Filament Control
+# AFCProject Automated Filament Changer
 #
-# Copyright (C) 2024-2026 Armored Turtle
+# Copyright (C) 2024-2026 AFCProject
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+
+# This file include code inspired/modified from OpenAms Project. https://github.com/OpenAMSOrg/klipper_openams
+# Originally authored by JR Lomas(aka KnightRadiant) and licensed under the MIT license
+# Full license text available at: https://mit-license.org/
+
+# This code was updated and contributed by lindnjoe(aka J0eB0l)
 
 """AFC unit driver for OpenAMS filament changers with stuck spool,
 clog detection, and engagement verification."""
@@ -14,7 +20,7 @@ import threading
 import traceback
 from datetime import datetime
 from configparser import Error as error
-from typing import Any, Callable, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
@@ -22,7 +28,7 @@ if TYPE_CHECKING:
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
-try: from extras.AFC_lane import AFCLaneState, SpeedMode, AssistActive
+try: from extras.AFC_lane import AFCLaneState
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 try: from extras.AFC_unit import afcUnit

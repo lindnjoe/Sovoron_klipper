@@ -1,8 +1,15 @@
-# Armored Turtle Automated Filament Changer
+# AFCProject Automated Filament Changer
 #
-# Copyright (C) 2024-2026 Armored Turtle
+# Copyright (C) 2024-2026 AFCProject
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+
+# This file include code inspired/modified from OpenAms Project. https://github.com/OpenAMSOrg/klipper_openams
+# Originally authored by JR Lomas(aka KnightRadiant) and licensed under the MIT license
+# Full license text available at: https://mit-license.org/
+
+# AFCFPSBuffer code was contributed by lindnjoe(aka J0eB0l)
+
 from __future__ import annotations
 
 import traceback
@@ -802,13 +809,22 @@ class FPSEndstopWrapper:
         """
         return 1 if self._trigger_func() else 0
 
-# FORK: inherit AFCBuffer so super().__init__(config) below resolves to the
-# shared buffer setup (printer/afc/reactor/gcode/name/type, klippy:ready handler,
-# common buffer macros). Upstream (jimmyjon711 16574b3) declares this as a bare
-# `class AFCFPSBuffer:`, so super() hits object.__init__ and load fails with
-# "object.__init__() takes exactly one argument". AFCBuffer.__init__ is
-# type-aware (its switched-only pin block is gated on type=="switched"), so FPS
-# inherits cleanly. Report upstream.
+# - Any Hall-effect + spring slider producing a 0.0-1.0 analog signal
+#
+# FPS reading semantics:
+#   0.1 (low)  -> buffer stretched / tension -> increase feed
+#   0.5 (mid)  -> buffer centered / ideal state
+#   0.9 (high) -> buffer compressed / pushing -> decrease feed
+#
+# PSF users: this driver accepts PSF-compatible config aliases:
+#   neutral_point  -> set_point    (default 0.5)
+#   max_tension    -> low_point    (default 0.1)
+#   max_compression -> high_point  (default 0.9)
+#
+# For units WITHOUT stepper motors (OpenAMS, etc.), the driver simply
+# provides the ADC reading. The unit's own code (AFC_OpenAMS) manages
+# tool_start_state and virtual sensors exactly as it already does, this
+# driver just acts as the FPS hardware interface and config entry point.
 class AFCFPSBuffer(AFCBuffer):
     """
     FPS-based buffer driver for AFC.
@@ -1425,8 +1441,6 @@ class AFCFPSBuffer(AFCBuffer):
         """
         response = {}
 
-        # FORK: upstream has `super.get_status` (missing parens) — super is the
-        # type, not the bound proxy, so it has no get_status. Report upstream.
         response = super().get_status(eventtime)
 
         response['fps_value'] = round(self.fps_value, 3)
