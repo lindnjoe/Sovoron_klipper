@@ -403,6 +403,14 @@ class AFCExtruder:
             config.fileconfig.set(config.section, "unit", self.tc_unit_name.split()[-1])
             config.fileconfig.set(config.section, "extruder", self.name)
             config.fileconfig.set(config.section, "hub", config.get("hub", "direct"))
+            # FORK: mark the toolchanger pseudo-lane standalone so openams's
+            # AFCLane.__init__ skips its eager _get_extruder_object(). That eager
+            # call runs while THIS extruder is still mid-__init__ (not yet cached
+            # in printer.objects), so it would re-instantiate the extruder and
+            # double-register its tool_start filament sensor mux command. pp's own
+            # AFCLane has no such eager resolution; the tc_lane still resolves its
+            # extruder_obj normally at connect time.
+            config.fileconfig.set(config.section, "standalone", "True")
             self.tc_lane = AFCLane(config)
             self.printer.objects[f"AFC_lane {self.name}"] = self.tc_lane
             # TODO: Once homing is in create common function for this and AFC_stepper
