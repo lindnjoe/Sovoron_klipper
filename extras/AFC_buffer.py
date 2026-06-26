@@ -201,6 +201,8 @@ class AFCBuffer:
         :param print_time: Current print time for timer scheduling
         """
         self.fault_timer = "Running"
+        if self.extruder_pos_timer is None:  # FORK: no timer set up (stepperless / not yet created)
+            return
         self.reactor.update_timer(self.extruder_pos_timer, self.reactor.NOW)
 
     def stop_fault_timer(self, print_time):
@@ -210,6 +212,8 @@ class AFCBuffer:
         :param print_time: Current print time for timer scheduling
         """
         self.fault_timer = "Stopped"
+        if self.extruder_pos_timer is None:  # FORK: nothing to stop
+            return
         self.reactor.update_timer(self.extruder_pos_timer, self.reactor.NEVER)
 
     def fault_detection_enabled(self):
@@ -309,6 +313,7 @@ class AFCBuffer:
                 multiplier = multiplier * 1.5
 
         if self.fault_detection_enabled():
+            self.setup_fault_timer()  # FORK: ensure timer exists (see AFCFPSBuffer.enable_buffer)
             self.start_fault_detection(0, multiplier)
         else:
             self.set_multiplier( multiplier )
@@ -1228,6 +1233,11 @@ class AFCFPSBuffer(AFCBuffer):
             # grows unbounded and falsely triggers the fault.
             # OpenAMS has its own OAMSMonitor for fault detection.
             if self.fault_detection_enabled():
+                # FORK: create the extruder-pos timer now that current_lane (a
+                # stepper lane) is set. _handle_ready calls setup_fault_timer while
+                # current_lane is still None, so its not_stepperless guard fails
+                # and the timer is otherwise never created.
+                self.setup_fault_timer()
                 self.start_fault_detection(0, 1.0)
         else:
             self._correction_running = False
