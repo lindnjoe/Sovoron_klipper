@@ -5,9 +5,11 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
+import ast
 import traceback
 import chelper
 from extras.force_move import calc_move_time
+import configfile
 
 try:
     from printer import message_ready as READY # type: ignore
@@ -35,6 +37,9 @@ if TYPE_CHECKING:
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
+try: from extras.AFC_Toolchanger import DETECT_PRESENT
+except: DETECT_PRESENT = 1  # fallback if toolchanger not loaded
+
 try: from extras.AFC_utils import add_filament_switch
 except: raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
 
@@ -46,9 +51,6 @@ except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_ex
 
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
-
-try: from extras.AFC_stepper import TrapqAppendWrapper
-except: raise error(ERROR_STR.format(import_lib="AFC_stepper", trace=traceback.format_exc()))
 
 LARGE_TIME_OFFSET = 99999.9
 
@@ -201,7 +203,6 @@ class AFCExtruderStats:
         self.tool_unselected.reset_count()
 
 class AFCExtruder:
-    common_error = "[{}] not found in config file for {}"
     def __init__(self, config: ConfigWrapper) -> None:
         self.printer:Printer = config.get_printer()
         buttons         = self.printer.load_object(config, 'buttons')
@@ -218,13 +219,24 @@ class AFCExtruder:
 
         self.toolhead_extruder: PrinterExtruder
         self.fullname                   = config.get_name()
+        self.mutex                      = self.reactor.mutex()
 
         self.name: str                  = self.fullname.split(' ')[-1]
+        # FORK: openams core reads extruder_obj.th_extruder_name as the physical
+        # klipper extruder this AFC_extruder controls. pp keys off self.name (the
+        # section name); expose th_extruder_name (defaults to self.name, override
+        # with extruder_name:) so openams core's th_extruder_name reads resolve and
+        # the AFC_extruder section name can differ from the klipper extruder name.
         self.th_extruder_name: str      = config.get("extruder_name", self.name)
         self._check_extruder_name()
-
         self.tool_start                 = config.get('pin_tool_start', None)                                            # Pin for sensor before(pre) extruder gears
         self.tool_end                   = config.get('pin_tool_end', None)                                              # Pin for sensor after(post) extruder gears (optional)
+
+        # U1 specific variables
+        self.filament_sensor_name: str  = config.get('u1_filament_sensor_name', None)
+        self.park_detector: str         = config.get('u1_park_detector_name', None)
+        self.park_detector_obj          = None
+        self.filament_sensor_obj        = None
         self.tool_stn                   = config.getfloat("tool_stn", 72)                                               # Distance in mm from the toolhead sensor to the tip of the nozzle in mm, if `tool_end` is defined then distance is from this sensor
         self.tool_stn_unload            = config.getfloat("tool_stn_unload", 100)                                       # Distance to move in mm while unloading toolhead
         self.tool_sensor_after_extruder = config.getfloat("tool_sensor_after_extruder", 0)                              # Extra distance to move in mm once the pre- / post-sensors are clear. Useful for when only using post sensor, so this distance can be the amount to move to clear extruder gears
@@ -235,7 +247,7 @@ class AFCExtruder:
         self.enable_runout              = config.getboolean("enable_tool_runout",       self.afc.enable_tool_runout)
         self.debounce_delay             = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.deadband                   = config.getfloat("deadband", 2)                                                # Deadband for extruder heater, default is 2 degrees Celsius
-        self.toolchange_temp_drop: float = config.getfloat("toolchange_temp_drop",    self.afc.toolchange_temp_drop)  # Degrees to drop this extruder's temperature after it is the old extruder in a toolchange. Overrides global toolchange_temp_drop in AFC.cfg
+        self.toolchange_temp_drop       = config.getfloat("toolchange_temp_drop", self.afc.toolchange_temp_drop)        # Degrees to drop old extruder temp after successful toolchange
 
         self.toolhead_leds              = config.get('led_name', None)
         self.toolhead_status_index      = config.get('status_led_idx', None)
@@ -245,10 +257,6 @@ class AFCExtruder:
         self.check_transmit_status_fn   = None
         self.status_led_count:int       = 0
         self._captured_toolhead_temp: Optional[dict] = None
-
-        # U1 only related variables
-        self.filament_sensor_name: str  = config.get('u1_filament_sensor_name', None)
-        self.park_detector: str         = config.get("u1_park_detector_name", None)
 
         if self.toolhead_status_index:
             self.toolhead_status_index  = self.afc.function._get_led_indexes(self.toolhead_status_index)
@@ -273,23 +281,89 @@ class AFCExtruder:
         self.no_lanes                   = False
         self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
         self.custom_unselect: Optional[str] = config.get("custom_unselect", None)
+        self.custom_load_cmd: Optional[str] = config.get("custom_load_cmd", None)
+        self.custom_unload_cmd: Optional[str] = config.get("custom_unload_cmd", None)
+
+        # Native toolchanger tool config (replaces KTC [tool ...] sections)
+        self.gcode_x_offset: float = config.getfloat('gcode_x_offset', 0.0)
+        self.gcode_y_offset: float = config.getfloat('gcode_y_offset', 0.0)
+        self.gcode_z_offset: float = config.getfloat('gcode_z_offset', 0.0)
+        self.t_command_restore_axis: str = config.get('t_command_restore_axis', 'XYZ')
+        self.tool_number: int = config.getint('tool_number', -1)
+        self.fan_name: Optional[str] = config.get('tool_fan', None)
+        self.fan = None
+        self.dock_cooling: Optional[bool] = None
+        _dc = config.get('dock_cooling', None)
+        if _dc is not None:
+            self.dock_cooling = _dc.lower() in ('true', '1', 'yes')
+        self.extruder_stepper_name: Optional[str] = config.get('tool_extruder_stepper', None)
+        self.extruder_stepper = None
+        self.detect_pin_name: Optional[str] = config.get('detection_pin', None)
+        self.detect_state: int = -1  # -1=unavailable, 0=absent, 1=present
+        if self.detect_pin_name:
+            buttons.register_buttons([self.detect_pin_name], self._handle_detect)
+            # Default to PRESENT (1) matching KTC behaviour.  Klipper's
+            # buttons module only fires callbacks on state *changes* from
+            # last_button=0.  A tool on the shuttle has its pin LOW (no
+            # change from 0), so its callback never fires — keeping the
+            # default PRESENT is correct.  Docked tools have pins HIGH,
+            # so their callbacks fire immediately and set ABSENT (0).
+            self.detect_state = 1
+        self.resonance_chip: Optional[str] = config.get('resonance_chip', None)
+
+        # Tool probe reference (for optotap/tool_probe setups)
+        # Resolved at connect time from [tool_probe T<n>] sections
+        self.tool_probe = None
+
+        # Gcode templates for toolchanger pickup/dropoff
+        self._gcode_macro = self.printer.load_object(config, 'gcode_macro')
+        # Track whether tool has its own gcode (vs inheriting from toolchanger)
+        self._has_pickup_gcode = config.get('pickup_gcode', None) is not None
+        self._has_dropoff_gcode = config.get('dropoff_gcode', None) is not None
+        self.pickup_gcode = self._gcode_macro.load_template(
+            config, 'pickup_gcode', config.get('pickup_gcode', ''))
+        self.dropoff_gcode = self._gcode_macro.load_template(
+            config, 'dropoff_gcode', config.get('dropoff_gcode', ''))
+        self.before_change_gcode = self._gcode_macro.load_template(
+            config, 'before_change_gcode', config.get('before_change_gcode', ''))
+        self.after_change_gcode = self._gcode_macro.load_template(
+            config, 'after_change_gcode', config.get('after_change_gcode', ''))
+
+        # Params dict for gcode template context (mirrors KTC params_ prefix)
+        self.params = {}
+        self._tool_params_keys = set(config.get_prefix_options('params_'))
+        for option in self._tool_params_keys:
+            try:
+                self.params[option] = ast.literal_eval(config.get(option))
+            except ValueError:
+                raise error(
+                    "Option '%s' in section '%s' is not a valid literal" % (
+                        option, config.get_name()))
 
         self.lane_loaded: Optional[str] = None
         self.lanes: Dict                = {}
         self.load_active                = False
         self.current_move_distance: float = 0
-        self.estats = AFCExtruderStats(self.th_extruder_name, self, self.afc.tool_cut_threshold)
-
-        # U1 only related variables
-        self.park_detector_obj   = None
+        self.estats = AFCExtruderStats(self.th_extruder_name, self, self.afc.tool_cut_threshold)  # FORK: key by th_extruder_name
 
         self.tool_start_state = False
+        self._homing = False
+        self.printer.register_event_handler("homing:home_rails_begin",
+                                            self._on_home_begin)
+        self.printer.register_event_handler("homing:home_rails_end",
+                                            self._on_home_end)
+        # TODO: add a check here as pin_tool_start should always be required, or let klipper take care of it by not passing in None
         if self.tool_start is not None:
             if "unknown" == self.tool_start.lower():
                 raise error(f"Unknown is not valid for pin_tool_start in [{self.fullname}] config.")
 
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
+            elif self.tool_start == "internal":
+                self.logger.info(
+                    "Setting up as internal — relying on unit firmware "
+                    "(e.g. ACE) for filament engagement verification"
+                )
             else:
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
                                                                                     self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
@@ -298,15 +372,20 @@ class AFCExtruder:
         elif self.filament_sensor_name is not None:
             filament_motion_name = f"filament_motion_sensor {self.filament_sensor_name}"
             try:
-                self.fila_tool_start = self.printer.load_object(config, filament_motion_name)
+                self.filament_sensor_obj = self.printer.load_object(config, filament_motion_name)
             except error:
-                error_str = self.common_error.format(filament_motion_name, self.fullname)
-                raise error(error_str)
-            self.orig_note_filament_present = self.fila_tool_start.runout_helper.note_filament_present
-            self.fila_tool_start.runout_helper.note_filament_present = self.note_tool_start_callback
-            self.fila_tool_start.runout_helper.runout_pause = False
-            self.fila_tool_start.runout_helper.runout_gcode = 1
-            self.fila_tool_start.runout_helper._runout_event_handler = self.handle_start_runout
+                raise error(
+                    f"[{filament_motion_name}] not found in config for [{self.fullname}]")
+            self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
+            self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
+            self.orig_runout_event_handler = self.filament_sensor_obj.runout_helper._runout_event_handler
+            self.filament_sensor_obj.runout_helper._runout_event_handler = self._u1_runout_event_handler
+            # Ensure runout_gcode is set so note_filament_present reaches our handler
+            # regardless of the user's pause_on_runout setting
+            if self.filament_sensor_obj.runout_helper.runout_gcode is None:
+                gcode_macro = self.printer.load_object(config, 'gcode_macro')
+                self.filament_sensor_obj.runout_helper.runout_gcode = gcode_macro.load_template(
+                    config, 'runout_gcode', '')
 
         self.tool_end_state = False
         if self.tool_end is not None:
@@ -323,8 +402,7 @@ class AFCExtruder:
         if self.tc_unit_name:
             config.fileconfig.set(config.section, "unit", self.tc_unit_name.split()[-1])
             config.fileconfig.set(config.section, "extruder", self.name)
-            config.fileconfig.set(config.section, "hub", "direct")
-            config.fileconfig.set(config.section, "standalone", "True")
+            config.fileconfig.set(config.section, "hub", config.get("hub", "direct"))
             self.tc_lane = AFCLane(config)
             self.printer.objects[f"AFC_lane {self.name}"] = self.tc_lane
             # TODO: Once homing is in create common function for this and AFC_stepper
@@ -339,16 +417,15 @@ class AFCExtruder:
             self.stepper_kinematics = ffi_main.gc(
                 ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free)
 
-            trapq_append_wrapper = TrapqAppendWrapper()
             if self.motion_queuing is not None:
                 self.trapq          = self.motion_queuing.allocate_trapq()
-                _trapq_append       = self.motion_queuing.lookup_trapq_append()
+                self._raw_trapq_append = self.motion_queuing.lookup_trapq_append()
             else:
                 self.trapq                  = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-                _trapq_append               = ffi_lib.trapq_append
+                self._raw_trapq_append      = ffi_lib.trapq_append
                 self.trapq_finalize_moves   = ffi_lib.trapq_finalize_moves
 
-            self.trapq_append = lambda *args: trapq_append_wrapper.trapq_append(_trapq_append, *args)
+            self._trapq_extra_arg = self._detect_trapq_extra_arg(ffi_main, ffi_lib)
 
         self.show_macros = self.afc.show_macros
         self.function: afcFunction = self.printer.load_object(config, 'AFC_functions')
@@ -364,21 +441,23 @@ class AFCExtruder:
                                             self.cmd_AFC_SET_EXTRUDER_LED, self.cmd_AFC_SET_EXTRUDER_LED_help,
                                             self.cmd_AFC_SET_EXTRUDER_LED_options)
 
+    @staticmethod
+    def _detect_trapq_extra_arg(ffi_main, ffi_lib) -> bool:
+        """Detect if trapq_append requires the extra trailing arg (Snapmaker fork)."""
+        try:
+            sig = ffi_main.typeof(ffi_lib.trapq_append)
+            return len(sig.args) > 14
+        except Exception:
+            return False
+
+    def trapq_append(self, *args):
+        if self._trapq_extra_arg and len(args) == 14:
+            self._raw_trapq_append(*args, 0)
+        else:
+            self._raw_trapq_append(*args)
+
     def __str__(self):
         return self.name
-
-    def _check_extruder_name(self):
-        """
-        Helper method the verify that "extruder" exists in either the config name or in
-        extruder_name variable. If "extruder" is not found, raises a ConfigParser.Error with
-        a message to display to the user.
-        """
-        if "extruder" not in self.th_extruder_name:
-            error_str = (f"Missing extruder reference in [{self.fullname}] section. The word " \
-                         "extruder must appear either in the section name " \
-                         "([AFC_extruder extruder(n)]) or in the extruder_name variable " \
-                         "(extruder_name: extruder(n)).")
-            raise error(error_str)
 
     def check_lanes(self):
         # Checks to see if there are multiple lanes per toolhead, remove self created lane if
@@ -398,18 +477,30 @@ class AFCExtruder:
         if self.name in self.lanes:
             self.no_lanes = True
             self.logger.info(f"{self.name} no lanes")
-            # Due to race conditions at startup, these variables might not be set correctly,
-            #  set to current tool start state
+            if hasattr(self, 'fila_tool_start') and self.fila_tool_start is not None:
+                self.tool_start_state = self.fila_tool_start.runout_helper.filament_present
+            elif self.filament_sensor_obj is not None:
+                self.tool_start_state = self.filament_sensor_obj.runout_helper.filament_present
             self.tc_lane._load_state = self.tc_lane.prep_state = self.tool_start_state
 
-            if self.tool_start_state:
-                self.tc_lane.set_tool_loaded()
-                self.tc_lane.set_loaded()
-
-            if self.tool_start == "buffer":
+            if self.tool_start in ("buffer", "internal"):
                 raise error(
-                    f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
+                    f"{self.tool_start} is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
+
+
+    def _check_extruder_name(self):
+        """
+        FORK: verify that "extruder" exists in either the config name or the
+        extruder_name variable. If "extruder" is not found, raises a ConfigParser
+        error with a message to display to the user.
+        """
+        if "extruder" not in self.th_extruder_name:
+            error_str = (f"Missing extruder reference in [{self.fullname}] section. The word " \
+                         "extruder must appear either in the section name " \
+                         "([AFC_extruder extruder(n)]) or in the extruder_name variable " \
+                         "(extruder_name: extruder(n)).")
+            raise error(error_str)
 
     def handle_connect(self):
         """
@@ -418,40 +509,67 @@ class AFCExtruder:
         and assigns it to the instance variable `self.AFC`.
         """
         self.reactor = self.afc.reactor
-        existing = self.afc.tools.get(self.th_extruder_name)
-        if (existing is not None
-            and existing is not self):
-            error_str = (f"Duplicate toolhead extruder mapping '{self.th_extruder_name}' "
-                         f"between [{existing.fullname}] and [{self.fullname}]. "
-                         "Each AFC_extruder section must map to a unique toolhead extruder.")
-            raise error(error_str)
-        self.afc.tools[self.th_extruder_name] = self
+        self.afc.tools[self.th_extruder_name] = self  # FORK: key by th_extruder_name
 
-        self.toolhead_extruder = self.printer.lookup_object(self.th_extruder_name, None)
-        if not self.toolhead_extruder:
-            error_str = self.common_error.format(self.th_extruder_name, self.fullname)
-            raise error(error_str)
+        try:
+            self.toolhead_extruder = self.printer.lookup_object(self.th_extruder_name)  # FORK
+        except:
+            raise error("[{}] not found in config file".format(self.th_extruder_name))
 
         if self.tool:
             self.tool_obj = self.printer.lookup_object(self.tool, None)
-            if not self.tool_obj:
-                error_str = self.common_error.format(self.tool, self.fullname)
-                raise error(error_str)
 
         if self.park_detector:
             park_dect_str = f"park_detector {self.park_detector}"
             self.park_detector_obj = self.printer.lookup_object(park_dect_str, None)
             if not self.park_detector_obj:
-                error_str = self.common_error.format(park_dect_str, self.fullname)
-                raise error(error_str)
+                self.logger.debug(
+                    f"[{park_dect_str}] not found for [{self.fullname}], "
+                    f"park_detector disabled")
 
-        if self.tc_unit_name:
-            tc_str = f"AFC_Toolchanger {self.tc_unit_name}"
-            self.tc_unit_obj = self.printer.lookup_object(tc_str, None)
-            if not self.tc_unit_obj:
-                error_str = self.common_error.format(tc_str, self.fullname)
-                raise error(error_str)
-            self.tc_lane.unit_obj = self.tc_unit_obj
+        try:
+            if self.tc_unit_name:
+                self.tc_unit_obj = self.printer.lookup_object(
+                    f"AFC_Toolchanger {self.tc_unit_name}"
+                )
+                self.tc_lane.unit_obj = self.tc_unit_obj
+                # Register this extruder as a tool with the native toolchanger
+                if self.tool_number >= 0:
+                    self.tc_unit_obj.register_tool(self, self.tool_number)
+                # Inherit toolchanger defaults: params, pickup/dropoff gcode
+                tc = self.tc_unit_obj
+                if hasattr(tc, 'default_params'):
+                    for key, val in tc.default_params.items():
+                        if key not in self._tool_params_keys:
+                            self.params[key] = val
+                if not self._has_pickup_gcode and hasattr(tc, 'default_pickup_gcode'):
+                    self.pickup_gcode = tc.default_pickup_gcode
+                if not self._has_dropoff_gcode and hasattr(tc, 'default_dropoff_gcode'):
+                    self.dropoff_gcode = tc.default_dropoff_gcode
+
+        except:
+            raise error(
+                f'AFC_Toolchanger {self.tc_unit_name} not found in config file for {self.fullname}'
+            )
+
+        # Resolve native tool fan and extruder stepper objects
+        if self.fan_name:
+            self.fan = self.printer.lookup_object(
+                self.fan_name,
+                self.printer.lookup_object("fan_generic " + self.fan_name, None))
+            if self.fan is None:
+                self.logger.warning(f"Tool fan '{self.fan_name}' not found for {self.fullname}")
+            elif self.tc_unit_obj:
+                self.tc_unit_obj.require_fan_switcher()
+
+        if self.extruder_stepper_name:
+            self.extruder_stepper = self.printer.lookup_object(
+                self.extruder_stepper_name, None)
+
+        # Resolve tool_probe for optotap/tool_probe setups
+        if self.tool_number >= 0:
+            self.tool_probe = self.printer.lookup_object(
+                'AFC_tool_probe T%d' % self.tool_number, None)
 
         try:
             # Looking up led object if user supplied variable
@@ -471,7 +589,7 @@ class AFCExtruder:
                         self.set_status_color_fn = led_helper.set_color
                         self.check_transmit_status_fn = led_helper.check_transmit
 
-        except error:
+        except configfile.error:
             raise error(
                 f"{self.toolhead_leds} not found in config file for led_name variable in " \
                 f"{self.fullname} config section"
@@ -509,21 +627,12 @@ class AFCExtruder:
 
         :param eventtime: Event time from the button press
         """
+        if not hasattr(self, 'fila_tool_start') or self.fila_tool_start is None:
+            # FPS buffer setups don't have fila_tool_start — runout is handled
+            # by the FPS/OpenAMS monitoring layer, not the filament switch.
+            return
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
-
-    def note_tool_start_callback(self, state, force=False):
-        """
-        Method for overriding runout_helper.note_filament_present for passed in filament_motion_sensor
-        object. Currently this is only needed for to allow AFC to work with Snapmakers U1 toolhead
-        sensors.
-
-        :param state: Boolean indicating sensor state (True = filament present, False = runout)
-        :param force: Set to True to force the filament sensor state, currently not used and pass
-                      through to original note_filament_present method.
-        """
-        self.orig_note_filament_present(state, force)
-        self.tool_start_callback(0, state)
 
     def tool_start_callback(self, eventtime, state):
         """
@@ -536,35 +645,69 @@ class AFCExtruder:
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
-        if self.tc_unit_name and self.is_standalone():
+        with self.mutex:
             if state != self.tool_start_state:
-                self.tc_lane._load_state = state
-                self.tc_lane.prep_state = state
+                if self.tc_unit_name and self.no_lanes:
+                    self.tc_lane._load_state = state
+                    self.tc_lane.prep_state = state
 
-                # Check to verify that toolhead is not actively printing to trigger the auto
-                # load/unload logic.
-                actively_printing = self.afc.function.is_printing() and self.on_shuttle()
-                if self.printer.state_message == READY:
-                    if (self.tc_lane._afc_prep_done
-                        and not actively_printing):
+                    if (self.printer.state_message == READY and
+                        not self._homing and
+                        self.tc_lane._afc_prep_done and
+                        self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
                         if state:
                             if not self.load_active:
                                 self.load_unload_sequence(self.tool_stn)
-                        else:
-                            self.tc_lane.set_tool_unloaded()
-                            self.tc_lane.set_unloaded()
-
-                    elif (self.tc_lane._afc_prep_done
-                          and actively_printing):
-                        self.logger.info(("Cannot trigger auto load/unload when toolhead is "
-                                          "actively printing"))
-                    if self.tc_lane._afc_prep_done:
-                        self.afc.save_vars()
+                        elif not self.afc.function.is_printing():
+                            if self.lane_loaded:
+                                self.afc.TOOL_UNLOAD(self.tc_lane)
+                            else:
+                                self.tc_lane.set_tool_unloaded()
+                                self.tc_lane.set_unloaded()
+                            self.afc.save_vars()
             else:
                 self.logger.info("Not loading State matches tool_start_state")
 
-        self.tool_start_state = state
+            self.tool_start_state = state
 
+
+    def note_tool_start_callback(self, state, force=False):
+        """U1 filament_motion_sensor callback wrapper.
+        Calls the original note_filament_present and feeds state to AFC's tool_start tracking."""
+        self.orig_note_filament_present(state, force)
+        self.tool_start_callback(0, state)
+
+    def _on_home_begin(self, *args):
+        self._homing = True
+
+    def _on_home_end(self, *args):
+        self._homing = False
+
+    def _u1_runout_event_handler(self, eventtime):
+        """Route U1 filament_motion_sensor runout through AFC instead of native Klipper pause."""
+        if self._homing:
+            self.logger.info("U1 runout handler ignored during homing")
+            return
+        rh = self.filament_sensor_obj.runout_helper
+        self.logger.info(
+            "U1 runout handler fired: lane_loaded={}, lanes={}, runout_lane={}".format(
+                self.lane_loaded,
+                list(self.lanes.keys()) if self.lanes else None,
+                getattr(self.lanes.get(self.lane_loaded, None), 'runout_lane', 'N/A')
+            ))
+        if self.lane_loaded and self.lane_loaded in self.lanes:
+            lane = self.lanes[self.lane_loaded]
+            if lane.runout_lane is not None:
+                self.logger.info("Triggering infinite spool: {} -> {}".format(lane.name, lane.runout_lane))
+                lane._perform_infinite_runout()
+            else:
+                self.logger.info("No runout_lane set, pausing")
+                lane._perform_pause_runout()
+        else:
+            self.logger.info("No lane_loaded or lane not in self.lanes, falling back to native handler")
+            self.orig_runout_event_handler(eventtime)
+            return
+        rh.min_event_systime = self.reactor.monotonic() + rh.event_delay
 
     def buffer_trailing_callback(self, eventtime, state):
         self.buffer_trailing = state
@@ -622,6 +765,7 @@ class AFCExtruder:
         info_str = "Loading" if distance > 0 else "Unloading"
         self.logger.info(f"{info_str} {self.name}")
         self.load_active = True
+        self._load_start_time = self.reactor.monotonic()
         self.current_move_distance = distance
         # TODO: maybe make this so this same function can be called normally when lanes are assigned
         # to extruders...
@@ -661,8 +805,13 @@ class AFCExtruder:
 
         axis_r, accel_t, cruise_t, cruise_v = calc_move_time(distance, self.tool_load_speed, 5)
         print_time = toolhead.get_last_move_time()
-        self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
-                          0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5)
+        trapq_append_args = (self.trapq, print_time, accel_t, cruise_t, accel_t,
+                             0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5,)
+
+        if self.afc.trapq_append_line:
+            trapq_append_args = trapq_append_args + (0,)
+
+        self.trapq_append(*trapq_append_args)
         print_time = print_time + accel_t + cruise_t + accel_t
 
         if self.motion_queuing is None:
@@ -696,24 +845,49 @@ class AFCExtruder:
         if self.motion_queuing is not None:
             self.motion_queuing.wipe_trapq(self.trapq)
 
-        self.function.do_enable(False, self.th_extruder_name)
+        self.function.do_enable(False, self.name)
         self.load_active = False
 
-        self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
-        self._captured_toolhead_temp = None
-
-        if self.current_move_distance > 0:
-            info_str = "loading"
-            self.tc_lane.status = AFCLaneState.TOOLED
-        else:
-            info_str = "unloading"
+        was_loading = self.current_move_distance > 0
+        load_time = self.reactor.monotonic() - self._load_start_time
+        if not was_loading:
             self.tc_lane.status = AFCLaneState.NONE
-
-        self.logger.info(f"{self.name} {info_str} done")
-
+            self.logger.info("Lane {} unload done t:{:.3f}".format(
+                self.tc_lane.name if self.tc_lane else self.name, load_time))
         self.current_move_distance = 0
+
+        if was_loading and self.tc_lane and self.tc_lane.hub == 'direct_load':
+            self.reactor.register_callback(self._direct_load_post_sequence)
+        else:
+            if was_loading:
+                self.logger.info("{} is now loaded in toolhead t:{:.3f}".format(
+                    self.tc_lane.name if self.tc_lane else self.name, load_time))
+                self.afc.afc_stats.average_tool_load_time.average_time(load_time)
+            self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
+            self._captured_toolhead_temp = None
+
         self.afc.save_vars()
         return self.reactor.NEVER
+
+    def _direct_load_post_sequence(self, eventtime):
+        try:
+            if not self.afc.function.check_homed():
+                self.logger.error("Printer not homed, skipping post load purge")
+                return
+            spool_temp = self.tc_lane.extruder_temp or 210
+            self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
+            self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
+            self.gcode.run_script_from_command("M400")
+            self.gcode.run_script_from_command("G1 Y-35")
+            load_time = self.reactor.monotonic() - self._load_start_time
+            lane_name = self.tc_lane.name if self.tc_lane else self.name
+            self.logger.info("{} is now loaded in toolhead t:{:.3f}".format(lane_name, load_time))
+            self.afc.afc_stats.average_tool_load_time.average_time(load_time)
+        except Exception as e:
+            self.logger.error(f"{self.name} Post load purge failed: {e}")
+        finally:
+            self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
+            self._captured_toolhead_temp = None
 
     def temp_check_cb(self, eventtime:float) -> float:
         """
@@ -731,7 +905,7 @@ class AFCExtruder:
             and current_temp <= target_temp + self.afc.temp_wait_tolerance):
             if self.tool_start_state:
                 info_str = "loading to" if self.current_move_distance > 0 else "unloading from"
-                self.logger.info(f"{self.th_extruder_name} temp within range, {info_str} nozzle")
+                self.logger.info(f"{self.name} temp within range, {info_str} nozzle")
                 self.move_extruder(self.current_move_distance)
                 if self.current_move_distance > 0:
                     self.tc_lane.set_loaded()
@@ -748,7 +922,7 @@ class AFCExtruder:
                 )
             return self.reactor.NEVER
         else:
-            self.logger.debug(f"{self.th_extruder_name}: waiting for temp: {current_temp}")
+            self.logger.debug(f"{self.name}: waiting for temp: {current_temp}")
 
         return self.reactor.monotonic() + 1
 
@@ -810,28 +984,26 @@ class AFCExtruder:
             or self.check_transmit_status_fn is None):
             return
 
-        color = tuple(map(float, color.split(',')))
+        if isinstance(color, str):
+            color = tuple(map(float, color.split(',')))
+        elif isinstance(color, (list, tuple)):
+            color = tuple(map(float, color))
         for idx in self.toolhead_status_index:
             self.set_status_color_fn(idx, color)
 
         self.check_transmit_status_fn(None)
 
-    def set_print_leds(self, state: int=1, quiet: bool=False):
+    def set_print_leds(self, state: int=1):
         """
         Function to set toolhead part led's, currently will set leds in `led_name` objects chain count
         to white. Does not set led's that defined in `status_led_idx`. If `nozzle_led_idx` is defined
         then only sets leds that are defined in that index.
 
         :param state: Set to 1 to turn on the leds, set to 0 to turn off leds
-        :param quiet: Set to True to not print out if toolhead led object is not set, defaults to
-                      always print
-        :return tuple: Returns a tuple(bool, str) if setting the led was successful, if error
-                      occurred message gets passed back with boolean.
         """
         if self.toolhead_led_obj is None:
             error_string = f"led_name variable not set in [{self.fullname}] config section"
-            if not quiet:
-                self.logger.error(error_string)
+            self.logger.error(error_string)
             return False, error_string
 
         if (self.set_status_color_fn is None
@@ -857,63 +1029,61 @@ class AFCExtruder:
 
         return True, ""
 
-    def on_shuttle(self):
-        """
-        Helper function to easily detect if a toolhead is on the shuttle or not. This function is
-        for toolchangers and will return True for single toolhead printers.
+    # --- Native toolchanger tool methods (replaces KTC Tool class) ---
 
-        :return bool: True if toolheads optotap sensor is triggered. Always returns True for single
-                      toolhead printers.
-        """
-        # Return true if both are not set as this would be for single toolhead
-        # setups
-        if ( (self.tool_obj is None
-              and self.park_detector_obj is None)
-              and self.tc_unit_name is None):
-            return True
+    def _handle_detect(self, eventtime, is_triggered):
+        """Callback for tool detection pin (e.g., optotap).
+        Matches KTC logic: triggered means tool is in its dock (ABSENT
+        from shuttle), not triggered means tool is on the shuttle (PRESENT)."""
+        self.detect_state = 0 if is_triggered else 1
+        if self.tc_unit_obj:
+            self.tc_unit_obj.note_detect_change(self, eventtime)
 
-        # Return true if toolchanger unit is defined but no tool object has been defined
-        # this could be because someone is using custom swap and unselect macros
-        if (self.tc_unit_name
-            and (self.tool_obj is None
-                 and self.park_detector_obj is None)):
-            return True
+    def get_offset(self):
+        """Return [x, y, z] gcode offsets for this tool."""
+        return [self.gcode_x_offset, self.gcode_y_offset, self.gcode_z_offset]
 
-        if (self.tool_obj
-            and hasattr(self.tool_obj, "detect_state")):
-            from extras.toolchanger import DETECT_PRESENT
-            return (
-                self.tool_obj.detect_state == DETECT_PRESENT or
-                self.tool_obj.main_toolchanger.get_selected_tool() == self.tool_obj
-            )
-        elif(self.park_detector_obj
-             and hasattr(self.park_detector_obj, "get_park_detector_status")):
-            status = self.park_detector_obj.get_park_detector_status()
-            return status.get('state') == 'ACTIVATE'
-        else:
-            return False
+    def get_tool_status(self, eventtime=None):
+        """Return status dict for gcode template context."""
+        return {
+            **self.params,
+            'name': self.name,
+            'extruder': self.name,
+            'tool_number': self.tool_number,
+            'detect_state': self.detect_state,
+            'active': (self.tc_unit_obj.active_tool == self) if self.tc_unit_obj else False,
+            'gcode_x_offset': self.gcode_x_offset,
+            'gcode_y_offset': self.gcode_y_offset,
+            'gcode_z_offset': self.gcode_z_offset,
+            'resonance_chip': self.resonance_chip,
+        }
 
-    def prep_on_shuttle_check(self, lane: AFCLane) -> str:
-        """
-        This helper method should only be called during PREP as it's a helper to check
-        if toolhead is on the shuttle or not and will set toolhead leds correctly.
+    def activate_tool(self):
+        """Activate this tool's extruder, stepper, and fan. Called during tool pickup."""
+        toolhead = self.afc.toolhead
+        if self.name != toolhead.get_extruder().name:
+            self.gcode.run_script_from_command(
+                "ACTIVATE_EXTRUDER EXTRUDER='%s'" % (self.name,))
+        if self.extruder_stepper:
+            # Re-read after potential ACTIVATE_EXTRUDER above
+            active_extruder = toolhead.get_extruder().name
+            self.gcode.run_script_from_command(
+                "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE=" % (self.extruder_stepper_name,))
+            self.gcode.run_script_from_command(
+                "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE='%s'" % (
+                    self.extruder_stepper_name, active_extruder))
+        if self.fan and self.tc_unit_obj:
+            self.tc_unit_obj.fan_switcher.activate_fan(self.fan)
+        if self.resonance_chip:
+            resonance_tester = self.printer.lookup_object('resonance_tester', None)
+            if resonance_tester:
+                resonance_tester.accel_chip_names = [["xy", self.resonance_chip]]
 
-        This method also already assumes that current extruder lane_loaded matches
-        current lane name.
-
-        :param lane: AFCLane for current extruder to easily set leds though its unit object
-        :return str: Message string if lane is loaded to toolhead or in toolhead and on shuttle
-        """
-        msg = ""
-        on_shuttle = ""
-        if (self.tool_obj
-            and self.tc_unit_name):
-            lane.unit_obj.lane_tool_loaded_idle(lane)
-            if self.on_shuttle():
-                on_shuttle = " and toolhead on shuttle"
-                lane.unit_obj.lane_tool_loaded(lane)
-        msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
-        return msg
+    def deactivate_tool(self):
+        """Deactivate this tool's extruder stepper. Called during tool dropoff."""
+        if self.extruder_stepper:
+            self.gcode.run_script_from_command(
+                "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE=" % (self.extruder_stepper_name,))
 
     def is_standalone(self):
         """
@@ -923,6 +1093,52 @@ class AFCExtruder:
             are attached.
         """
         return self.no_lanes
+
+    def prep_on_shuttle_check(self, lane: AFCLane) -> str:
+        """
+        PREP-only helper: report whether this extruder's loaded lane is in the
+        toolhead (and, for toolchangers, whether the tool is on the shuttle) and
+        set the toolhead LEDs to match. Assumes this extruder's lane_loaded
+        already matches the given lane's name.
+
+        :param lane: AFCLane for this extruder, used to drive its unit's LEDs
+        :return str: status message fragment for the PREP report
+        """
+        on_shuttle = ""
+        if self.tool_obj and self.tc_unit_name:
+            lane.unit_obj.lane_tool_loaded_idle(lane)
+            if self.on_shuttle():
+                on_shuttle = " and toolhead on shuttle"
+                lane.unit_obj.lane_tool_loaded(lane)
+        return f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
+
+    def on_shuttle(self):
+        """
+        Helper function to easily detect if a toolhead is on the shuttle or not. This function is
+        for toolchangers and will return True for single toolhead printers.
+
+        :return bool: True if toolheads optotap sensor is triggered. Always returns True for single
+                      toolhead printers.
+        """
+        # Return true if no toolchanger is configured (single toolhead setup)
+        if self.tc_unit_name is None:
+            return True
+
+        # Use native detect_state if available
+        if self.detect_pin_name is not None:
+            if self.tc_unit_obj:
+                return (self.detect_state == DETECT_PRESENT or
+                        self.tc_unit_obj.active_tool == self)
+            return self.detect_state == DETECT_PRESENT
+
+        # U1 park_detector support
+        if (self.park_detector_obj
+            and hasattr(self.park_detector_obj, "get_park_detector_status")):
+            status = self.park_detector_obj.get_park_detector_status()
+            return status.get('state') == 'ACTIVATE'
+
+        # Toolchanger configured but no detection pin (custom swap/unselect macros)
+        return True
 
     cmd_UPDATE_TOOLHEAD_SENSORS_help = "Gives ability to update tool_stn, tool_stn_unload, tool_sensor_after_extruder values without restarting klipper"
     cmd_UPDATE_TOOLHEAD_SENSORS_options = {
@@ -1001,11 +1217,12 @@ class AFCExtruder:
         Macro call to set print led in toolhead based on extruder name. Led config name needs to be
         set to AFC_extruder `led_name` variable. Status led in toolhead will not be affected if `status_led_idx`
         is set in AFC_extruder config. If `nozzle_led_idx` is set in AFC_extruder configuration then just
-        those leds will be turned on. If `nozzle_led_idx` is not provided then all leds not in defined in
+        those leds will be turned on. If `nozzle_led_inx` is not provided then all leds not in defined in
         `status_led_idx` will be turned on.
 
-        EXTRUDER - AFC_extruder config name to print leds. If single toolhead, this will always be `extruder`<br>
-        TURN_ON - set to 1 to turn on leds, set to 0 to turn off leds. If not supplied, defaults to 1
+        `EXTRUDER` - AFC_extruder config name to print leds. If single toolhead, this will always be `extruder`
+
+        `TURN_ON` - set to 1 to turn on leds, set to 0 to turn off leds. If not supplied, defaults to 1
 
         Usage
         -----
@@ -1040,6 +1257,12 @@ class AFCExtruder:
         self.response['tool_end_status'] = bool(self.tool_end_state)
         self.response['lanes'] = [lane.name for lane in self.lanes.values()]
         self.response['on_shuttle'] = self.on_shuttle()
+        # Expose params and tool identity for gcode macros (e.g. DOCK_TUNER)
+        self.response.update(self.params)
+        self.response['name'] = self.name
+        self.response['tool_number'] = self.tool_number
+        self.response['extruder'] = self.name
+        self.response['resonance_chip'] = self.resonance_chip
         return self.response
 
 def load_config_prefix(config):
