@@ -1246,18 +1246,15 @@ class afcACE(afcUnit):
             raise gcmd.error(f"ACE load failed for {lane_name}")
 
     def unit_unload_lane(self, cur_lane, cur_extruder) -> bool:
-        """Full toolhead unload for a stepperless ACE lane.
-
-        AFC.unload_sequence calls this via the unit_unload_lane hook (upstream),
-        so the shared toolhead phase lives here in the unit driver instead of as
-        a fork in the frozen AFC.py custom-unload branch. Runs quick-pull,
-        buffer/sync/select and cut/tip-form, then the ACE serial unwind (via the
-        internal _ACE_CUSTOM_UNLOAD command, which raises on failure), the
-        post-unload macro, and finalizes the lane state.
+        """Full toolhead unload for a stepperless ACE lane (AFC.unload_sequence's
+        unit_unload_lane hook). Runs the shared toolhead phase (quick-pull,
+        buffer/sync/select, cut/tip-form), the ACE serial unwind via the internal
+        _ACE_CUSTOM_UNLOAD command (which raises on failure), the post-unload
+        macro, then finalizes the lane state.
 
         :param cur_lane: Lane to unload.
         :param cur_extruder: Extruder the lane is synced to on entry.
-        :return bool: True on success (the serial unwind raises on failure).
+        :return bool: True on success.
         """
         afc = self.afc
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
