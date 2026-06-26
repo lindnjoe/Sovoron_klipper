@@ -16,6 +16,9 @@ except: raise config_error("Error when trying to import AFC_utils.ERROR_STR\n{tr
 try: from extras.AFC_utils import add_filament_switch
 except: raise config_error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
 
+try: from extras.AFC_unit import SENSORLESS_UNITS
+except: raise config_error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
+
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
 
@@ -23,6 +26,7 @@ class afc_hub:
     def __init__(self, config):
         self.printer    = config.get_printer()
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
+        self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.afc        = self.printer.load_object(config, 'AFC')
         self.reactor    = self.printer.get_reactor()
 
@@ -32,6 +36,7 @@ class afc_hub:
         self.unit = None
         self.lanes: Dict[str, AFCLane] = {}
         self._state: bool = False
+        self._state_driven = False
 
         self.switch_pin = config.get('switch_pin', None)
         # HUB Cut variables
@@ -59,8 +64,9 @@ class afc_hub:
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switches as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
+        self.use_dist_hub           = config.getboolean("use_dist_hub", False)      # Value to indicate that lanes dist_hub variable should be used instead of afc_bowden_length value. Set true when setting hub up as a virtual hub
 
-        if self.switch_pin is not None and self.switch_pin.lower() != "virtual":
+        if self.switch_pin.lower() != "virtual":
             buttons = self.printer.load_object(config, "buttons")
             self.fila, self.debounce_button = add_filament_switch(f"{self.name}_Hub", self.switch_pin,
                                                                   self.printer, self.enable_sensors_in_gui,
@@ -75,7 +81,14 @@ class afc_hub:
         return self.name
 
     def is_virtual_pin(self):
-        return self.switch_pin is not None and self.switch_pin.lower() == "virtual"
+        """
+        Helper method that returns true when switch_pin variable is set to "virtual", meaning
+        that all load switches in a unit is the hub switch. So if one load switch it triggered
+        then the "hub switch" is triggered.
+
+        :return boolean: Returns True when switch_pin variable equals virtual
+        """
+        return self.switch_pin.lower() == "virtual"
 
     def handle_runout(self, eventtime):
         """
@@ -106,11 +119,15 @@ class afc_hub:
 
         self.printer.send_event("afc_hub:register_macros", self)
 
+    def handle_ready(self):
         if self.is_virtual_pin():
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
-                if lane.load is None and lane.prep is not None:
+                if lane.unit_obj.type in SENSORLESS_UNITS:
+                    continue
+                if (lane.load is None
+                    and lane.prep is not None):
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
@@ -124,9 +141,13 @@ class afc_hub:
         sensor is triggered.
         """
         state = self._state
-        if self.is_virtual_pin():
+        if (self.is_virtual_pin()
+            and not self._state_driven):
             state = any(lane.raw_load_state for lane in self.lanes.values())
         return state
+
+    def set_state_driven(self):
+        self._state_driven = True
 
     def switch_pin_callback(self, eventtime, state):
         self._state = state
@@ -172,12 +193,7 @@ class afc_hub:
 
     def get_status(self, eventtime=None):
         self.response = {}
-        if self.is_virtual_pin():
-            self.response['state'] = any(
-                getattr(lane, 'tool_loaded', False) for lane in self.lanes.values()
-            )
-        else:
-            self.response['state'] = bool(self.state)
+        self.response['state'] = bool(self.state)
         self.response['cut'] = self.cut
         self.response['cut_cmd'] = self.cut_cmd
         self.response['cut_dist'] = self.cut_dist

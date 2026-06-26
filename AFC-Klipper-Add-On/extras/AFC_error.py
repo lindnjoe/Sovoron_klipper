@@ -146,10 +146,6 @@ class afcError:
         the base pause command
         """
         self.set_error_state( True )
-        # If a tool is sitting in its dock from a failed load/unload (dock-purge
-        # setups), pick it back up BEFORE pausing. Pausing while docked sends the
-        # follow-up park/home moves out of range and forces a restart.
-        self.afc.recover_docked_tool()
         self.logger.info ('PAUSING')
         self.afc.gcode.run_script_from_command('PAUSE')
         self.logger.debug("After User Pause")
@@ -298,12 +294,6 @@ class afcError:
 
     handle_lane_failure_help = "Get load errors, stop stepper and respond error"
     def handle_lane_failure(self, cur_lane, message, pause=True):
-        # Abort any in-progress hardware operation (e.g. OpenAMS motor)
-        # before disabling the stepper so the unit can clean up properly.
-        try:
-            cur_lane.unit_obj.abort_load(cur_lane)
-        except Exception:
-            pass
         # Disable the stepper for this lane
         cur_lane.do_enable(False)
         cur_lane.status = AFCLaneState.ERROR

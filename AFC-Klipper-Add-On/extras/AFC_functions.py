@@ -224,7 +224,7 @@ class afcFunction:
 
         :param cur_lane: Lane to assign auto generated T(n) macro
         """
-        if cur_lane.map == None :
+        if cur_lane.map is None:
             for x in range(99):
                 cmd = 'T{}'.format(x)
                 # Checking to see if cmd exists in lanes that have manually assigned mapping
@@ -388,15 +388,6 @@ class afcFunction:
             current_extruder = self.get_current_extruder()
             if current_extruder is not None:
                 return self.afc.tools[current_extruder].lane_loaded
-            current_extruder_name = self.afc.toolhead.get_extruder().name
-            tool_obj = self.afc.tools.get(current_extruder_name, None)
-            if tool_obj is not None:
-                for lane_name, lane_obj in self.afc.lanes.items():
-                    if (getattr(lane_obj, 'extruder_name', None) == current_extruder_name
-                            and getattr(lane_obj, 'unit_obj', None) is not None):
-                        result = lane_obj.unit_obj.get_current_lane_fallback(tool_obj)
-                        if result is not None:
-                            return result
         return None
 
     def get_current_lane_obj(self):
@@ -417,9 +408,9 @@ class afcFunction:
 
         :return Object: Object of current extruder/tool, None if no extruder/tool
         """
-        extruder_name = self.get_current_extruder()
-        if extruder_name:
-            return self.afc.tools.get(extruder_name, None)
+        th_extruder_name = self.get_current_extruder()
+        if th_extruder_name:
+            return self.afc.tools.get(th_extruder_name, None)
         return None
 
     def get_current_extruder(self) -> Optional[str]:
@@ -533,42 +524,28 @@ class afcFunction:
         # self.reactor.update_timer( self.activate_extruder_cb, self.reactor.monotonic() + 5 )
         self._handle_activate_extruder(0)
 
-    def _handle_activate_extruder(self, eventtime, lane=None):
+    def _handle_activate_extruder(self, eventtime):
         """
-        Syncs AFC lane state when the active extruder changes.
-        Optionally activates the klipper extruder for the given lane first,
-        then disables non-active lanes and enables the current one.
+        Supposed to be a callback function from timer, currently this is not called from timer event.
+        TODO: Update this functionality before pushing to main/dev or once fully moved away from KTC
         """
-        if lane is not None:
-            lane.activate_toolhead_extruder()
 
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
-        active_buffer_obj = getattr(cur_lane_loaded, "buffer_obj", None) if cur_lane_loaded is not None else None
-        active_buffer_name = getattr(cur_lane_loaded, "buffer_name", None) if cur_lane_loaded is not None else None
 
         self.afc.spool.set_active_spool('')
         # Disable extruder steppers for non active lanes
         for key, obj in self.afc.lanes.items():
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
                 obj.do_enable(False)
-                if (
-                    cur_lane_loaded is None
-                    or not (
-                        (active_buffer_obj is not None and getattr(obj, "buffer_obj", None) is active_buffer_obj)
-                        or (
-                            active_buffer_name is not None
-                            and getattr(obj, "buffer_name", None) == active_buffer_name
-                        )
-                    )
-                ):
-                    obj.disable_buffer()
+                obj.disable_buffer()
                 if (cur_lane_loaded is None
                     or (obj.unit_obj.name != cur_lane_loaded.unit_obj.name)):
                     obj.unit_obj.return_to_home()
                 obj.unsync_to_extruder()
                 if obj.prep_state and obj.load_state:
                     if obj.tool_loaded:
+                        # If tool is loaded, set led to tool loaded color
                         obj.unit_obj.lane_tool_loaded_idle(obj)
                     else:
                         obj.unit_obj.lane_loaded(obj)
@@ -581,7 +558,7 @@ class afcFunction:
 
         # Switch spoolman ID
         self.afc.spool.set_active_spool(cur_lane_loaded.spool_id)
-        # Set lanes tool loaded led
+        # Set lanes tool loaded led (uses filament color when available via _get_lane_color)
         cur_lane_loaded.unit_obj.lane_tool_loaded( cur_lane_loaded )
         # Enable stepper
         cur_lane_loaded.do_enable(True)
@@ -590,37 +567,21 @@ class afcFunction:
         cur_lane_loaded.sync_to_extruder()
         cur_lane_loaded.unit_obj.select_lane( cur_lane_loaded )
         self.logger.debug("Activate extruder done")
+        # TODO: Remove or add back once fully moved away from KTC
+        # return self.reactor.NEVER
 
-    def unset_lane_loaded(self, lane_name=None):
+    def unset_lane_loaded(self):
         """
-        Helper function to get current lane and unsync lane from toolhead extruder.
-
-        :param lane_name: Optional lane name to unset. When None, auto-detects
-                          from active extruder or falls back to self.current.
+        Helper function to get current lane and unsync lane from toolhead extruder
         """
-        cur_lane_loaded = None
-        if lane_name is not None:
-            cur_lane_loaded = self.afc.lanes.get(lane_name)
-            if cur_lane_loaded is None:
-                self.logger.info("UNSET_LANE_LOADED: unknown lane '{}'".format(lane_name))
-                return
-        else:
-            cur_lane_loaded = self.get_current_lane_obj()
-        if cur_lane_loaded is None and self.afc.current is not None:
-            cur_lane_loaded = self.afc.lanes.get(self.afc.current)
-        if cur_lane_loaded is None:
-            self.logger.info("UNSET_LANE_LOADED: no lane currently loaded")
-            return
-        extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
-        cur_lane_loaded.unsync_to_extruder()
-        cur_lane_loaded.set_tool_unloaded()
-        if cur_lane_loaded.extruder_obj is not None:
-            cur_lane_loaded.extruder_obj.lane_loaded = None
-        cur_lane_loaded.unit_obj.return_to_home()
-        self.afc.function.handle_activate_extruder()
-        self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
-        self.afc.save_vars()
-        cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
+        cur_lane_loaded = self.get_current_lane_obj()
+        if cur_lane_loaded is not None:
+            cur_lane_loaded.unsync_to_extruder()
+            cur_lane_loaded.set_tool_unloaded(normal_toolchange=True)
+            cur_lane_loaded.unit_obj.return_to_home()
+            self.afc.function.handle_activate_extruder()
+            self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
+            self.afc.save_vars()
 
     def select_loaded_lane(self):
         """
@@ -1378,10 +1339,7 @@ class afcFunction:
 
             # Setting tool start to buffer if only tool_end is set and user has buffer so calibration can run
             if cur_lane.extruder_obj.tool_start is None:
-                has_u1_sensor = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None) is not None
-                if has_u1_sensor:
-                    self.logger.info("Using U1 motion sensor to calibrate bowden length")
-                elif cur_lane.extruder_obj.tool_end is not None and cur_lane.buffer_obj is not None:
+                if cur_lane.extruder_obj.tool_end is not None and cur_lane.buffer_obj is not None:
                     self.logger.info("Cannot run calibration using post extruder sensor, using buffer to calibrate bowden length")
                     cur_lane.extruder_obj.tool_start = "buffer"
                     set_tool_start_back_to_none = True
@@ -1397,7 +1355,7 @@ class afcFunction:
                 msg = '{} failed to calibrate bowden length {}'.format(afc_bl, msg)
                 self.afc.error.AFC_error(msg, pause=False)
 
-                self._afc_cali_fail(cali=cur_lane, dis=abs(pos), reset_lane=(pos!=0),
+                self._afc_cali_fail(cali=cur_lane.name, dis=abs(pos), reset_lane=(pos!=0),
                                     title="AFC Bowden Calibration Failed", fail_message=msg)
                 return
             else: calibrated.append('Bowden_length: {}'.format(afc_bl))
@@ -1541,7 +1499,10 @@ class afcFunction:
         for index, LANE in enumerate(self.afc.lanes.values()):
             if LANE.raw_load_state:
                 button_label = "{}".format(LANE.name)
-                button_command = self._lane_reset_command(LANE, dis)
+                if dis is not None:
+                    button_command = "AFC_LANE_RESET LANE={} DISTANCE={}".format(LANE.name, dis)
+                else:
+                    button_command = "AFC_LANE_RESET LANE={}".format(LANE.name)
 
                 button_style = "primary" if index % 2 == 0 else "secondary"
                 buttons.append((button_label, button_command, button_style))
@@ -1552,15 +1513,6 @@ class afcFunction:
 
         prompt.create_custom_p(title, text, buttons,
                         True, None)
-
-    def _lane_reset_command(self, lane, dis):
-        """Return the GCode command to reset *lane*, using unit override if available."""
-        custom_command = lane.unit_obj.get_lane_reset_command(lane, dis)
-        if custom_command is not None:
-            return custom_command
-        if dis is not None:
-            return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
-        return "AFC_LANE_RESET LANE={}".format(lane.name)
 
     cmd_AFC_LANE_RESET_help = 'reset a loaded lane to hub'
     cmd_AFC_LANE_RESET_options = {"DISTANCE": {"default": "50", "type": "float"},
@@ -1612,14 +1564,6 @@ class afcFunction:
                 return
 
         cur_lane: Union[AFCLane, AFCExtruderStepper] = self.afc.lanes[lane]
-
-        custom_reset_command = cur_lane.unit_obj.get_lane_reset_command(cur_lane, long_dis)
-        if custom_reset_command is not None:
-            prompt.p_end()
-            self.logger.info(f"{lane} uses custom lane reset: {custom_reset_command}")
-            self.afc.gcode.run_script_from_command(custom_reset_command)
-            return
-
         CUR_HUB: afc_hub = cur_lane.hub_obj
         short_move = cur_lane.short_move_dis * 2
 

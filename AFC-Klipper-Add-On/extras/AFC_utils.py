@@ -34,7 +34,9 @@ if TYPE_CHECKING:
 
 ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
 
-def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, runout_callback = None, enable_runout=False, debounce_delay=0. ):
+def add_filament_switch(switch_name, switch_pin, printer, show_sensor=True,
+                        runout_callback = None, enable_runout=False,
+                        debounce_delay=0., extruder="extruder" ):
     """
     Helper function to register pins as filament switch sensor so it will show up in web guis
 
@@ -53,8 +55,11 @@ def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, run
     filament_switch_config.add_section( new_switch_name )
     filament_switch_config.set( new_switch_name, 'switch_pin', switch_pin)
     filament_switch_config.set( new_switch_name, 'pause_on_runout', 'False')
-    filament_switch_config.set( new_switch_name, 'extruder', 'extruder')
     filament_switch_config.set( new_switch_name, 'debounce_delay', 0.0)
+
+    # Following needs to be added for Snapmaker U1 klipper version, does not hurt to always
+    # have here for non U1 klipper versions.
+    filament_switch_config.set( new_switch_name, "extruder")
 
     cfg_wrap = configfile.ConfigWrapper( printer, filament_switch_config, {}, new_switch_name)
 
@@ -131,10 +136,13 @@ class DebounceButton:
         # Checking parameter length since kalico's note_filament_present function is different
         # and also checking for older klipper versions before hash 272e8155
         expected_params = ['eventtime', 'is_filament_present', 'force', 'immediate']
+        snapmaker_expected = ['is_filament_present', 'force']
         param_keys = list(sig.parameters.keys())
         if param_keys == expected_params:
             # Exact match for the expected signature
             filament_sensor.runout_helper.note_filament_present = self._button_handler
+        elif param_keys == snapmaker_expected:
+            filament_sensor.runout_helper.note_filament_present = self.button_handler
         elif len(sig.parameters) > 2 or len(sig.parameters) == 1:
             filament_sensor.runout_helper.note_filament_present = self.button_handler
         else:
@@ -170,6 +178,152 @@ class DebounceButton:
             self.button_action(is_filament_present=self.logical_state)
         except:
             self.button_action(eventtime, self.logical_state)
+
+
+class VirtualRunoutHelper:
+    """Minimal runout helper used by FPS_PFS virtual sensors."""
+
+    def __init__(self, printer, name, runout_cb=None, enable_runout=False):
+        """
+        Initialize the minimal runout helper.
+
+        :param printer: Klipper printer object.
+        :param name: Sensor name.
+        :param runout_cb: Optional callable invoked on a runout transition.
+        :param enable_runout: Whether runout callbacks are enabled.
+        """
+        self.printer = printer
+        self._reactor = printer.get_reactor()
+        self.name = name
+        self.runout_callback = runout_cb
+        self.sensor_enabled = bool(enable_runout)
+        self.filament_present = False
+        self.insert_gcode = None
+        self.runout_gcode = None
+        self.event_delay = 0.0
+        self.min_event_systime = self._reactor.NEVER
+
+    def note_filament_present(self, eventtime=None, is_filament_present=False, **_kwargs):
+        """
+        Update the tracked filament-present state and fire runout if needed.
+
+        Only acts on a state change; invokes the runout callback when filament
+        transitions to absent and runout is enabled.
+
+        :param eventtime: Reactor event time; defaults to now when None.
+        :param is_filament_present: New filament-present state.
+        :param _kwargs: Ignored extra keyword arguments for API compatibility.
+        """
+        if eventtime is None:
+            eventtime = self._reactor.monotonic()
+
+        new_state = bool(is_filament_present)
+        if new_state == self.filament_present:
+            return
+
+        self.filament_present = new_state
+
+        if (not new_state and self.sensor_enabled and callable(self.runout_callback)):
+            try:
+                self.runout_callback(eventtime)
+            except TypeError:
+                self.runout_callback(eventtime=eventtime)
+
+    def get_status(self, _eventtime=None):
+        """
+        Return the sensor status.
+
+        :param _eventtime: Reactor event time (unused).
+        :return: Dict with ``filament_detected`` and ``enabled`` booleans.
+        """
+        return {
+            "filament_detected": bool(self.filament_present),
+            "enabled": bool(self.sensor_enabled),
+        }
+
+class VirtualFilamentSensor:
+    """Lightweight filament sensor placeholder for FPS virtual pins."""
+
+    QUERY_HELP = "Query the status of the Filament Sensor"
+    SET_HELP = "Sets the filament sensor on/off"
+
+    def __init__(self, printer, name, show_in_gui=True, runout_cb=None, enable_runout=False):
+        """
+        Register a lightweight virtual filament sensor.
+
+        Adds the object under the ``filament_switch_sensor`` namespace (hiding it
+        from the GUI by underscore-prefixing when requested) and registers the
+        QUERY/SET filament-sensor G-code commands.
+
+        :param printer: Klipper printer object.
+        :param name: Sensor name.
+        :param show_in_gui: When False, hide the sensor from the GUI.
+        :param runout_cb: Optional runout callback passed to the runout helper.
+        :param enable_runout: Whether runout callbacks are enabled.
+        """
+        self.printer = printer
+        self.name = name
+        self._object_name = f"filament_switch_sensor {name}"
+        self.runout_helper = VirtualRunoutHelper(printer, name, runout_cb=runout_cb, enable_runout=enable_runout)
+
+        try:
+            printer.add_object(self._object_name, self)
+            if not show_in_gui:
+                # Hide from GUI by prefixing with underscore
+                objects = getattr(printer, "objects", {})
+                if self._object_name in objects:
+                    objects["_" + self._object_name] = objects.pop(self._object_name)
+        except Exception:
+            # Fallback: direct dict registration
+            objects = getattr(printer, "objects", None)
+            if isinstance(objects, dict):
+                objects.setdefault(self._object_name, self)
+
+        gcode = printer.lookup_object("gcode", None)
+        if gcode is None:
+            return
+        try:
+            gcode.register_mux_command("QUERY_FILAMENT_SENSOR", "SENSOR", name, self.cmd_QUERY_FILAMENT_SENSOR, desc=self.QUERY_HELP)
+        except Exception:
+            pass
+        try:
+            gcode.register_mux_command("SET_FILAMENT_SENSOR", "SENSOR", name, self.cmd_SET_FILAMENT_SENSOR, desc=self.SET_HELP)
+        except Exception:
+            pass
+
+    def get_status(self, eventtime):
+        """
+        Return the sensor status from the runout helper.
+
+        :param eventtime: Reactor event time passed through to the helper.
+        :return: Dict with ``filament_detected`` and ``enabled`` booleans.
+        """
+        return self.runout_helper.get_status(eventtime)
+
+    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
+        """
+        G-code handler that reports whether filament is detected.
+
+        Usage: ``QUERY_FILAMENT_SENSOR SENSOR=<name>``
+
+        :param gcmd: The parsed G-code command.
+        """
+        status = self.runout_helper.get_status(None)
+        if status["filament_detected"]:
+            msg = f"Filament Sensor {self.name}: filament detected"
+        else:
+            msg = f"Filament Sensor {self.name}: filament not detected"
+        self.logger.info(msg)
+
+    def cmd_SET_FILAMENT_SENSOR(self, gcmd):
+        """
+        G-code handler that enables or disables the virtual sensor.
+
+        Usage: ``SET_FILAMENT_SENSOR SENSOR=<name> ENABLE=<0|1>``
+
+        :param gcmd: The parsed G-code command.
+        """
+        self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
 
 class AFC_moonraker:
     """
@@ -220,19 +374,6 @@ class AFC_moonraker:
             else:
                 logger(self.ERROR_STRING)
                 logger(f"Response: {resp.status} Reason: {resp.reason}")
-        except HTTPError as e:
-            # Moonraker proxies Spoolman's validation detail in the response
-            # body. For a 422 (Unprocessable Entity) this body names the exact
-            # field Spoolman rejected, so surface it instead of swallowing it.
-            body = ""
-            try:
-                body = e.read().decode("utf-8", "replace")
-            except Exception:
-                pass
-            logger(self.ERROR_STRING)
-            logger(f"HTTP Error {e.code} ({e.reason})"
-                   + (f": {body}" if body else ""))
-            data = None
         except:
             logger(self.ERROR_STRING, traceback=traceback.format_exc())
             data = None
@@ -368,136 +509,6 @@ class AFC_moonraker:
         else:
             self.logger.info(f"SpoolID: {id} not found")
         return resp
-
-    def _spoolman_proxy(self, method, path, body=None, query=None, print_error=True):
-        """Send a request through Moonraker's Spoolman proxy.
-
-        :param method: HTTP method (GET, POST, PATCH, DELETE)
-        :param path: Spoolman API path (e.g. /v1/spool)
-        :param body: Optional dict for request body (POST/PATCH)
-        :param query: Optional query string (e.g. "material=PLA&limit=10")
-        :return: Response dict or None on error
-        """
-        payload = {
-            "request_method": method,
-            "path": path,
-        }
-        if body is not None:
-            payload["body"] = body
-        if query is not None:
-            payload["query"] = query
-        spool_url = urljoin(self.host, 'server/spoolman/proxy')
-        req = Request(
-            spool_url,
-            json.dumps(payload).encode('utf-8'),
-            headers={"Content-Type": "application/json"},
-        )
-        result = self._get_results(req, print_error=print_error)
-        # Moonraker's proxy strips Spoolman's field-level 422 detail, so when a
-        # write fails surface the exact request that Spoolman rejected — that
-        # body (method/path + payload) is what's needed to find the bad field.
-        if result is None and method != "GET":
-            self.logger.error(
-                f"Spoolman {method} {path} failed; request body: "
-                f"{json.dumps(body) if body is not None else '(none)'}")
-        return result
-
-    def search_filaments(self, vendor_name=None, material=None, article_number=None):
-        """Search Spoolman for filaments matching the given criteria."""
-        params = []
-        if vendor_name:
-            params.append(f"vendor.name={quote(vendor_name)}")
-        if material:
-            params.append(f"material={quote(material)}")
-        if article_number:
-            params.append(f"article_number={quote(article_number)}")
-        query = "&".join(params) if params else ""
-        result = self._spoolman_proxy("GET", "/v1/filament", query=query, print_error=False)
-        if isinstance(result, list):
-            return result
-        return []
-
-    def create_vendor(self, name):
-        """Create a vendor in Spoolman."""
-        body = {"name": name}
-        return self._spoolman_proxy("POST", "/v1/vendor", body=body)
-
-    def search_vendors(self, name):
-        """Search Spoolman for vendors by name."""
-        query = f"name={quote(name)}"
-        result = self._spoolman_proxy("GET", "/v1/vendor", query=query, print_error=False)
-        if isinstance(result, list):
-            return result
-        return []
-
-    def get_or_create_vendor(self, name):
-        """Find an existing vendor by name or create a new one."""
-        vendors = self.search_vendors(name)
-        for v in vendors:
-            if v.get("name", "").lower() == name.lower():
-                return v
-        return self.create_vendor(name)
-
-    def create_filament(self, name=None, vendor_id=None, material=None,
-                        density=1.24, diameter=1.75, color_hex=None,
-                        settings_extruder_temp=None, settings_bed_temp=None,
-                        weight=None, spool_weight=None, article_number=None,
-                        multi_color_hexes=None, multi_color_direction=None):
-        """Create a filament in Spoolman."""
-        body = {
-            "density": density,
-            "diameter": diameter,
-        }
-        if name:
-            body["name"] = name
-        if vendor_id:
-            body["vendor_id"] = vendor_id
-        if material:
-            body["material"] = material
-        # Multi-colour spools store a comma-separated hex list plus a direction
-        # ("coaxial" = coextruded, or "longitudinal"); color_hex is omitted then.
-        if multi_color_hexes:
-            body["multi_color_hexes"] = ",".join(
-                c.lstrip("#") for c in multi_color_hexes) \
-                if isinstance(multi_color_hexes, (list, tuple)) \
-                else multi_color_hexes
-            body["multi_color_direction"] = multi_color_direction or "coaxial"
-        elif color_hex:
-            body["color_hex"] = color_hex
-        if settings_extruder_temp is not None:
-            body["settings_extruder_temp"] = settings_extruder_temp
-        if settings_bed_temp is not None:
-            body["settings_bed_temp"] = settings_bed_temp
-        if weight is not None:
-            body["weight"] = weight
-        if spool_weight is not None:
-            body["spool_weight"] = spool_weight
-        if article_number:
-            body["article_number"] = article_number
-        return self._spoolman_proxy("POST", "/v1/filament", body=body)
-
-    def create_spool(self, filament_id, remaining_weight=None, initial_weight=None,
-                     spool_weight=None):
-        """Create a spool in Spoolman."""
-        body = {"filament_id": filament_id}
-        if remaining_weight is not None:
-            body["remaining_weight"] = remaining_weight
-        if initial_weight is not None:
-            body["initial_weight"] = initial_weight
-        if spool_weight is not None:
-            body["spool_weight"] = spool_weight
-        return self._spoolman_proxy("POST", "/v1/spool", body=body)
-
-    def search_spools(self, filament_id=None):
-        """Search Spoolman for spools, optionally filtered by filament_id."""
-        params = []
-        if filament_id is not None:
-            params.append(f"filament.id={filament_id}")
-        query = "&".join(params) if params else ""
-        result = self._spoolman_proxy("GET", "/v1/spool", query=query, print_error=False)
-        if isinstance(result, list):
-            return result
-        return []
 
     def check_for_td1(self):
         """

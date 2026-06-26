@@ -12,23 +12,21 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane, MoveDirection
-    from extras.AFC_stepper import AFCExtruderStepper
 
 try: from extras.AFC_utils import ERROR_STR
-except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
+except: raise error(
+    "Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(
+        trace=traceback.format_exc()))
 
 try: from extras.AFC_lane import (
-    AFCLaneState, SpeedMode, AssistActive, MoveDirection, AFCMoveWarning
+    SpeedMode, AssistActive, MoveDirection, AFCMoveWarning
 )
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
-
-
 
 try: from extras.AFC_BoxTurtle import afcBoxTurtle
 except: raise error(ERROR_STR.format(import_lib="AFC_BoxTurtle", trace=traceback.format_exc()))
 
 class AFC_EMU(afcBoxTurtle):
-    MAX_NUM_MOVES = 40
     def __init__(self, config):
         super().__init__(config)
         self.type = config.get('type', 'EMU')
@@ -45,10 +43,22 @@ class AFC_EMU(afcBoxTurtle):
         self.logo_error = '<span class=error--text>EMU Not Ready</span>\n'
 
     def prep_post_load(self, lane: AFCLane):
+        """
+        Helper method to run after prep_load has been successful.
+
+        Checks if hub is setup as a virtual hub, if so filament is moved behind load switch and
+        sets loaded_to_hub as True. If normal hub, calls parents prep_post_load method.
+
+        :param lane: AFCLane object for which to perform prep_post_load action on
+        """
         if (lane.hub_obj is not None
+            and hasattr(lane.hub_obj, 'is_virtual_pin')
             and lane.hub_obj.is_virtual_pin()):
-            lane.move_to(lane.hub_obj.hub_clear_move_dis * MoveDirection.NEG,
-                        SpeedMode.SHORT, use_homing=False)
+            num_tries = 0
+            while( lane.raw_load_state and num_tries < 10 ):
+                lane.move_to(lane.hub_obj.hub_clear_move_dis * MoveDirection.NEG,
+                            SpeedMode.SHORT, use_homing=False)
+                num_tries += 1
             lane.loaded_to_hub = True
         else:
             super().prep_post_load(lane)
@@ -80,6 +90,7 @@ class AFC_EMU(afcBoxTurtle):
         """
         endstop = lane.hub_endstop_name
         if (lane.hub_obj is not None
+            and hasattr(lane.hub_obj, 'is_virtual_pin')
             and lane.hub_obj.is_virtual_pin()):
             endstop = lane.load_es
         homed, distance, warn = lane.move_to(dist * dir, speed_mode, assist_active=assist_active,

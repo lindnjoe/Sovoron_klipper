@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from extras.AFC import afc
+    from extras.AFC_lane import AFCLane
+
+if TYPE_CHECKING:
+    from extras.AFC import afc
 
 class afcPrep:
     def __init__(self, config):
@@ -96,7 +100,6 @@ class afcPrep:
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 1)
 
         self._rename_macros()
-        self.afc.print_version(console_only=True)
 
         # Try and connect to moonraker
         self.afc.handle_moonraker_connect()
@@ -126,9 +129,9 @@ class afcPrep:
             extruder_obj.set_status_led( self.afc.led_tool_unloaded )
             if extruder_obj.on_shuttle():
                 # Calls ACTIVATE_EXTRUDER if current toolhead on shuttle is not the active extruder
-                if self.afc.function.get_current_extruder() != extruder_obj.name:
+                if self.afc.function.get_current_extruder() != extruder_obj.th_extruder_name:
                     self.afc.gcode.run_script_from_command(
-                        f"ACTIVATE_EXTRUDER EXTRUDER={extruder_obj.name}"
+                        f"ACTIVATE_EXTRUDER EXTRUDER={extruder_obj.th_extruder_name}"
                     )
             if 'system' in units and "extruders" in units["system"]:
                 # Check to see if lane_loaded is in dictionary and its not an empty string
@@ -137,6 +140,9 @@ class afcPrep:
                   units["system"]["extruders"][extruder_obj.name]['lane_loaded']:
                     extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
 
+        self.afc.print_version(console_only=True)
+        if self.afc.snapmaker_printer:
+            self.logger.info("Snapmaker Printer Detected")
 
         for lane in self.afc.lanes.keys():
             cur_lane = self.afc.lanes[lane]
@@ -258,14 +264,6 @@ class afcPrep:
         # run PREP after it has already been run once upon boot
         self.assignTcmd = False
         self.afc.prep_done = True
-        try:
-            self._start_u1_rfid()
-        except Exception as e:
-            self.logger.info(f"U1 RFID init error: {e}")
-        try:
-            self._start_u1_bridge()
-        except Exception as e:
-            self.logger.info(f"U1 bridge init error: {e}")
         self.afc.save_vars()
 
         if self.afc.buffers:
@@ -275,61 +273,17 @@ class afcPrep:
                                     "switches are triggered on Buffer {}. "
                                     "Please check your buffer switches or configuration.</span>".format(buffer_name))
 
+        if self.afc.snapmaker_printer:
+            for extruder in self.afc.tools.values():
+                lane: AFCLane = extruder.lanes.get(extruder.lane_loaded, None)
+                if (lane
+                    and lane.tool_loaded):
+                    self.afc.spool.set_snapmaker_filament_params(lane)
+
         # Verifying that user has macro positions set correctly for enabled park, cut, etc macros
         error_str = self.afc.verify_macro_positions()
         if error_str:
             self.logger.error(error_str)
-
-    def _start_u1_rfid(self):
-        """Initialize U1 RFID polling if any lanes/extruders have u1_rfid_channel configured."""
-        from extras.AFC_U1_rfid import AFC_U1_RFID
-
-        old_rfid = getattr(self.afc, 'u1_rfid', None)
-        if old_rfid is not None:
-            old_rfid.stop()
-
-        rfid_sources = {}
-        for lane in self.afc.lanes.values():
-            channel = getattr(lane, "u1_rfid_channel", -1)
-            if channel >= 0:
-                rfid_sources[lane.name] = (lane, channel)
-        for ext in self.afc.tools.values():
-            tc_lane = getattr(ext, "tc_lane", None)
-            if tc_lane is not None and tc_lane.name not in rfid_sources:
-                channel = getattr(tc_lane, "u1_rfid_channel", -1)
-                if channel >= 0:
-                    rfid_sources[tc_lane.name] = (tc_lane, channel)
-
-        if not rfid_sources:
-            return
-        rfid = AFC_U1_RFID(self.afc)
-        for lane, channel in rfid_sources.values():
-            rfid.register_lane(lane, channel)
-        rfid.start()
-        self.afc.u1_rfid = rfid
-
-    def _start_u1_bridge(self):
-        """Auto-load the U1 bridge if running on a Snapmaker U1 (has machine_state_manager)."""
-        if getattr(self.afc, 'u1_bridge', None) is not None:
-            return
-        msm = self.printer.lookup_object("machine_state_manager", None)
-        if msm is None:
-            return
-        from extras.AFC_bridge_U1 import AFCU1Bridge
-
-        class _BridgeConfig:
-            def __init__(self, printer):
-                self._printer = printer
-            def get_printer(self):
-                return self._printer
-            def get_name(self):
-                return "AFC_bridge_U1"
-
-        bridge = AFCU1Bridge(_BridgeConfig(self.printer))
-        bridge._handle_connect()
-        self.afc.u1_bridge = bridge
-        self.logger.info("U1 bridge auto-loaded")
-
 
 def load_config(config):
     return afcPrep(config)

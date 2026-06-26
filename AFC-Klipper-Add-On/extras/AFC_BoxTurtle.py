@@ -117,6 +117,7 @@ class afcBoxTurtle(afcUnit):
                         or cur_lane.extruder_obj.tool_end_state):
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                             cur_lane.sync_to_extruder()
+
                             msg += cur_lane.extruder_obj.prep_on_shuttle_check(cur_lane)
 
                             if (cur_lane.extruder_obj.tool_start == "buffer"
@@ -128,11 +129,10 @@ class afcBoxTurtle(afcUnit):
                                 self.afc.spool.set_active_spool(cur_lane.spool_id)
                                 self.lane_tool_loaded(cur_lane)
                                 cur_lane.status = AFCLaneState.TOOLED
-                                cur_lane.enable_buffer()
                             else:
                                 self.lane_tool_loaded_idle(cur_lane)
 
-                            self.printer.send_event("afc:tool_loaded", cur_lane)
+                            cur_lane.enable_buffer()
                         else:
                             if cur_lane.get_toolhead_pre_sensor_state() == True or cur_lane.extruder_obj.tool_end_state:
                                 msg +="<span class=error--text> error in ToolHead. \nLane identified as loaded \n but not identified as loaded in extruder</span>"
@@ -161,8 +161,11 @@ class afcBoxTurtle(afcUnit):
         else:
             self.logger.raw(f'Calibrating Bowden Length with {cur_lane.name}')
 
+        # Store variable locally so check only happens once
+        is_direct_dist = cur_lane.is_direct_dist()
+
         checkpoint = "Moving to hub"
-        if not cur_lane.is_direct_hub():
+        if not is_direct_dist:
             # move to hub and retrieve that distance, the checkpoint returned and if successful
 
             if not self.afc.homing_enabled:
@@ -217,15 +220,15 @@ class afcBoxTurtle(afcUnit):
                 # Check for error and return, if error state is set then AFC tried pausing
                 # during the homing
                 if warn == AFCMoveWarning.ERROR:
-                    return False, "Error occurred when trying to move lane", 0
+                    return False, "Error occurred when trying to move lane", fault_dis
                 bow_pos += distance
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
                 if bow_pos >= fault_dis:
                     # fault if move to bowden length does not reach toolhead sensor return to calibration macro
-                    msg = 'while moving to toolhead. Failed after {}mm'.format(bow_pos)
-                    msg += '\n if filament stopped short of the toolhead sensor/ramming during calibration'
-                    msg += '\n use the following command to increase bowden length'
-                    if not cur_lane.is_direct_hub():
+                    msg = 'while moving to toolhead. Failed after {}mm, '.format(bow_pos)
+                    msg += 'if filament stopped short of the toolhead sensor/ramming during calibration'
+                    msg += 'use the following command to increase bowden length'
+                    if not is_direct_dist:
                         msg += '\n SET_BOWDEN_LENGTH HUB={} LENGTH=+(distance the filament was short from the toolhead)'.format(cur_hub.name)
                     else:
                         msg += '\n SET_HUB_DIST LANE={} LENGTH=+(distance the filament was short from the toolhead)'.format(cur_lane.name)
@@ -242,7 +245,7 @@ class afcBoxTurtle(afcUnit):
                 msg = 'Failed {} after {}mm'.format(checkpoint, bow_pos)
                 return False, msg, bow_pos
 
-            if not cur_lane.is_direct_hub():
+            if not is_direct_dist:
                 success, _, _ = cur_lane.unit_obj.move_to_hub(cur_lane, bow_pos, MoveDirection.NEG,
                                                               self.afc.homing_enabled,
                                                               speed_mode=SpeedMode.LONG)
@@ -250,10 +253,10 @@ class afcBoxTurtle(afcUnit):
                 success, _, _ = cur_lane.unit_obj.move_to_load(cur_lane, bow_pos, MoveDirection.NEG,
                                                                self.afc.homing_enabled)
             if not success:
-                return False, "Failed to home filament back to hub", 0
+                return False, "Failed to home filament back to hub", fault_dis
 
             if (not self.afc.homing_enabled
-                and not cur_lane.is_direct_hub()):
+                and not is_direct_dist):
                 success, message, hub_dis = self.calibrate_hub(cur_lane, tol)
 
                 if not success:
@@ -276,16 +279,7 @@ class afcBoxTurtle(afcUnit):
 
             unload_cal_msg = ''
             cal_msg = f'\n {variable_name}: New: {bowden_dist} Old: {bowden_length}'
-            if not cur_lane.is_direct_hub():
-                unload_cal_msg = f'\n afc_unload_bowden_length: New: {bowden_dist} Old: {cur_lane.hub_obj.afc_unload_bowden_length}'
-                cur_lane.hub_obj.afc_unload_bowden_length = cur_lane.hub_obj.afc_bowden_length = bowden_dist
-            else:
-                bowden_dist = bow_pos - cur_lane.short_move_dis
-
-
-            unload_cal_msg = ''
-            cal_msg = f'\n {variable_name}: New: {bowden_dist} Old: {bowden_length}'
-            if not cur_lane.is_direct_hub():
+            if not is_direct_dist:
                 unload_cal_msg = f'\n afc_unload_bowden_length: New: {bowden_dist} Old: {cur_lane.hub_obj.afc_unload_bowden_length}'
                 cur_lane.hub_obj.afc_unload_bowden_length = cur_lane.hub_obj.afc_bowden_length = bowden_dist
             else:
@@ -297,7 +291,7 @@ class afcBoxTurtle(afcUnit):
                     pause=False)
                 return False, "Invalid bowden length", bowden_dist
             self.afc.function.ConfigRewrite(fullname, variable_name, bowden_dist, cal_msg)
-            if not cur_lane.is_direct_hub():
+            if not is_direct_dist:
                 self.afc.function.ConfigRewrite(fullname, "afc_unload_bowden_length", cur_lane.hub_obj.afc_unload_bowden_length, unload_cal_msg)
                 cur_lane.loaded_to_hub  = True
 
@@ -328,6 +322,9 @@ class afcBoxTurtle(afcUnit):
             msg += "field in AFC_hub or per AFC_lane"
             return False, msg, 0
 
+        # Store variable locally so check only happens once
+        is_direct_dist = cur_lane.is_direct_dist()
+
         # Verify TD-1 is still connected before trying to get data
         valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
         if not valid:
@@ -352,7 +349,7 @@ class afcBoxTurtle(afcUnit):
 
         compare_time = datetime.now()
         max_bowden_length = 0
-        if cur_lane.is_direct_hub():
+        if is_direct_dist:
             max_bowden_length = cur_lane.dist_hub
         else:
             max_bowden_length = cur_hub.afc_bowden_length
@@ -368,7 +365,7 @@ class afcBoxTurtle(afcUnit):
 
             cur_lane.move(dis, self.short_moves_speed, self.short_moves_accel)
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 5)
-        if not cur_lane.is_direct_hub():
+        if not is_direct_dist:
             success, _, _ = cur_lane.unit_obj.move_to_hub(cur_lane, bow_pos,
                                                           MoveDirection.NEG,
                                                           self.afc.homing_enabled,
@@ -379,11 +376,12 @@ class afcBoxTurtle(afcUnit):
                                                            self.afc.homing_enabled)
 
         if (not self.afc.homing_enabled
-            and not cur_lane.is_direct_hub()):
+            and not is_direct_dist):
             # Reset to hub
             self.calc_position(cur_lane, lambda: cur_lane.hub_obj.state, 0,
                                  cur_lane.short_move_dis, tol, 200, checkpoint)
 
+        if not cur_lane.is_direct_hub():
             cur_lane.move(cur_hub.hub_clear_move_dis * -1, cur_lane.short_moves_speed, cur_lane.short_moves_accel, True)
         else:
             # When direct lane move forwards so that load sensor is still triggered
@@ -392,7 +390,7 @@ class afcBoxTurtle(afcUnit):
 
         cal_msg = f"\n td1_bowden_length: New: {bow_pos} Old: {cur_lane.td1_bowden_length}"
 
-        if cur_lane.is_direct_hub():
+        if is_direct_dist:
             cur_lane.td1_bowden_length = bow_pos
             fullname = cur_lane.fullname
         else:
@@ -419,8 +417,8 @@ class afcBoxTurtle(afcUnit):
 
         if not success:
             # fault if check is not successful
-            msg = f'Failed to calibrate dist_hub for {cur_lane.name} after moving {hub_fault_dis}mm'
-            msg += 'If filament stopped short of the hub during calibration use the following command to increase dist_hub value'
+            msg = f'Failed to calibrate dist_hub for {cur_lane.name} after moving {hub_pos}mm. '
+            msg += 'If filament stopped short of the hub during calibration use the following command to increase dist_hub value.'
             msg += f' SET_HUB_DIST LANE={cur_lane.name} LENGTH=+(distance the filament was short from the hub)'
             return False, msg, hub_pos
 
@@ -621,7 +619,8 @@ class afcBoxTurtle(afcUnit):
         :param lane: AFCLane object for which to perform prep_post_load action on
         """
         # Checking if loaded to hub(it should not be since filament was just inserted), if false load to hub. Does a fast load if hub distance is over 200mm
-        if (lane.load_to_hub
+        if (not lane.is_direct_hub()
+            and lane.load_to_hub
             and not lane.loaded_to_hub
             and lane.load_state
             and lane.prep_state):

@@ -49,6 +49,13 @@ MAX_PAYLOAD_LEN = 100
 
 
 class Cmd:
+    """ACE2 serial-protocol command opcodes.
+
+    Each attribute is the integer command byte sent to (or received from) the
+    ACE2 controller in a protocol frame. Grouped roughly by function: device
+    discovery/identity, status/info queries, feed/rollback motion, drying, RFID,
+    and miscellaneous hardware controls (valve, fan, temperature).
+    """
     DISCOVER_DEVICE = 0
     ASSIGN_DEVICE_ID = 1
     IAP_VERSION = 5
@@ -90,6 +97,12 @@ FEED_MODE_ROLLBACK_ASSIST = 3
 
 
 def crc16_kermit(data):
+    """
+    Compute the Kermit-style CRC16 used by the ACE Pro 2 framing.
+
+    :param data: Bytes-like sequence to checksum.
+    :return: 16-bit CRC value as an integer.
+    """
     crc = 0xFFFF
     for byte in data:
         crc ^= byte
@@ -100,6 +113,12 @@ def crc16_kermit(data):
 
 # ---- protobuf encode helpers ----
 def pb_varint(value):
+    """
+    Encode an unsigned integer as a protobuf base-128 varint.
+
+    :param value: Non-negative integer to encode.
+    :return: Bytes containing the varint encoding.
+    """
     r = bytearray()
     value = int(value)
     while value > 0x7F:
@@ -110,15 +129,36 @@ def pb_varint(value):
 
 
 def pb_uint32(field, value):
+    """
+    Encode a protobuf varint field (wire type 0) with a uint32 value.
+
+    :param field: Protobuf field number.
+    :param value: Integer value to encode.
+    :return: Bytes containing the tag and varint-encoded value.
+    """
     return pb_varint((field << 3) | 0) + pb_varint(int(value))
 
 
 def pb_bool(field, value):
+    """
+    Encode a protobuf varint field (wire type 0) with a boolean value.
+
+    :param field: Protobuf field number.
+    :param value: Truthy value encoded as 1, falsy as 0.
+    :return: Bytes containing the tag and varint-encoded boolean.
+    """
     return pb_varint((field << 3) | 0) + pb_varint(1 if value else 0)
 
 
 # ---- protobuf decode helpers ----
 def pb_decode_varint(data, pos):
+    """
+    Decode a single base-128 varint from a buffer at a given offset.
+
+    :param data: Bytes-like buffer to read from.
+    :param pos: Index at which to start decoding.
+    :return: Tuple of (decoded integer, index past the varint).
+    """
     result, shift = 0, 0
     while pos < len(data):
         b = data[pos]
@@ -131,6 +171,16 @@ def pb_decode_varint(data, pos):
 
 
 def pb_decode(data):
+    """
+    Decode a protobuf message into a mapping of field number to entries.
+
+    Supports varint (0), 64-bit (1), length-delimited (2) and 32-bit (5) wire
+    types; decoding stops on an unsupported wire type or truncated data.
+
+    :param data: Raw protobuf-encoded bytes.
+    :return: Dict mapping each field number to a list of ``(wire_type, value)``
+             tuples in the order they appeared.
+    """
     fields, pos = {}, 0
     while pos < len(data):
         tag, pos = pb_decode_varint(data, pos)
@@ -158,10 +208,27 @@ def pb_decode(data):
 
 
 def _fval(fields, num, default=0):
+    """
+    Return the value of the first entry for a protobuf field.
+
+    :param fields: Decoded fields mapping from :func:`pb_decode`.
+    :param num: Field number to look up.
+    :param default: Value returned when the field is absent.
+    :return: The field's first value, or ``default`` if not present.
+    """
     return fields.get(num, [(0, default)])[0][1]
 
 
 def _fstr(fields, num, default=''):
+    """
+    Return a decoded string for the first entry of a length-delimited field.
+
+    :param fields: Decoded fields mapping from :func:`pb_decode`.
+    :param num: Field number to look up.
+    :param default: Value returned when the field is not bytes.
+    :return: UTF-8 decoded string, a hex string if decoding fails, or
+             ``default`` when the field value is not bytes.
+    """
     val = fields.get(num, [(2, b'')])[0][1]
     if isinstance(val, bytes):
         try:
@@ -172,7 +239,14 @@ def _fstr(fields, num, default=''):
 
 
 def method_to_v2(method, params):
-    """Map a V1 method name + params to a (cmd_opcode, protobuf_payload) tuple."""
+    """Map a V1 method name + params to a (cmd_opcode, protobuf_payload) tuple.
+
+    Unknown methods fall back to a harmless ``GET_STATUS`` query.
+
+    :param method: V1 method name (e.g. ``feed_filament``, ``get_status``).
+    :param params: Optional dict of method parameters; treated as empty if None.
+    :return: Tuple of (V2 command opcode, protobuf-encoded payload bytes).
+    """
     params = params or {}
     if method == 'get_info':
         return Cmd.GET_INFO, b''
@@ -259,7 +333,15 @@ def method_to_v2(method, params):
 
 
 def encode_request(request_id, method, params):
-    """Build a complete V2 request frame for a method/params."""
+    """Build a complete V2 request frame for a method/params.
+
+    :param request_id: Sequence number for the request (truncated to 16 bits).
+    :param method: V1 method name to encode.
+    :param params: Optional dict of method parameters.
+    :return: Complete framed request as bytes (preamble, header, payload, CRC,
+             end marker).
+    :raises ValueError: When the encoded payload exceeds ``MAX_PAYLOAD_LEN``.
+    """
     seq = int(request_id) & 0xFFFF
     cmd, payload = method_to_v2(method, params)
     if len(payload) > MAX_PAYLOAD_LEN:
@@ -278,6 +360,16 @@ def encode_request(request_id, method, params):
 
 
 def _decode_status(fields):
+    """
+    Convert a decoded GET_STATUS message into a V1-shaped status dict.
+
+    Builds a list of four slot entries (padding missing slots as empty), decodes
+    the dryer sub-message, and derives an overall busy/ready status.
+
+    :param fields: Decoded protobuf fields from :func:`pb_decode`.
+    :return: V1-shaped status dict with ``slots``, ``dryer_status``, ``temp``,
+             ``humidity`` and related keys.
+    """
     slots = []
     for wtype, slot_payload in fields.get(9, []):
         if wtype != 2:
@@ -335,7 +427,14 @@ def _decode_status(fields):
 
 
 def v2_response_to_v1(cmd, seq, payload, logger=None):
-    """Decode a V2 response payload into a V1-shaped {id, code, msg, result}."""
+    """Decode a V2 response payload into a V1-shaped {id, code, msg, result}.
+
+    :param cmd: V2 command opcode the response corresponds to.
+    :param seq: Sequence number echoed from the request.
+    :param payload: Raw protobuf payload bytes from the response frame.
+    :param logger: Optional logger for decode failures; module logger if None.
+    :return: V1-shaped dict with ``id``, ``code``, ``msg`` and ``result`` keys.
+    """
     ret = {'id': seq, 'code': 0, 'msg': 'success', 'result': {}}
     if not payload:
         return ret
@@ -385,7 +484,15 @@ def v2_response_to_v1(cmd, seq, payload, logger=None):
 
 def decode_frames(buffer, logger=None):
     """Consume complete V2 frames from a bytearray, returning V1-shaped
-    response dicts (request frames are skipped). Mutates buffer in place."""
+    response dicts (request frames are skipped). Mutates buffer in place.
+
+    Resyncs on the preamble, validates payload length, end marker and CRC,
+    dropping malformed or partial frames as needed.
+
+    :param buffer: Mutable ``bytearray`` of received bytes; consumed in place.
+    :param logger: Optional logger for diagnostics; module logger if None.
+    :return: List of V1-shaped response dicts decoded from complete frames.
+    """
     log = logger or _logger
     results = []
     while len(buffer) >= MIN_FRAME_LEN:
@@ -439,7 +546,8 @@ class ACE2Connection(ACEConnection):
     def _pre_info_handshake(self):
         """ACE Pro 2 must be discovered before it answers other commands. The V2
         initial handshake sends discover_device first (then get_info); without it
-        the unit ignores get_status/get_info and never replies."""
+        the unit ignores get_status/get_info and never replies.
+        """
         try:
             self.send_command("discover_device", timeout=3.0)
         except Exception as e:
@@ -447,6 +555,17 @@ class ACE2Connection(ACEConnection):
                 f"ACE2 discover_device failed (non-fatal): {e}")
 
     def send_command(self, method, params=None, timeout=REQUEST_TIMEOUT):
+        """
+        Encode and send a V2 request, then block for its matching response.
+
+        :param method: V1 method name to send.
+        :param params: Optional dict of method parameters.
+        :param timeout: Maximum time in seconds to wait for the response.
+        :return: The ``result`` portion of the decoded response.
+        :raises ACESerialError: When not connected, encoding/writing fails, or
+                                the device reports a non-zero error code.
+        :raises ACETimeoutError: When no response arrives before the deadline.
+        """
         if not self._connected or self._serial is None:
             raise ACESerialError("ACE2 not connected")
         request_id = self._next_request_id
@@ -485,6 +604,15 @@ class ACE2Connection(ACEConnection):
         return result
 
     def send_command_async(self, method, params=None):
+        """
+        Send a V2 request without waiting for a response (fire-and-forget).
+
+        Encode/write failures are logged and swallowed so the caller never
+        blocks; the request id is tracked so its reply can be discarded.
+
+        :param method: V1 method name to send.
+        :param params: Optional dict of method parameters.
+        """
         if not self._connected or self._serial is None:
             return
         request_id = self._next_request_id
@@ -516,10 +644,12 @@ class ACE2Connection(ACEConnection):
     # exist). Best-effort enable/disable all slots; fire-and-forget so connect
     # never blocks on it. REVIEW(hw): the Pro 2 may auto-identify and not need this.
     def enable_rfid(self):
+        """Best-effort enable per-slot RFID identification on every slot."""
         for slot in range(self.slot_count):
             self.send_command_async("set_rfid_enable", {"index": slot, "enable": True})
 
     def disable_rfid(self):
+        """Best-effort disable per-slot RFID identification on every slot."""
         for slot in range(self.slot_count):
             self.send_command_async("set_rfid_enable", {"index": slot, "enable": False})
 
@@ -537,6 +667,12 @@ class afcACE2(afcACE):
     _preloads_to_hub_on_insert = False
 
     def __init__(self, config):
+        """
+        Initialize the ACE Pro 2 unit on top of the V1 ACE unit.
+
+        :param config: ConfigWrapper for this unit; ``type`` defaults to ``ACE2``
+                       and the dryer set-point ceiling defaults to 70C.
+        """
         super().__init__(config)
         self.type = config.get('type', 'ACE2')
         # ACE Pro 2 V2 serial runs at 230400 baud (the V1 ACE default is
@@ -562,7 +698,8 @@ class afcACE2(afcACE):
 
     def _apply_feed_check(self):
         """Push the encoder feed-check window to the ACE (V2 only). The unit
-        forgets it across a reset, so this is sent on connect and reconnect."""
+        forgets it across a reset, so this is sent on connect and reconnect.
+        """
         if self._ace is None:
             return
         try:
@@ -579,9 +716,24 @@ class afcACE2(afcACE):
                 % (self.name, e))
 
     def _make_connection(self, reactor, serial_port, logger, baud_rate):
+        """
+        Create the V2 transport used in place of the V1 ACE connection.
+
+        :param reactor: Klipper reactor for scheduling I/O.
+        :param serial_port: Serial device path for the ACE Pro 2.
+        :param logger: Logger passed to the connection.
+        :param baud_rate: Serial baud rate.
+        :return: A configured :class:`ACE2Connection` instance.
+        """
         return ACE2Connection(reactor=reactor, serial_port=serial_port,
                               logger=logger, baud_rate=baud_rate)
 
 
 def load_config_prefix(config):
+    """
+    Klipper entry point that instantiates the ACE Pro 2 unit.
+
+    :param config: ConfigWrapper for the unit section.
+    :return: A new :class:`afcACE2` instance.
+    """
     return afcACE2(config)

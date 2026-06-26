@@ -103,15 +103,15 @@
       "filament": {
         "external_spool": {
           "assigned": true,
-          "bed_temp": 60,
-          "brand": "Sunlu",
-          "color_rgb": 3309929,
-          "material": "PLA",
+          "bed_temp": 90,
+          "brand": "Bambu Lab",
+          "color_rgb": 44610,
+          "material": "ABS",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 664.3812866210938,
-          "spool_name": "Sunlu PLA - Grass Green",
-          "spoolman_id": 35,
+          "remaining_weight_g": 527.453125,
+          "spool_name": "Bambu Lab ABS - Bambu Green",
+          "spoolman_id": 15,
           "total_weight_g": 1000.0
         }
       },
@@ -186,7 +186,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-26T02:08:30Z"
+          "timestamp": "2026-06-26T02:28:42Z"
         },
         "optional": []
       },
