@@ -1643,35 +1643,24 @@ class afcACE(afcUnit):
         """Full toolhead load for a stepperless ACE lane.
 
         AFC.load_sequence calls this via the unit_load_lane hook (upstream), so
-        ACE load lives in the unit driver, symmetric with unit_unload_lane. Runs
-        the ACE serial transport (via the internal _ACE_CUSTOM_LOAD command,
-        which raises on transport failure), then verifies the pre-extruder
-        toolhead sensor and finalizes — the load_sequence elif branch does no
-        check of its own, so a sensor miss is surfaced here (pause + raise).
+        ACE load lives in the unit driver, symmetric with unit_unload_lane. The
+        internal _ACE_CUSTOM_LOAD command runs the serial transport AND verifies
+        the toolhead sensor (_ace_load_inner pulses until
+        _toolhead_sensor_triggered — which is U1-aware — then fails via
+        handle_lane_failure), so it already raises on a failed load. No separate
+        sensor check is done here: it would duplicate AFC.py's wording (drift
+        risk) and, being non-U1-aware, could false-fail a good U1 load.
 
         :param cur_lane: Lane to load.
         :param cur_extruder: Extruder the lane loads into.
-        :return bool: True once the toolhead sensor is triggered.
+        :return bool: True on a verified load (the command raises on failure).
         """
         afc = self.afc
-        # Serial transport to the toolhead area (raises on transport failure).
         self.gcode.run_script_from_command(
             f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={cur_lane.name}")
-        if cur_lane.get_toolhead_pre_sensor_state():
-            cur_lane.status = AFCLaneState.TOOL_LOADED
-            afc.save_vars()
-            return True
-        message = ('Load did not trigger pre extruder gear toolhead sensor, '
-                   'CHECK FILAMENT PATH\n||=====||====||==>--||\n'
-                   'TRG   LOAD   HUB   TOOL')
-        message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
-        message += '\nManually move filament until filament is right before toolhead extruder gears,'
-        message += '\nthen load into extruder gears with extrude button in your gui of choice until the color fully changes'
-        if afc.function.in_print():
-            message += '\nOnce filament is fully loaded click resume to continue printing'
-        afc.error.handle_lane_failure(cur_lane, message)
-        raise self.gcode.error(
-            f"{cur_lane.name} load failed: toolhead sensor not triggered")
+        cur_lane.status = AFCLaneState.TOOL_LOADED
+        afc.save_vars()
+        return True
 
     def _cmd_ace_custom_load(self, gcmd):
         """Handle _ACE_CUSTOM_LOAD — filament transport to toolhead area.
