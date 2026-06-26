@@ -396,6 +396,7 @@ class MockAFC:
         self.default_material_type = "PLA"
         self.bypass = MagicMock()
         self.save_vars = MagicMock()
+        self.recover_docked_tool = MagicMock()  # FORK: dock-purge recovery hook
         self.tool_cmds: dict = {}
         self.tool_redirects: dict = {}   # FORK: tool-redirect feature
         self.allow_tool_redirect = False # FORK: tool-redirect feature

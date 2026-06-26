@@ -124,6 +124,15 @@ class afc:
         # tool position when tool change was requested
         self.change_tool_pos = None
         self.in_toolchange = False
+        # FORK: dock-purge toolchanger error recovery state.
+        self._unload_tool_parked = False
+        # True once park_pre_load_cmd has docked the tool for an in-progress
+        # load. Drives recover_docked_tool() so a failed load picks the tool
+        # back up BEFORE pausing instead of pausing while docked.
+        self._tool_docked_pre_load = False
+        # True once the infinite-runout ooze guard has docked the old tool, so
+        # the following load skips its park_pre_load_cmd (avoids double-docking).
+        self._infinite_runout_parked = False
         self.tool_start = None
 
         # Save/resume pos variables
@@ -190,8 +199,24 @@ class afc:
         # CHOICES
         self.park_pre_load:bool     = config.getboolean("park_pre_load", False)
         self.park_pre_load_cmd:str  = config.get("park_pre_load_cmd", None)
+        # FORK: macro to run if a load FAILS after park_pre_load_cmd already ran.
+        # For dock-purge setups park_pre_load_cmd docks the tool before loading,
+        # so a mid-load failure leaves the tool stranded in its dock. Point this
+        # at your pickup macro (e.g. CTC_DOCK_PICKUP) to bring the tool back onto
+        # the shuttle so the machine is recoverable. None = leave as-is.
+        self.park_pre_load_error_cmd = config.get("park_pre_load_error_cmd", None)
         self.park                   = config.getboolean("park", False)              # Set to True to enable parking during unload
         self.park_cmd               = config.get('park_cmd', None)                  # Macro to use when parking. Change macro name if you would like to use your own park macro
+        # FORK: macro to run if an unload FAILS after park_cmd already parked/docked
+        # the tool. Symmetric to park_pre_load_error_cmd on the load side: point it
+        # at your pickup macro so a mid-unload failure doesn't strand the tool in
+        # its dock. Only fires if park_cmd actually ran first.
+        self.park_error_cmd         = config.get("park_error_cmd", None)
+        # FORK: macro to dock/park the old tool off the print while the NEXT
+        # extruder heats during an infinite runout to a different toolhead (ooze
+        # guard). When set, the subsequent load skips its park_pre_load_cmd (the
+        # tool is already docked) so it isn't docked twice. None = don't park.
+        self.infinite_runout_park_cmd = config.get("infinite_runout_park_cmd", None)
         self.kick                   = config.getboolean("kick", False)              # Set to True to enable poop kicking after lane loads
         self.kick_cmd               = config.get('kick_cmd', None)                  # Macro to use when kicking. Change macro name if you would like to use your own kick macro
         self.wipe                   = config.getboolean("wipe", False)              # Set to True to enable nozzle wiping after lane loads
@@ -201,6 +226,7 @@ class afc:
 
         self.post_load_macro        = config.get("post_load_macro", None)
         self.post_unload_macro      = config.get("post_unload_macro", None)
+        self.pre_resume_cmd         = config.get("pre_resume_cmd", None)            # FORK: reserved hook (accepted but not yet wired), kept for config compatibility
 
         self.form_tip               = config.getboolean("form_tip", False)          # Set to True to tip forming when unloading lanes
         self.form_tip_cmd           = config.get('form_tip_cmd', None)              # Macro to use when tip forming. Change macro name if you would like to use your own tip forming macro
@@ -1442,6 +1468,11 @@ class afc:
                     # Run the load sequence, which may include custom gcode commands.
                     success = self.load_sequence(cur_lane, cur_hub, cur_extruder)
                     if not success:
+                        # FORK: park_pre_load_cmd may have docked the tool before
+                        # this failed load (dock-purge). Pick it back up so it isn't
+                        # stranded in its dock. No-op if the pause path already
+                        # recovered it; covers non-pausing failures too.
+                        self.recover_docked_tool()
                         return success
 
                     # Activate the tool-loaded LED and handle filament operations if enabled.
@@ -1514,6 +1545,37 @@ class afc:
                     return False
         return True
 
+    def recover_docked_tool(self):
+        """FORK: pick a docked tool back up after a load/unload failure, BEFORE the
+        print is paused. For dock-purge toolchangers the tool sits in its dock when
+        a mid-load (park_pre_load) or mid-unload (park) failure occurs. If PAUSE
+        runs while the tool is still docked, the follow-up park/home moves go out of
+        range and the machine needs a restart. Running the user's pickup macro first
+        leaves the tool back on the shuttle so the pause is recoverable.
+
+        Idempotent: each side's recovery macro runs at most once per cycle (the flag
+        is cleared before the macro runs), so it's safe to call this from both the
+        pause path and the load/unload wrappers.
+        """
+        if self._tool_docked_pre_load and self.park_pre_load_error_cmd is not None:
+            self._tool_docked_pre_load = False
+            self.logger.error(
+                "Load failed with tool docked — running park_pre_load_error_cmd "
+                "to recover the tool before pausing")
+            try:
+                self.gcode.run_script_from_command(self.park_pre_load_error_cmd)
+            except Exception as e:
+                self.logger.error("park_pre_load_error_cmd failed: {}".format(e))
+        if self._unload_tool_parked and self.park_error_cmd is not None:
+            self._unload_tool_parked = False
+            self.logger.error(
+                "Unload failed with tool docked — running park_error_cmd "
+                "to recover the tool before pausing")
+            try:
+                self.gcode.run_script_from_command(self.park_error_cmd)
+            except Exception as e:
+                self.logger.error("park_error_cmd failed: {}".format(e))
+
     def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
         This function controls the loading sequence and allows for custom gcode commands to be executed
@@ -1523,9 +1585,21 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
-        if (self.park_pre_load
-            and self.park_pre_load_cmd):
-            self.gcode.run_script_from_command(self.park_pre_load_cmd)
+        # FORK: clear any stale dock flag before this attempt; set it only once
+        # park_pre_load_cmd actually docks the tool, so recover_docked_tool() can't
+        # try to pick up a tool that's still on the shuttle.
+        self._tool_docked_pre_load = False
+        if self.park_pre_load:
+            if self._infinite_runout_parked:
+                # The infinite-runout ooze guard already docked the old tool;
+                # don't dock again. Still flag it docked so a failed load recovers it.
+                self._infinite_runout_parked = False
+                if self.park_pre_load_error_cmd is not None:
+                    self._tool_docked_pre_load = True
+            elif self.park_pre_load_cmd:
+                self.gcode.run_script_from_command(self.park_pre_load_cmd)
+                if self.park_pre_load_error_cmd is not None:
+                    self._tool_docked_pre_load = True
 
         # Prepare the extruder and heater for unloading.
         if self._check_extruder_temp(cur_lane):
@@ -1722,6 +1796,10 @@ class afc:
         cur_lane.enable_buffer(disable_fault=True)
         self.save_vars()
 
+        # FORK: load succeeded; the normal toolchange flow owns the tool from here,
+        # so don't let a later unrelated pause trigger a spurious dock pickup.
+        self._tool_docked_pre_load = False
+
         return True
 
     cmd_TOOL_UNLOAD_help = "Unload from tool head"
@@ -1860,13 +1938,23 @@ class afc:
             cur_hub = cur_lane.hub_obj
 
             temp_state = self.capture_toolhead_temp()
+            # FORK: reset before the sequence; set True only once park_cmd actually
+            # docks the tool, so recovery can't undock a tool still on the shuttle.
+            self._unload_tool_parked = False
             try:
                 # Run the unload sequence, which may include custom gcode commands.
                 success = self.unload_sequence(cur_lane, cur_hub, cur_extruder)
                 if not success:
+                    # FORK: recover a tool docked by park_cmd before this failed unload
+                    self.recover_docked_tool()
                     return success
             finally:
                 self.restore_toolhead_temp(temp_state)
+
+            # FORK: unload succeeded — a dock unload legitimately leaves the tool
+            # docked, so clear the recovery flag now (else a later unrelated pause
+            # would wrongly pick the tool back up).
+            self._unload_tool_parked = False
 
             unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
             self.afc_stats.average_tool_unload_time.average_time(unload_time)
@@ -1885,6 +1973,7 @@ class afc:
 
             if self.park:
                 self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+                self._unload_tool_parked = True  # FORK: tool now docked; failed unload can recover it
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After park")
                 self.function.log_toolhead_pos()
 
@@ -1892,6 +1981,7 @@ class afc:
         if self.form_tip:
             if self.park:
                 self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+                self._unload_tool_parked = True  # FORK: tool now docked; failed unload can recover it
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After form tip park")
                 self.function.log_toolhead_pos()
 
@@ -2352,7 +2442,22 @@ class afc:
 
                     self.logger.info("Heating and waiting for {} for {}".format(next_extruder_obj.name,
                         "infinite runout" if infinite_runout else "tool change."))
+                    # FORK: prefer the dedicated dock-dropoff macro for infinite
+                    # runout — it docks the old tool off the print and flags it so
+                    # the next load skips its park_pre_load_cmd (no double-dock).
+                    # Falls back to the normal park_cmd when not configured.
                     if (current_lane_name is not None
+                        and infinite_runout
+                        and self.infinite_runout_park_cmd is not None):
+                        self.logger.info(
+                            "Infinite runout: parking tool off the print while "
+                            "the next extruder heats")
+                        try:
+                            self.gcode.run_script_from_command(self.infinite_runout_park_cmd)
+                            self._infinite_runout_parked = True
+                        except Exception as e:
+                            self.logger.error("infinite_runout_park_cmd failed: {}".format(e))
+                    elif (current_lane_name is not None
                         and infinite_runout
                         and self.park
                         and self.park_cmd is not None):

@@ -129,6 +129,8 @@ def _make_afc():
     obj._get_quiet_mode = MagicMock(return_value=False)
     obj.park = False
     obj.park_cmd = None
+    obj.infinite_runout_park_cmd = None  # FORK: dock-dropoff macro (off by default in tests)
+    obj.recover_docked_tool = MagicMock() # FORK: dock-purge recovery hook
     obj.wipe = False
     obj.wipe_cmd = None
     return obj
