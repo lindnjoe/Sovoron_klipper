@@ -1500,9 +1500,13 @@ class AFCLane:
 
         self.unit_obj.lane_tool_loaded(self)
 
-    def set_tool_unloaded(self):
+    def set_tool_unloaded(self, normal_toolchange: bool=False):
         """
         Helper function for setting multiple variables when lane is unloaded from toolhead
+
+        :param normal_toolchange: accepted for cross-driver API compatibility with
+          the openams branch's signature; this core always performs the full
+          toolchange finalization regardless, so the flag is not consulted.
         """
         self.tool_loaded = False
         self.extruder_obj.lane_loaded = None

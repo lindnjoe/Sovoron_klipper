@@ -1989,6 +1989,41 @@ class afc:
         self.current_state = State.IDLE
         return True
 
+    def do_tool_cut_tip_form(self, cur_lane, cur_extruder):
+        """Run the toolhead cut and tip-forming steps (a no-op when tool_cut and
+        form_tip are both disabled). Factored out of the normal unload branch so
+        serial units' unit_unload_lane can run the same toolhead phase."""
+        # Perform filament cutting and parking if specified.
+        if self.tool_cut:
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.tool_cut_cmd, cur_extruder.name))
+            self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
+            self.function.log_toolhead_pos()
+
+            if self.park:
+                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+                self._unload_tool_parked = True
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After park")
+                self.function.log_toolhead_pos()
+
+        # Form filament tip if necessary.
+        if self.form_tip:
+            if self.park:
+                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+                self._unload_tool_parked = True
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After form tip park")
+                self.function.log_toolhead_pos()
+
+            if self.form_tip_cmd == "AFC":
+                self.tip = self.printer.lookup_object('AFC_form_tip')
+                self.tip.tip_form()
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After afc form tip")
+                self.function.log_toolhead_pos()
+            else:
+                self.gcode.run_script_from_command(self.form_tip_cmd)
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After custom form tip")
+                self.function.log_toolhead_pos()
+
     def unload_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
         This function controls the unloading sequence. The toolhead operations
@@ -2070,6 +2105,8 @@ class afc:
             cur_lane.set_tool_unloaded()
             cur_lane.unit_obj.lane_tool_unloaded(cur_lane)
             cur_lane.status = AFCLaneState.NONE
+        elif hasattr(cur_lane.unit_obj, "unit_unload_lane"):
+            cur_lane.unit_obj.unit_unload_lane(cur_lane, cur_extruder)
         else:
             # Attempt to unload the filament from the extruder, retrying if needed.
             num_tries = 0
