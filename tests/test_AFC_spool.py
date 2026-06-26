@@ -581,12 +581,13 @@ class TestHandleConnect:
 
 
 class TestRegisterLaneMacros:
-    def test_registers_seven_mux_commands(self):
+    def test_registers_eight_mux_commands(self):
+        # FORK: SET_REDIRECT adds an eighth per-lane mux command
         spool = _make_spool()
         spool.gcode.register_mux_command = MagicMock()
         lane = _make_lane("lane1")
         spool.register_lane_macros(lane)
-        assert spool.gcode.register_mux_command.call_count == 7
+        assert spool.gcode.register_mux_command.call_count == 8
 
     def test_all_commands_use_correct_lane_name(self):
         spool = _make_spool()

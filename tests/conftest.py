@@ -397,6 +397,9 @@ class MockAFC:
         self.bypass = MagicMock()
         self.save_vars = MagicMock()
         self.tool_cmds: dict = {}
+        self.tool_redirects: dict = {}   # FORK: tool-redirect feature
+        self.allow_tool_redirect = False # FORK: tool-redirect feature
+        self.print_used_tools = None     # FORK: used-tool M10x gating
         self.VarFile = "/tmp/afc_test_vars"
         # LED colour defaults
         self.led_fault = "1,0,0,0"

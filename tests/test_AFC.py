@@ -117,6 +117,9 @@ def _make_afc():
     obj.hubs = {}
     obj.buffers = {}
     obj.tool_cmds = {}
+    obj.tool_redirects = {}        # FORK: tool-redirect feature
+    obj.allow_tool_redirect = False # FORK: tool-redirect feature
+    obj.print_used_tools = None     # FORK: used-tool M10x gating
     obj.led_state = True
     obj.current_toolchange = 0
     obj.number_of_toolchanges = 0
