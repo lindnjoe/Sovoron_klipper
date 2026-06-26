@@ -1676,32 +1676,24 @@ class afcACE(afcUnit):
             raise gcmd.error(f"ACE load failed for {lane_name}")
 
     def unit_unload_lane(self, cur_lane, cur_extruder) -> bool:
-        """Full toolhead unload for a stepperless ACE lane.
-
-        AFC.unload_sequence calls this via the unit_unload_lane hook (upstream),
-        so the shared toolhead phase lives here in the unit driver instead of as
-        a fork in the frozen AFC.py custom-unload branch. Runs quick-pull,
-        buffer/sync/select and cut/tip-form, then the ACE serial unwind (via the
-        internal _ACE_CUSTOM_UNLOAD command, which raises on failure), the
-        post-unload macro, and finalizes the lane state.
+        """Full toolhead unload for a stepperless ACE lane (AFC.unload_sequence's
+        unit_unload_lane hook). Runs the shared toolhead phase (quick-pull,
+        buffer/sync/select, cut/tip-form), the ACE serial unwind via the internal
+        _ACE_CUSTOM_UNLOAD command (which raises on failure), the post-unload
+        macro, then finalizes the lane state.
 
         :param cur_lane: Lane to unload.
         :param cur_extruder: Extruder the lane is synced to on entry.
-        :return bool: True on success (the serial unwind raises on failure).
+        :return bool: True on success.
         """
         afc = self.afc
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
-        # Shared toolhead phase. do_tool_cut_tip_form self-gates on
-        # tool_cut/form_tip, so it's a no-op when both are disabled.
         afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull",
                        wait_tool=False)
         cur_lane.disable_buffer()
         cur_lane.sync_to_extruder()
         cur_lane.select_lane()
         afc.do_tool_cut_tip_form(cur_lane, cur_extruder)
-        # ACE serial unwind. The internal command raises gcmd.error on failure,
-        # aborting the unload — the unit_unload_lane caller does no error
-        # checking of its own.
         self.gcode.run_script_from_command(
             f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={cur_lane.name}")
         if afc.post_unload_macro is not None:
