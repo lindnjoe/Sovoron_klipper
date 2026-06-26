@@ -1415,7 +1415,9 @@ class AFCFPSBuffer(AFCBuffer):
         """
         response = {}
 
-        response = super.get_status(eventtime)
+        # FORK: upstream has `super.get_status` (missing parens) — super is the
+        # type, not the bound proxy, so it has no get_status. Report upstream.
+        response = super().get_status(eventtime)
 
         response['fps_value'] = round(self.fps_value, 3)
         response['smoothed_fps'] = round(self.smoothed_fps, 3)
