@@ -146,6 +146,11 @@ class afcError:
         the base pause command
         """
         self.set_error_state( True )
+        # FORK: if a tool is sitting in its dock from a failed load/unload
+        # (dock-purge setups), pick it back up BEFORE pausing. Pausing while
+        # docked sends the follow-up park/home moves out of range and forces a
+        # restart.
+        self.afc.recover_docked_tool()
         self.logger.info ('PAUSING')
         self.afc.gcode.run_script_from_command('PAUSE')
         self.logger.debug("After User Pause")
