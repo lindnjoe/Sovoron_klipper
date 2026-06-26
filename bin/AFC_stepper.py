@@ -109,6 +109,12 @@ class AFCExtruderStepper(AFCLane):
         self._extra_homing_pins = set(config.getlist('homing_endstop_pins', default="", sep=',')) # Additional homing endstops to add to stepper, comma-seperated list
         # Pre-create MCU endstops now so MCU config callbacks run before ready
         self._endstops: Dict[str, tuple[MCU_endstop,str]] = {}
+        # FORK: FPS software-endstop support (ported from pp custom core). When a
+        # stepper lane uses an FPS buffer (pin_tool_start: buffer with no hardware
+        # advance_pin) register the buffer's software endstop instead of raising.
+        self._pending_fps_buffer = None
+        self.printer.register_event_handler("klippy:connect",
+                                            self._handle_connect_endstops)
         self._init_endstops()
 
         # Register AFC_HOME mux command for this lane name
@@ -533,19 +539,81 @@ class AFCExtruderStepper(AFCLane):
         if (hub_pin
             and hub_pin.lower() != "virtual"):
             self._add_endstop('hub', hub_pin, 'hub')
-        if tool_start_pin != 'buffer':
+        if tool_start_pin == 'buffer':
+            self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
+        elif tool_start_pin:
             self._add_endstop('tool_start', tool_start_pin, 'tool_start')
-        else:
-            if buffer_adv_pin is not None:
-                self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
-            else:
-                error_string = f"Error: buffer set as pin_tool_start in [AFC_extruder {afc_extruder_name}] config section,"
-                error_string += f" but [AFC_buffer {buffer_name}] is not found in config. Please make sure config "
-                error_string += f"section exists or remove `buffer: {buffer_name}` variable from your extruder config section."
-                raise error(error_string)
         self._add_endstop('tool_end', tool_end_pin, 'tool_end')
         self._add_endstop('buffer_advance', buffer_adv_pin, 'buffer_adv')
         self._add_endstop('buffer_trailing', buffer_trail_pin, 'buffer_trailing')
+
+        # FORK: an FPS buffer (type: FPS_PFS) has no hardware advance_pin. When a
+        # stepper lane points pin_tool_start at it, register the buffer's software
+        # endstop instead of raising "buffer not found".
+        if buffer_adv_pin is None and buffer_name:
+            self._pending_fps_buffer = buffer_name
+            self._add_fps_endstop(buffer_name)
+        else:
+            self._pending_fps_buffer = None
+
+    def _add_fps_endstop(self, buffer_name):
+        """FORK: register FPS buffer software endstops when no hardware advance pin
+        exists (type: FPS_PFS buffer used as pin_tool_start)."""
+        try:
+            buffer_obj = self.printer.lookup_object(f'AFC_buffer {buffer_name}')
+        except Exception:
+            buffer_obj = None
+        if buffer_obj is None:
+            try:
+                buffer_obj = self.printer.lookup_object(f'AFC_FPS {buffer_name}')
+            except Exception:
+                pass
+        if buffer_obj is None or not hasattr(buffer_obj, 'fps_endstop'):
+            return
+
+        endstop = buffer_obj.fps_endstop
+        name = 'buffer_adv'
+        try:
+            endstop.add_stepper(self.extruder_stepper.stepper)
+        except Exception:
+            self.logger.info(f"Error adding stepper to FPS endstop for {self.name}")
+            return
+        try:
+            self._qes.register_endstop(endstop, name)
+        except Exception:
+            pass
+        self.logger.debug(f"{self.name} adding FPS software endstop buffer_advance:{buffer_name}")
+        self._endstops['buffer_advance'] = (endstop, name)
+
+        if hasattr(buffer_obj, 'fps_trailing_endstop'):
+            trail_endstop = buffer_obj.fps_trailing_endstop
+            trail_name = 'buffer_trailing'
+            try:
+                trail_endstop.add_stepper(self.extruder_stepper.stepper)
+            except Exception:
+                self.logger.info(f"Error adding stepper to FPS trailing endstop for {self.name}")
+                return
+            try:
+                self._qes.register_endstop(trail_endstop, trail_name)
+            except Exception:
+                pass
+            self.logger.debug(f"{self.name} adding FPS software endstop buffer_trailing:{buffer_name}")
+            self._endstops['buffer_trailing'] = (trail_endstop, trail_name)
+
+    def _handle_connect_endstops(self):
+        """FORK: retry FPS endstop registration at connect time.
+
+        FPS buffer objects may not exist at config time if their config
+        section is loaded after the lane. Software endstops don't need
+        MCU setup, so registering at connect time is safe.
+        """
+        if (self._pending_fps_buffer
+                and 'buffer_advance' not in self._endstops):
+            self._add_fps_endstop(self._pending_fps_buffer)
+            if 'buffer_advance' not in self._endstops:
+                self.logger.warning(
+                    f"{self.name}: FPS buffer '{self._pending_fps_buffer}' "
+                    f"endstop not registered — buffer homing will fail")
 
     def _inherit_from_unit(self, target_key: str) -> Optional[str]:
         """
