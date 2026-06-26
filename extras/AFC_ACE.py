@@ -867,13 +867,39 @@ class afcACE(afcUnit):
         """Resolve whether feed assist should run for a lane.
 
         :param cur_lane: Lane to check.
-        :return bool: The lane's per-lane use_feed_assist when set, else the
-            unit default.
+        :return bool: The lane's per-lane use_feed_assist when set, else the unit
+            default — AND only for the single active tool. The ACE/ACE2 can
+            feed-assist just one lane at a time, so assisting idle loaded lanes
+            only churns against that limit (the unit rejects the extras with
+            error_2).
         """
         fa = getattr(cur_lane, 'use_feed_assist', None)
-        if fa is not None:
-            return fa
-        return self._default_feed_assist
+        if fa is None:
+            fa = self._default_feed_assist
+        if not fa:
+            return False
+        return self._lane_is_active_tool(cur_lane)
+
+    def _lane_is_active_tool(self, cur_lane) -> bool:
+        """True only for the lane that is the current active tool.
+
+        The ACE/ACE2 can only feed-assist one lane at a time, so feed assist
+        should follow whichever tool is actually engaged:
+
+        * Toolchanger units — the tool currently on the shuttle. on_shuttle()
+          returns False for docked-but-loaded tools (so prep stops trying to
+          assist all of them) and True only for the active one. It also returns
+          True for single-toolhead setups, which fall through to the combined-
+          mode check below.
+        * Combined-mode units (non-toolchanger, shared toolhead) — the lane
+          currently loaded into the toolhead, tracked by afc.current.
+        """
+        ext = getattr(cur_lane, 'extruder_obj', None)
+        if ext is not None and getattr(ext, 'tc_unit_name', None) is not None:
+            on_shuttle = getattr(ext, 'on_shuttle', None)
+            return bool(on_shuttle()) if callable(on_shuttle) else True
+        cur = getattr(self.afc, 'current', None)
+        return cur is None or cur == cur_lane.name
 
     def _get_slot(self, lane_name: str) -> int:
         """Map a lane name to its 0-based ACE slot index.
