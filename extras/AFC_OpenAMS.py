@@ -146,8 +146,8 @@ class LaneInfo:
         self.fps_name = fps_name
         self.hub_name = hub_name
         self.led_index = led_index
-        self.custom_load_cmd = custom_load_cmd
-        self.custom_unload_cmd = custom_unload_cmd
+        # self.custom_load_cmd = custom_load_cmd
+        # self.custom_unload_cmd = custom_unload_cmd
 
 
 class LaneRegistry:
