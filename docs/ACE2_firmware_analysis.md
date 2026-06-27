@@ -827,3 +827,50 @@ reasons, not vague caution:
 The durable result here is the reader identification (MFRC522 → UID is reachable in firmware) and
 the precise patch site. The flashing step should wait on the bootloader dump, which converts the
 brick risk from "unknown" to "known and recoverable."
+
+---
+
+## SWD wiring & dump procedure (for the hardware teardown)
+
+The ACE2 board exposes a 7-pad debug header next to the MCU, labelled
+`RST · CLK · SWDIO · GND · 3V3 · TX · RX`. This is a combined SWD + UART console header.
+For an SWD flash dump with an ST-Link, use five of the seven pads:
+
+| Board pad | ST-Link pin | Required? |
+|-----------|-------------|-----------|
+| `SWDIO`   | SWDIO       | Yes |
+| `CLK`     | SWCLK       | Yes (this pad is SWCLK) |
+| `GND`     | GND         | Yes |
+| `RST`     | NRST/RESET  | Recommended — enables "connect under reset" if the app remaps the SWD pins |
+| `3V3`     | VTREF/VAPP (target-voltage sense) | Yes — connect to the ST-Link's voltage-reference pin, not VOUT |
+| `TX`/`RX` | —           | No — UART console only, unused for SWD (try 115200 for boot logs later) |
+
+**Power rule:** power the ACE2 from its own supply and wire ST-Link `3V3 → VTREF` for level sensing.
+Do **not** drive 3V3 into a board that is already self-powered — pick one source. If the board is
+unpowered the ST-Link can supply 3V3, but a board this size may exceed what the ST-Link likes to
+source, so external power + VTREF-sense is cleaner.
+
+**Connect under reset:** select this mode in the tool. If the option bytes or the application remap
+`SWDIO`/`SWCLK`, a normal attach fails but connect-under-reset still gets in — this is why wiring
+`RST` matters.
+
+### ⚠️ Check readout protection (RDP) FIRST — before any read or write
+
+STM32 parts have an RDP level. If RDP is level 1 or 2 the debugger refuses to read flash, and
+**attempting to lower RDP triggers a mass-erase** that wipes the firmware. So the very first
+operation after connecting must be a **read-only RDP-level check**:
+
+- If `RDP-0` (unprotected): clear to dump everything below.
+- If `RDP-1`/`RDP-2`: stop. Do not change it — that erases the chip. Note it and reassess.
+
+### Dump order once RDP-0 is confirmed
+
+1. **Full flash dump first** — this is the guaranteed un-brick restore image. Keep it safe before
+   touching anything.
+2. **Bootloader region `0x08000000`–`0x08008000`** — the go/no-go read: settles whether a modified
+   app is signature-checked (brick) or CRC-only (patchable).
+3. **RAM snapshot immediately after an RFID read** — reveals the UID buffer address that the
+   `FilamentInfoResponse` patch (`sub_0800E7A8`) needs.
+
+Exact tool commands (open-source `st-info`/`st-flash`, STM32CubeProgrammer CLI, or OpenOCD) to be
+filled in once the toolchain is chosen at dump time.
