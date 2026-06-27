@@ -299,6 +299,8 @@ class afcACE(afcUnit):
             ('ACE_CMD', self.cmd_ACE_CMD, "Send a raw ACE protocol command and print the reply"),
             ('ACE_FEED_TEST', self.cmd_ACE_FEED_TEST, "Sweep feed speed to test whether it changes feed rate"),
             ('ACE_STUCK_SPOOL_DETECTION', self.cmd_ACE_STUCK_SPOOL_DETECTION, "Enable/disable ACE stuck spool detection"),
+            ('ACE_FEED_INFO', self.cmd_ACE_FEED_INFO, "Per-slot feed diagnostics (steps/length/encoder) for feed-check tuning"),
+            ('ACE_RFID_DUMP', self.cmd_ACE_RFID_DUMP, "Dump full raw RFID/filament-info read for a slot"),
         ):
             self.gcode.register_mux_command(cmd, "UNIT", self.name, handler, desc=desc)
 
@@ -1941,6 +1943,71 @@ class afcACE(afcUnit):
             gcmd.respond_info(f"ACE Status: {status}")
         except Exception as e:
             gcmd.respond_info(f"Error querying ACE: {e}")
+
+    def cmd_ACE_FEED_INFO(self, gcmd):
+        """Query per-slot feed diagnostics (steps / commanded length / encoder
+        reading) for tuning feed_check_length / feed_error_length. The ACE2
+        encoder is expected to read ~1.2342x the commanded length; an encoder
+        reading well below that ratio indicates slip (lower feed_check_length to
+        widen tolerance). ACE2 only.
+
+        :param gcmd: Gcode command.
+        """
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        try:
+            result = self._ace.send_command('get_feed_info')
+        except Exception as e:
+            gcmd.respond_info(f"Error querying ACE feed info: {e}")
+            return
+        feeds = (result or {}).get('feed_info') or []
+        if not feeds:
+            gcmd.respond_info(
+                "ACE feed info: no data (unsupported on this firmware, or "
+                "nothing fed yet). raw_fields=%s"
+                % ((result or {}).get('raw_fields')))
+            return
+        lines = ["ACE feed info (slot: steps / length_mm / encoder_mm / ratio):"]
+        for i, fi in enumerate(feeds):
+            length = fi.get('length', 0)
+            decoder = fi.get('decoder', 0)
+            ratio = (decoder / length) if length else 0.0
+            lines.append("  slot %d: %d / %d / %d / %.3f"
+                         % (i, fi.get('steps', 0), length, decoder, ratio))
+        gcmd.respond_info("\n".join(lines))
+
+    def cmd_ACE_RFID_DUMP(self, gcmd):
+        """Dump the full raw RFID/filament-info read for a slot — every protobuf
+        field, not just the sku/type/color we normally use. Lets you see exactly
+        what the unit returns. The ACE 2 carries more than the ACE Pro: e.g.
+        diameter (field 8, 0.01mm units), remaining length (field 11), and the
+        raw tag strings. SLOT=<0-based> (or LANE=<name>); defaults to slot 0.
+
+        :param gcmd: Gcode command.
+        """
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        slot = gcmd.get_int('SLOT', None)
+        if slot is None:
+            lane_name = gcmd.get('LANE', None)
+            slot = (self._get_slot(lane_name)
+                    if lane_name and lane_name in self.afc.lanes else 0)
+        try:
+            result = self._ace.send_command('get_filament_info', {'index': slot})
+        except Exception as e:
+            gcmd.respond_info(f"Error reading ACE RFID slot {slot}: {e}")
+            return
+        result = result or {}
+        raw = result.get('raw')
+        parsed = {k: v for k, v in result.items() if k != 'raw'}
+        lines = ["ACE RFID slot %d:" % slot, "  parsed: %s" % parsed]
+        if raw is not None:
+            lines.append("  raw protobuf fields (field#: value): %s" % raw)
+        else:
+            lines.append("  (no raw field map — V1 ACE Pro or empty read)")
+        gcmd.respond_info("\n".join(lines))
 
     @staticmethod
     def _parse_ace_params(raw):

@@ -42,6 +42,10 @@ PREAMBLE = b'\xFF\xAA'
 END_MARKER = 0xFE
 FLAG_REQUEST = 0x00
 FLAG_RESPONSE = 0x80
+# ACE2 firmware encoder-per-mm scale: the feed-check expects
+# encoder_reading = commanded_mm * 1.2342 (see docs/ACE2_firmware_analysis.md,
+# "Feed Check"). Used to validate SET_FEED_CHECK params and report slip.
+ACE2_ENCODER_SCALE = 1.2342
 HEADER_LEN = 7
 TRAILER_LEN = 3
 MIN_FRAME_LEN = HEADER_LEN + TRAILER_LEN
@@ -236,6 +240,34 @@ def _fstr(fields, num, default=''):
         except UnicodeDecodeError:
             return val.hex()
     return default
+
+
+def dump_fields(fields):
+    """Render a pb_decode field map into a readable diagnostic mapping, for
+    raw-dump commands. field number -> decoded entry (int, float, printable
+    'string', or 'hex:..' for binary / nested data).
+
+    :param fields: Decoded fields mapping from :func:`pb_decode`.
+    :return: Dict of field number -> value (or list when a field repeats).
+    """
+    out = {}
+    for fnum in sorted(fields):
+        entries = []
+        for wtype, val in fields[fnum]:
+            if wtype == 0:
+                entries.append(val)
+            elif wtype in (1, 5):
+                entries.append(round(float(val), 4))
+            elif isinstance(val, (bytes, bytearray)):
+                try:
+                    s = val.decode('utf-8')
+                    entries.append(repr(s) if s.isprintable() else 'hex:' + val.hex())
+                except Exception:
+                    entries.append('hex:' + val.hex())
+            else:
+                entries.append(val)
+        out[fnum] = entries if len(entries) > 1 else entries[0]
+    return out
 
 
 def method_to_v2(method, params):
@@ -458,6 +490,22 @@ def v2_response_to_v1(cmd, seq, payload, logger=None):
             'ptc1_temp': _fval(fields, 3, 0.0), 'ptc2_temp': _fval(fields, 4, 0.0),
             'env_temp': _fval(fields, 5, 0.0), 'env_humidity': _fval(fields, 6, 0.0),
         }
+    elif cmd == Cmd.GET_FEED_INFO:
+        # Per-slot feed diagnostics: repeated FeedInfo { steps, length, decoder }.
+        # Field numbers follow the documented declaration order; best-effort
+        # decode for tuning/diagnostics only (see docs/ACE2_firmware_analysis.md).
+        feeds = []
+        for wtype, sub_payload in fields.get(1, []):
+            if wtype != 2:
+                continue
+            sub = pb_decode(sub_payload)
+            feeds.append({
+                'steps': _fval(sub, 1, 0),
+                'length': _fval(sub, 2, 0),
+                'decoder': _fval(sub, 3, 0),
+            })
+        ret['result'] = {'feed_info': feeds,
+                         'raw_fields': sorted(fields.keys())}
     elif cmd in (Cmd.GET_FILAMENT_INFO, Cmd.FILAMENT_IDENTIFY):
         ftype = _fstr(fields, 4, '')
         color = [0, 0, 0]
@@ -473,6 +521,13 @@ def v2_response_to_v1(cmd, seq, payload, logger=None):
             'sku': _fstr(fields, 3, ''),
             'type': ftype, 'brand': '', 'color': color,
             'rfid': 2 if ftype else 0,
+            # Richer ACE2 tag fields (confirmed from gklib analysis,
+            # docs/ACE2_firmware_analysis.md): diameter is uint32 in 0.01mm
+            # units; remaining_length is total remaining filament in mm.
+            'diameter': _fval(fields, 8, 0) / 100.0,
+            'remaining_length': _fval(fields, 11, 0),
+            # Full raw field map for diagnostics (see ACE_RFID_DUMP).
+            'raw': dump_fields(fields),
         }
     else:
         code = _fval(fields, 1, 0)
@@ -682,19 +737,39 @@ class afcACE2(afcACE):
         # Pro 2 allows a higher dryer set-point than the Pro V1 (55C default).
         self.max_dryer_temperature = config.getfloat(
             "max_dryer_temperature", 70.0, minval=0.0)
-        # Encoder feed-check tuning (V2 SET_FEED_CHECK). Defaults to the
-        # community-recommended wider window (200/185) which cuts false assist
-        # errors vs the firmware default of 100/90. error_length must be <=
-        # check_length; set both to 254 to effectively disable the check.
+        # Encoder feed-check tuning (V2 SET_FEED_CHECK). Per the ACE2 firmware
+        # (docs/ACE2_firmware_analysis.md, "Feed Check"):
+        #   - feed_error_length: commanded feed distance (mm) at which the check
+        #     is evaluated.
+        #   - feed_check_length: the MINIMUM encoder reading required to pass.
+        #   - the firmware expects encoder = feed_error_length * 1.2342 for a
+        #     clean feed and transitions to FEED_ERROR / ASSIST_ERROR when the
+        #     measured encoder reading < feed_check_length at that checkpoint.
+        # So the slip tolerance is:
+        #     tolerance_mm ~= feed_error_length - feed_check_length / 1.2342
+        # To cut false assist errors, LOWER feed_check_length (this widens the
+        # tolerance without moving the checkpoint). The default 200/185 gives
+        # ~23mm of tolerance vs the firmware default 100/90 (~9mm). To
+        # effectively disable the check, set feed_check_length to its minimum (3)
+        # so essentially any movement passes.
         self.feed_check_length = config.getint(
             "feed_check_length", 200, minval=3, maxval=254)
         self.feed_error_length = config.getint(
             "feed_error_length", 185, minval=3, maxval=254)
-        if self.feed_error_length > self.feed_check_length:
+        # The encoder can only ever reach feed_error_length * 1.2342, so a
+        # feed_check_length at or above that is unreachable and makes EVERY feed
+        # raise FEED_ERROR. Reject that misconfiguration (this is the real
+        # constraint — feed_error_length and feed_check_length are independent
+        # axes, not an ordering).
+        _expected = self.feed_error_length * ACE2_ENCODER_SCALE
+        if self.feed_check_length >= _expected:
             raise config.error(
-                "[%s] feed_error_length (%d) must be <= feed_check_length (%d)"
-                % (config.get_name(), self.feed_error_length,
-                   self.feed_check_length))
+                "[%s] feed_check_length (%d) must be < feed_error_length * %.4f "
+                "= %.0f, otherwise the encoder can never reach it and every feed "
+                "raises FEED_ERROR. Lower feed_check_length to widen tolerance "
+                "(tolerance_mm ~= feed_error_length - feed_check_length / %.4f)."
+                % (config.get_name(), self.feed_check_length, ACE2_ENCODER_SCALE,
+                   _expected, ACE2_ENCODER_SCALE))
 
     def _apply_feed_check(self):
         """Push the encoder feed-check window to the ACE (V2 only). The unit
