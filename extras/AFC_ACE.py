@@ -301,6 +301,7 @@ class afcACE(afcUnit):
             ('ACE_STUCK_SPOOL_DETECTION', self.cmd_ACE_STUCK_SPOOL_DETECTION, "Enable/disable ACE stuck spool detection"),
             ('ACE_FEED_INFO', self.cmd_ACE_FEED_INFO, "Per-slot feed diagnostics (steps/length/encoder) for feed-check tuning"),
             ('ACE_RFID_DUMP', self.cmd_ACE_RFID_DUMP, "Dump full raw RFID/filament-info read for a slot"),
+            ('ACE_FAN', self.cmd_ACE_FAN, "Set ACE unit fan speed (ACE2: 0-100%; V1: ignored by firmware)"),
         ):
             self.gcode.register_mux_command(cmd, "UNIT", self.name, handler, desc=desc)
 
@@ -2341,6 +2342,33 @@ class afcACE(afcUnit):
             gcmd.respond_info("ACE dryer stopped")
         except Exception as e:
             gcmd.respond_info(f"Error stopping dryer: {e}")
+
+    cmd_ACE_FAN_help = "Set the ACE unit fan speed"
+    def cmd_ACE_FAN(self, gcmd):
+        """Set the ACE unit fan speed.
+
+        Usage
+        -----
+        `ACE_FAN UNIT=<unit> SPEED=<0-100>`
+
+        On the ACE2 this drives SET_FAN (cmd 71); the firmware maps 0-100% to 5
+        internal levels. On the V1 ACE the firmware ignores fan speed, so the
+        command is accepted but has no effect. This controls the unit fan, which
+        is separate from the dryer cycle's own on/off fan (set via ACE_DRY FAN=).
+
+        :param gcmd: Gcode command supplying SPEED (0-100).
+        """
+        speed = gcmd.get_int('SPEED', 100, minval=0, maxval=100)
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        try:
+            # 'speed' is the ACE2 encoder key; 'fan_speed' covers the V1 method.
+            self._ace.send_command(
+                "set_fan_speed", params={"speed": speed, "fan_speed": speed})
+            gcmd.respond_info(f"ACE fan set to {speed}%")
+        except Exception as e:
+            gcmd.respond_info(f"Error setting fan: {e}")
 
     def cmd_ACE_LANE_RESET(self, gcmd):
         """Retract lane filament back into ACE unit.
