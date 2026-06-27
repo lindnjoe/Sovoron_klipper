@@ -1584,6 +1584,19 @@ class afcFunction:
         CUR_HUB: afc_hub = cur_lane.hub_obj
         short_move = cur_lane.short_move_dis * 2
 
+        # FORK: stepperless units (ACE/ACE2/OpenAMS) can't be retracted by moving
+        # a lane stepper — the filament lives in the unit and only its serial
+        # protocol can pull it back. The stepper-move loop below would spin
+        # without moving filament and always fail "failed to reset to hub".
+        # Delegate to the unit's own reset command (the get_lane_reset_command
+        # hook those units already provide but core never called) when present.
+        unit_obj = getattr(cur_lane, 'unit_obj', None)
+        if unit_obj is not None and hasattr(unit_obj, 'get_lane_reset_command'):
+            prompt.p_end()
+            self.afc.gcode.run_script_from_command(
+                unit_obj.get_lane_reset_command(cur_lane, long_dis))
+            return
+
         if not CUR_HUB.state:
             prompt.p_end()
             self.afc.error.AFC_error("Hub is already clear while trying to reset '{}'".format(lane), pause=False)
