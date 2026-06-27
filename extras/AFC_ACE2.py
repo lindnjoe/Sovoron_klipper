@@ -516,19 +516,21 @@ def v2_response_to_v1(cmd, seq, payload, logger=None):
             rgba = _fval(csub, 1, 0)
             color = [(rgba >> 24) & 0xFF, (rgba >> 16) & 0xFF, (rgba >> 8) & 0xFF]
             break
-        # Nozzle temperature range lives in tag field 6 as a nested message
-        # {1: min, 2: max} (confirmed 190/230 for PLA on tested firmware — see
-        # docs/ACE2_firmware_analysis.md). Shaped as the {min,max} dict that the
-        # ACE inventory (_apply_slot_info) consumes for extruder_temp_min/max.
-        extruder_temp = {}
-        for wtype, t_payload in fields.get(6, []):
-            if wtype != 2:
-                continue
-            tsub = pb_decode(t_payload)
-            t_min, t_max = _fval(tsub, 1, 0), _fval(tsub, 2, 0)
-            if t_min or t_max:
-                extruder_temp = {'min': t_min, 'max': t_max}
-            break
+        # Temperature ranges live in nested {1: min, 2: max} tag fields:
+        # field 6 = nozzle (confirmed 190/230 for PLA), field 7 = bed (confirmed
+        # 55/65 for PLA). See docs/ACE2_firmware_analysis.md. Shaped as the
+        # {min,max} dicts the ACE inventory (_apply_slot_info) consumes for
+        # extruder_temp_min/max and bed_temp_min/max.
+        def _temp_range(fnum):
+            for _w, _payload in fields.get(fnum, []):
+                if _w != 2:
+                    continue
+                _sub = pb_decode(_payload)
+                _lo, _hi = _fval(_sub, 1, 0), _fval(_sub, 2, 0)
+                return {'min': _lo, 'max': _hi} if (_lo or _hi) else {}
+            return {}
+        extruder_temp = _temp_range(6)
+        bed_temp = _temp_range(7)
         ret['result'] = {
             'index': _fval(fields, 1, 0),
             'sku': _fstr(fields, 3, ''),
@@ -540,6 +542,7 @@ def v2_response_to_v1(cmd, seq, payload, logger=None):
             'diameter': _fval(fields, 8, 0) / 100.0,
             'remaining_length': _fval(fields, 11, 0),
             'extruder_temp': extruder_temp,
+            'hotbed_temp': bed_temp,
             # Full raw field map for diagnostics (see ACE_RFID_DUMP).
             'raw': dump_fields(fields),
         }
