@@ -652,17 +652,23 @@ class afcACE(afcUnit):
         raw_load_state True for a merely-staged lane, the lane's own filament would
         read as "hub not clear" and block its own load.
 
-        - Virtual (pinless) hub: no live sensor, so the live signal is clear at
-          idle (filament is parked before the virtual switch) -> always False.
-        - Real hub switch: its own pin callback drives raw_load_state (clear when
-          filament is parked before it), so we must not override it here.
+        The live signal is True only while filament is threaded THROUGH the hub to
+        the toolhead (lane.tool_loaded). A lane that is merely staged at the hub is
+        parked just before the switch, so the switch reads clear (False) even
+        though loaded_to_hub is latched True.
+
+        - Virtual (pinless) hub: no physical sensor, so synthesize the live signal
+          from tool_loaded (occupied when loaded to toolhead, clear when only
+          staged or empty).
+        - Real hub switch: its own pin callback drives raw_load_state, so we must
+          not override it here.
 
         :param lane: Lane whose hub-presence signal to drive.
         :param state: Unused for the live signal (kept for call-site symmetry);
-            "staged" means parked before the switch, i.e. the switch reads clear.
+            occupancy is derived from tool_loaded, not the staged flag.
         """
         if self._is_virtual_hub(lane):
-            lane._load_state = False
+            lane._load_state = bool(getattr(lane, 'tool_loaded', False))
 
     def _sync_slot_states(self, hw_status):
         """Sync lane prep/load state from ACE hardware slot status.
@@ -695,6 +701,16 @@ class afcACE(afcUnit):
             slot = self._get_slot(lane.name)
             if slot >= len(slots) or not isinstance(slots[slot], dict):
                 continue
+
+            # Live virtual-hub occupancy: the hub switch reads "loaded" only while
+            # filament is threaded THROUGH it to the toolhead. A lane merely staged
+            # at the hub is parked just before the switch (clear). Refresh from
+            # tool_loaded every poll so Mainsail's hub reflects the loaded lane,
+            # while a staged-but-not-loaded lane stays clear (so its own load does
+            # not trip the "hub not clear" gate). Real hub switches drive
+            # raw_load_state via their own pin callback.
+            if self._is_virtual_hub(lane):
+                lane._load_state = bool(getattr(lane, 'tool_loaded', False))
 
             slot_status = slots[slot].get("status", "")
             slot_ready = slot_status == "ready"
