@@ -1241,6 +1241,12 @@ class afcACE(afcUnit):
                     f"(dist_hub={lane.dist_hub:.0f}mm)")
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
                 self._wait_for_feed_complete(slot, dist, self.retract_speed)
+                # The eject pulls the filament back INTO the unit (past the hub),
+                # so it is no longer staged at the hub. Clear loaded_to_hub (and the
+                # hub signal) or the next load takes the short hub->toolhead feed
+                # and lands ~dist_hub short of the toolhead.
+                lane.loaded_to_hub = False
+                self._set_hub_state(lane, False)
             except Exception as e:
                 self.logger.error(f"ACE eject failed for {lane.name}: {e}")
 
@@ -1285,6 +1291,10 @@ class afcACE(afcUnit):
                     f"tool_loaded={getattr(cur_lane, 'tool_loaded', False)})")
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
                 self._wait_for_feed_complete(slot, dist, self.retract_speed)
+                # Pulled back into the unit (past the hub): clear loaded_to_hub so
+                # the next load feeds the full dist_hub + bowden path.
+                cur_lane.loaded_to_hub = False
+                self._set_hub_state(cur_lane, False)
             except Exception as e:
                 self.logger.error(f"ACE lane_unload failed for {cur_lane.name}: {e}")
         return True
@@ -1896,7 +1906,12 @@ class afcACE(afcUnit):
         # ACE serial unwind — retract to hub staging point
         hub = cur_lane.hub_obj
         bowden = getattr(hub, 'afc_unload_bowden_length', getattr(hub, 'afc_bowden_length', 0)) if hub else 0
-        retract_dist = bowden - cur_lane.dist_hub
+        # Retract the hub->toolhead distance to leave the tip staged AT the hub,
+        # symmetric with the reload feed (which feeds afc_bowden_length from the
+        # hub). afc_unload_bowden_length is the hub->toolhead unload distance, the
+        # same basis as afc_bowden_length, so do NOT subtract dist_hub: that
+        # under-retracts and leaves the tip past the hub (reload then overshoots).
+        retract_dist = bowden
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
