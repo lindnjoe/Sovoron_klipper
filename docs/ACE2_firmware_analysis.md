@@ -749,3 +749,81 @@ reads from it. CMD 68 is a test/debug live trigger only.
   via `100 * remainder / totalLength`.
 - Both CMD 13 and CMD 68 share the same req/resp descriptor pair (`0x08019250` / `0x08018FE0`) — the
   decoder is identical regardless of which command is used.
+
+---
+
+## Addendum — RFID reader hardware identification (firmware v1.1.31 teardown)
+
+This section is original analysis from disassembling the v1.1.31 application image
+(`ACE2_V1.1.31_20260306.swu` → unpacked `.bin`, ARM Cortex‑M / STM32F1 family, app base
+`0x08008000`, 71592 bytes). It corrects a few guesses in the gist above and identifies the
+physical RFID front‑end, which is the key fact for "can the ACE2 read more than it reports."
+
+### The reader is an MFRC522‑family chip on hardware SPI
+
+The RFID register access goes through two small leaf functions:
+
+- `sub_0800F574(reg)` — **register read.** Asserts a CS GPIO low (via the port `BSRR`/`BRR`
+  bit‑set/bit‑reset registers), pushes one address byte, reads one data byte, releases CS.
+  The address byte is formed as `0x80 | (reg << 1)`.
+- `sub_0800F5D0(reg, val)` — **register write.** Same CS framing; address byte `(reg << 1) & 0x7E`,
+  then the data byte.
+
+That address encoding — bit7 = read/write direction, register number in bits 6..1, bit0 = 0 — is
+the **exact MFRC522 / RC522 / FM17522 SPI convention** (NXP MFRC522 datasheet §8.1.2.3). These are
+fully capable ISO/IEC 14443A readers. The SPI transfers use the STM32 SPI peripheral directly:
+data register at `SPIx_BASE + 0x0C` (`SPI_DR`), status/busy poll on `SPIx_BASE + 0x08` (`SPI_SR`,
+TXE/RXNE/BSY bits). CS is a plain GPIO, not the SPI hardware NSS.
+
+### Implication: "limited RFID" is a firmware limitation, not hardware
+
+An MFRC522 performs the full ISO14443A anti‑collision sequence (REQA/WUPA → SELECT cascade) and
+therefore **reads the card UID** as a normal part of activation — the firmware cannot talk to a
+MIFARE/NTAG tag *without* first obtaining its UID. The teardown shows the UID is acquired during
+activation but is simply **not copied into the `FilamentInfoResponse`** that the MCU returns to the
+host. There is no missing hardware capability between the current behaviour and exposing the UID (or
+raw sector dumps) — only firmware that chooses not to forward those bytes. This is consistent with
+what we already proved from the host side: `ACE_RFID_DUMP` shows no UID field anywhere in the
+protobuf, even though the chip must have had it.
+
+### Corrections to the gist analysis
+
+- **The "magic constants" `0x45670123` and `0xCDEF89AB` are not RFID values.** They are the STM32
+  **FLASH_KEYR unlock key sequence** (`KEY1`/`KEY2`, RM0008 §3.3.3), used by the OTA/firmware‑write
+  path to unlock the flash controller — unrelated to the tag protocol.
+- **`sub_08010464` is a CRC‑16, not a tag parser.** It is a table/bit CRC‑16 (Kermit/CCITT class)
+  used for the V2 frame checksum and for the OTA image integrity check.
+- **`sub_080177A4` is an RTOS mutex take/give**, part of the FreeRTOS‑style scheduler glue, not
+  RFID logic. It appears in the RFID call path only because the reader is guarded by a lock.
+
+### Firmware‑modification feasibility (honest assessment)
+
+The interesting target is `sub_0800E7A8`, the `GET_FILAMENT_INFO` / cache‑read response builder: to
+expose the UID we would inject the already‑captured UID bytes as a new protobuf field there. That is
+the *right* place, but a blind binary patch is **high risk and low confidence**, for concrete
+reasons, not vague caution:
+
+1. **No symbols, no source.** Every offset is recovered by inference. The UID buffer in SRAM is not
+   positively identified — only the activation path that must produce it.
+2. **No test loop.** There is no way to validate a patched image short of flashing real hardware;
+   the first confirmation is also the moment of brick risk.
+3. **Bootloader signature is unknown.** The application image (`0x08008000`+) does **not** contain
+   the reset/bootloader region (`0x08000000`–`0x08008000`), so whether the bootloader verifies an
+   RSA/ECDSA signature (vs. the CRC‑only check we *can* see in the app) **cannot be determined from
+   this image**. If a signature check exists in the bootloader, any modified image is rejected or
+   bricks on boot.
+4. The CRC over the app image *can* be recomputed (we have `sub_08010464`'s algorithm) and the
+   `.swu` repackaged (ZipCrypto, known key from flash history), so the *packaging* is solvable — it
+   is the *signature* unknown (#3) that gates the whole thing.
+
+**Recommended path for community verification** rather than a one‑shot brick attempt:
+1. Dump the **bootloader** region (`0x08000000`–`0x08008000`) from a live unit over SWD (ST‑Link)
+   and confirm whether it checks a signature. This single read settles feasibility.
+2. If CRC‑only: build the patch against `sub_0800E7A8`, recompute the app CRC, repackage the `.swu`,
+   and keep a full SWD flash dump first so the original can always be restored (un‑bricks #2).
+3. Share the bootloader dump + this analysis so others with the same hardware can reproduce before
+   anyone flashes a modified image.
+
+The durable result here is the reader identification (MFRC522 → UID is reachable in firmware) and
+the precise patch site. The flashing step should wait on the bootloader dump, which converts the
+brick risk from "unknown" to "known and recoverable."
