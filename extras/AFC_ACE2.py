@@ -536,11 +536,16 @@ def v2_response_to_v1(cmd, seq, payload, logger=None):
             'sku': _fstr(fields, 3, ''),
             'type': ftype, 'brand': '', 'color': color,
             'rfid': 2 if ftype else 0,
-            # Richer ACE2 tag fields (confirmed from gklib analysis,
-            # docs/ACE2_firmware_analysis.md): diameter is uint32 in 0.01mm
-            # units; remaining_length is total remaining filament in mm.
+            # Richer ACE2 tag fields. diameter is uint32 in 0.01mm units.
+            # field 11 (gklib calls it "remainder") is a STATIC value on the
+            # read-only tag, so it can't track filament used — surfaced as
+            # total_length (mm), the likely full-spool length. NOT a live
+            # remaining; AFC/Spoolman tracks consumption itself. Unconfirmed —
+            # verify by comparing a full vs used spool of the same SKU (same
+            # value => static total; different => the tag is written with
+            # remaining). See docs/ACE2_firmware_analysis.md.
             'diameter': _fval(fields, 8, 0) / 100.0,
-            'remaining_length': _fval(fields, 11, 0),
+            'total_length': _fval(fields, 11, 0),
             'extruder_temp': extruder_temp,
             'hotbed_temp': bed_temp,
             # Full raw field map for diagnostics (see ACE_RFID_DUMP).
