@@ -39,8 +39,20 @@ except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.form
 # hardware controller lives in its own AFC_OAMS.py because Klipper resolves the
 # [AFC_OAMS ...] config section to that module name.
 
+class OAMSStatus:
+    """Enumeration of firmware action/status codes reported by the OAMS MCU.
 
-# ── Support classes used by external AFC_OAMS.py module ────────────────
+    These values mirror the ``action`` field of ``oams_action_status`` MCU
+    messages and the local ``action_status`` used to track in-flight operations.
+    """
+    LOADING = 0
+    UNLOADING = 1
+    FORWARD_FOLLOWING = 2
+    REVERSE_FOLLOWING = 3
+    COASTING = 4
+    STOPPED = 5
+    CALIBRATING = 6
+    ERROR = 7
 
 class AMSEventBus:
     """Process-wide singleton publish/subscribe bus for OpenAMS events.
@@ -741,57 +753,20 @@ class afcAMS(afcUnit):
         self._spool_map: dict[str, int] = {}
 
         self.gcode = self.printer.lookup_object('gcode')
-        unit_suffix = self.name.upper().replace(" ", "_")
-        self._custom_load_cmd_name = f'_OAMS_CUSTOM_LOAD_{unit_suffix}'
-        self._custom_unload_cmd_name = f'_OAMS_CUSTOM_UNLOAD_{unit_suffix}'
-        self.gcode.register_command(
-            self._custom_load_cmd_name, self._cmd_oams_custom_load,
-            desc=f"OpenAMS internal load command ({self.name})")
-        self.gcode.register_command(
-            self._custom_unload_cmd_name, self._cmd_oams_custom_unload,
-            desc=f"OpenAMS internal unload command ({self.name})")
-        # Suffix-free internal load/unload aliases (first unit wins). Klipper's
-        # gcode parser truncates a name like "_OAMS_CUSTOM_LOAD_OAMS2_1" to
-        # "_OAMS_CUSTOM_LOAD_OAMS2" (it stops at the first number group), so a
-        # unit whose name has a digit before "_<n>" would be unreachable via the
-        # suffixed name. The base command dispatches to the correct unit via the
-        # lane's unit_obj (see _cmd_oams_custom_load), staying multi-unit safe.
-        for _cmd, _handler, _desc in [
-            ('_OAMS_CUSTOM_LOAD', self._cmd_oams_custom_load, "OpenAMS internal load command"),
-            ('_OAMS_CUSTOM_UNLOAD', self._cmd_oams_custom_unload, "OpenAMS internal unload command"),
-        ]:
-            try:
-                self.gcode.register_command(_cmd, _handler, desc=_desc)
-            except Exception:
-                pass
-        self.gcode.register_command(
-            f'AFC_OAMS_CALIBRATE_PTFE_{unit_suffix}', self.cmd_AFC_OAMS_CALIBRATE_PTFE,
-            desc=f"Calibrate OpenAMS PTFE length ({self.name})")
-        self.gcode.register_command(
-            f'AFC_OAMS_CALIBRATE_HUB_HES_{unit_suffix}', self.cmd_AFC_OAMS_CALIBRATE_HUB_HES,
-            desc=f"Calibrate OpenAMS hub HES for a spool ({self.name})")
-        self.gcode.register_command(
-            f'AFC_OAMS_CALIBRATE_HUB_HES_ALL_{unit_suffix}', self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL,
-            desc=f"Calibrate all loaded OpenAMS hub HES sensors ({self.name})")
-        self.gcode.register_command(
-            f'AFC_OAMS_CLEAR_ERRORS_{unit_suffix}', self.cmd_AFC_OAMS_CLEAR_ERRORS,
-            desc=f"Clear OpenAMS errors and resync state ({self.name})")
-        # Suffix-free user-facing commands route by an optional UNIT= argument
-        # (default: the first/only unit) via _run_on_oams_unit, so multi-unit
-        # setups stay addressable by name without the parser-hostile suffixes.
-        for _cmd, _method_name, _desc in [
-            ('AFC_OAMS_CALIBRATE_PTFE', 'cmd_AFC_OAMS_CALIBRATE_PTFE', "Calibrate OpenAMS PTFE length"),
-            ('AFC_OAMS_CALIBRATE_HUB_HES', 'cmd_AFC_OAMS_CALIBRATE_HUB_HES', "Calibrate OpenAMS hub HES for a spool"),
-            ('AFC_OAMS_CALIBRATE_HUB_HES_ALL', 'cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL', "Calibrate all loaded OpenAMS hub HES sensors"),
-            ('AFC_OAMS_CLEAR_ERRORS', 'cmd_AFC_OAMS_CLEAR_ERRORS', "Clear OpenAMS errors and resync state"),
-        ]:
-            try:
-                self.gcode.register_command(
-                    _cmd,
-                    (lambda gcmd, m=_method_name: self._run_on_oams_unit(gcmd, m)),
-                    desc=_desc)
-            except Exception:
-                pass
+        self.gcode.register_mux_command(
+            'AFC_OAMS_CALIBRATE_PTFE', "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE,
+            desc="Calibrate OpenAMS PTFE length")
+        self.gcode.register_mux_command(
+            'AFC_OAMS_CALIBRATE_HUB_HES', "UNIT", self.name,
+            self.cmd_AFC_OAMS_CALIBRATE_HUB_HES,
+            desc="Calibrate OpenAMS hub HES for a spool")
+        self.gcode.register_mux_command(
+            'AFC_OAMS_CALIBRATE_HUB_HES_ALL', "UNIT", self.name,
+            self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL,
+            desc="Calibrate all loaded OpenAMS hub HES sensors")
+        self.gcode.register_mux_command(
+            'AFC_OAMS_CLEAR_ERRORS', "UNIT", self.name, self.cmd_AFC_OAMS_CLEAR_ERRORS,
+            desc="Clear OpenAMS errors and resync state")
 
         # Sensor polling state
         self._last_f1s = [None] * 4
@@ -1425,43 +1400,11 @@ class afcAMS(afcUnit):
         return cur_lane.get_toolhead_pre_sensor_state()
 
     # ── Custom load/unload gcode handlers ───────────────────────────
-
-    def _run_on_oams_unit(self, gcmd, method_name):
-        """Dispatch a base (suffix-free) command to the target OpenAMS unit.
-
-        Resolves the unit from an optional UNIT= argument; falls back to this
-        unit (the first registered, i.e. the only one in single-unit setups)
-        when UNIT is omitted or unmatched. Keeps the suffix-free commands
-        addressable by name without the per-unit suffixes Klipper's gcode parser
-        truncates for names like "oams2_1".
-
-        :param gcmd: the gcode command (read for an optional UNIT= argument).
-        :param method_name: name of the bound command method to invoke.
-        """
-        unit_name = gcmd.get('UNIT', None)
-        target = self
-        if unit_name:
-            cand = getattr(self.afc, 'units', {}).get(unit_name)
-            if cand is not None and hasattr(cand, method_name):
-                target = cand
-        return getattr(target, method_name)(gcmd)
-
     def unit_load_lane(self, cur_lane, cur_extruder) -> bool:
-        """Full toolhead load for a stepperless OpenAMS lane (AFC.load_sequence's
-        unit_load_lane hook). The internal _OAMS_CUSTOM_LOAD command runs the
-        transport and verifies the toolhead sensor itself, raising on failure,
-        so this just runs it and finalizes the lane state.
-
-        :param cur_lane: Lane to load.
-        :param cur_extruder: Extruder the lane loads into.
-        :return bool: True on a verified load.
-        """
-        afc = self.afc
-        self.gcode.run_script_from_command(
-            f"_OAMS_CUSTOM_LOAD UNIT={self.name} LANE={cur_lane.name}")
-        cur_lane.status = AFCLaneState.TOOL_LOADED
-        afc.save_vars()
-        return True
+        # TODO: do the same thing for ACE
+        # TODO: remove setting custom unload per lane, line 154/155
+        # TODO: add error handling
+        return self._oams_load_sequence(cur_lane, cur_extruder)
 
     def _cmd_oams_custom_load(self, gcmd):
         """Handle _OAMS_CUSTOM_LOAD — filament transport to toolhead area.
@@ -1472,46 +1415,32 @@ class afcAMS(afcUnit):
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
             raise gcmd.error(f"Unknown lane: {lane_name}")
-        # The base command is registered "first unit wins", so self may not own
-        # this lane. Dispatch to the lane's own OpenAMS unit so the correct
-        # follower / feed sequence is used.
-        unit = getattr(cur_lane, 'unit_obj', None) or self
         cur_extruder = cur_lane.extruder_obj
-        result = unit._oams_load_sequence(cur_lane, cur_extruder)
+        result = self._oams_load_sequence(cur_lane, cur_extruder)
         if not result:
             raise gcmd.error(f"OAMS load failed for {lane_name}")
 
     def unit_unload_lane(self, cur_lane, cur_extruder) -> bool:
-        """Full toolhead unload for a stepperless OpenAMS lane
-        (AFC.unload_sequence's unit_unload_lane hook). Runs the shared toolhead
-        phase (quick-pull, buffer/sync/select, cut/tip-form), the OpenAMS unwind
-        via the internal _OAMS_CUSTOM_UNLOAD command (which raises on failure),
-        the post-unload macro, then finalizes the lane state.
-
-        :param cur_lane: Lane to unload.
-        :param cur_extruder: Extruder the lane is synced to on entry.
-        :return bool: True on success.
-        """
-        afc = self.afc
+        # TODO: do the same thing for ACE
+        # TODO: remove setting custom unload per lane, line 154/155
+        # TODO: add error handling
+        self.afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull",
+                        wait_tool=False)
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
-        # Shared toolhead phase. do_tool_cut_tip_form self-gates on
-        # tool_cut/form_tip, so it's a no-op when both are disabled.
-        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull",
-                       wait_tool=False)
         cur_lane.disable_buffer()
         cur_lane.sync_to_extruder()
         cur_lane.select_lane()
-        afc.do_tool_cut_tip_form(cur_lane, cur_extruder)
-        # OpenAMS unwind. The internal command raises gcmd.error on failure,
-        # aborting the unload — the unit_unload_lane caller does no error
-        # checking of its own.
-        self.gcode.run_script_from_command(
-            f"_OAMS_CUSTOM_UNLOAD UNIT={self.name} LANE={cur_lane.name}")
-        if afc.post_unload_macro is not None:
-            self.gcode.run_script_from_command(afc.post_unload_macro)
+        self.afc.do_tool_cut_tip_form(cur_lane, cur_extruder)
+        success = self._oams_unload_sequence(cur_lane, cur_extruder)
+        if not success:
+            return success
+
+        if self.afc.post_unload_macro is not None:
+            self.gcode.run_script_from_command(self.afc.post_unload_macro)
+
         cur_lane.set_tool_unloaded(normal_toolchange=True)
         cur_lane.status = AFCLaneState.NONE
-        afc.save_vars()
+        self.afc.save_vars()
         return True
 
     def _cmd_oams_custom_unload(self, gcmd):
@@ -1523,10 +1452,8 @@ class afcAMS(afcUnit):
         cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
             raise gcmd.error(f"Unknown lane: {lane_name}")
-        # Dispatch to the lane's own OpenAMS unit (see _cmd_oams_custom_load).
-        unit = getattr(cur_lane, 'unit_obj', None) or self
         cur_extruder = cur_lane.extruder_obj
-        result = unit._oams_unload_sequence(cur_lane, cur_extruder)
+        result = self._oams_unload_sequence(cur_lane, cur_extruder)
         if not result:
             raise gcmd.error(f"OAMS unload failed for {lane_name}")
 
@@ -1567,6 +1494,8 @@ class afcAMS(afcUnit):
         # Latch loaded_to_hub True; raw_load_state (live hub HES) is updated by
         # the sensor poll as filament passes/clears the hub junction.
         cur_lane.loaded_to_hub = True
+        cur_lane.status = AFCLaneState.TOOL_LOADED
+        self.afc.save_vars()
 
         return True
 
@@ -2666,7 +2595,6 @@ class afcAMS(afcUnit):
 
         self.logger.raw(f"TD-1 calibration: continuous load for {cur_lane.name}")
 
-        from extras.AFC_OAMS import OAMSStatus
         FPS_STOP_THRESHOLD = 0.45
         TD1_POLL_INTERVAL = 2.0
 
@@ -2819,7 +2747,6 @@ class afcAMS(afcUnit):
             return False, "Another OpenAMS hub already loaded"
 
         # Load the spool to move filament to hub
-        from extras.AFC_OAMS import OAMSStatus
         self.oams.action_status = OAMSStatus.LOADING
         try:
             self.oams.oams_load_spool_cmd.send([spool_index])
