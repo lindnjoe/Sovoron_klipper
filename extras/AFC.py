@@ -1449,7 +1449,17 @@ class afc:
             cur_hub = cur_lane.hub_obj
 
             # Check if the lane is in a state ready to load and hub is clear.
-            if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub()):
+            # FORK: `or cur_lane.loaded_to_hub` — a lane pre-staged to its OWN hub
+            # (ACE/ACE2/OpenAMS with load_to_hub) makes the virtual hub read
+            # "occupied" by its own filament, since load_state and hub.state are
+            # both driven by the same _load_state flag. Without this term the gate
+            # is self-contradictory for a staged virtual-hub lane and falsely
+            # reports "Hub not clear" (seen after eject -> reinsert -> reload).
+            # load_sequence already trusts loaded_to_hub (it skips move-to-hub),
+            # so the lane's own staged filament is not an obstruction.
+            if cur_lane.load_state and (not cur_hub.state
+                                        or cur_lane.is_direct_hub()
+                                        or cur_lane.loaded_to_hub):
 
                 self.logger.info("Loading {}".format(cur_lane.name))
 
