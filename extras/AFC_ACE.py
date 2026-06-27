@@ -283,78 +283,24 @@ class afcACE(afcUnit):
         self._hub_load_suppressed: set[str] = set()
 
         self.gcode = self.printer.lookup_object('gcode')
-        unit_suffix = self.name.upper().replace(" ", "_")
-        self._custom_load_cmd_name = f'_ACE_CUSTOM_LOAD_{unit_suffix}'
-        self._custom_unload_cmd_name = f'_ACE_CUSTOM_UNLOAD_{unit_suffix}'
-        self.gcode.register_command(
-            self._custom_load_cmd_name, self._cmd_ace_custom_load,
-            desc=f"ACE internal load command ({self.name})")
-        self.gcode.register_command(
-            self._custom_unload_cmd_name, self._cmd_ace_custom_unload,
-            desc=f"ACE internal unload command ({self.name})")
-        self.gcode.register_command(
-            f'ACE_CALIBRATE_{unit_suffix}', self.cmd_ACE_CALIBRATE,
-            desc=f"Calibrate ACE feed distance to toolhead ({self.name})")
-        self.gcode.register_command(
-            f'ACE_CALIBRATE_HUB_{unit_suffix}', self.cmd_ACE_CALIBRATE_HUB,
-            desc=f"Calibrate ACE feed distance to hub ({self.name})")
-        self.gcode.register_command(
-            f'ACE_STATUS_{unit_suffix}', self.cmd_ACE_STATUS,
-            desc=f"Query ACE hardware status ({self.name})")
-        self.gcode.register_command(
-            f'ACE_DRY_{unit_suffix}', self.cmd_ACE_DRY,
-            desc=f"Start ACE filament dryer ({self.name})")
-        self.gcode.register_command(
-            f'ACE_DRY_STOP_{unit_suffix}', self.cmd_ACE_DRY_STOP,
-            desc=f"Stop ACE filament dryer ({self.name})")
-        self.gcode.register_command(
-            f'ACE_LANE_RESET_{unit_suffix}', self.cmd_ACE_LANE_RESET,
-            desc=f"Retract ACE lane filament back into unit ({self.name})")
-        self.gcode.register_command(
-            f'ACE_CMD_{unit_suffix}', self.cmd_ACE_CMD,
-            desc=f"Send a raw ACE protocol command and print the reply ({self.name})")
-        self.gcode.register_command(
-            f'ACE_FEED_TEST_{unit_suffix}', self.cmd_ACE_FEED_TEST,
-            desc=f"Sweep feed speed to test whether it changes feed rate ({self.name})")
-        self.gcode.register_command(
-            f'ACE_STUCK_SPOOL_DETECTION_{unit_suffix}', self.cmd_ACE_STUCK_SPOOL_DETECTION,
-            desc=f"Enable/disable ACE stuck spool detection ({self.name})")
-        # Register base commands (first unit wins for single-unit setups).
-        # All these names are suffix-free on purpose: Klipper's gcode parser
-        # truncates a name like "_ACE_CUSTOM_LOAD_ACE2_1" to
-        # "_ACE_CUSTOM_LOAD_ACE2" (it stops at the first number group), which
-        # makes any unit whose name has a digit before "_<n>" unreachable.
-        # Internal load/unload route by LANE via the lane's unit_obj
-        # (see _cmd_ace_custom_load).
-        for cmd, handler, desc in [
-            ('_ACE_CUSTOM_LOAD', self._cmd_ace_custom_load, "ACE internal load command"),
-            ('_ACE_CUSTOM_UNLOAD', self._cmd_ace_custom_unload, "ACE internal unload command"),
-        ]:
-            try:
-                self.gcode.register_command(cmd, handler, desc=desc)
-            except Exception:
-                pass
-        # User-facing commands route by an optional UNIT= argument (default: the
-        # first/only unit) via _run_on_ace_unit, so multi-unit setups stay
-        # addressable by name without the parser-hostile suffixes.
-        for cmd, method_name, desc in [
-            ('ACE_CALIBRATE', 'cmd_ACE_CALIBRATE', "Calibrate ACE feed distance to toolhead"),
-            ('ACE_CALIBRATE_HUB', 'cmd_ACE_CALIBRATE_HUB', "Calibrate ACE feed distance to hub"),
-            ('ACE_STATUS', 'cmd_ACE_STATUS', "Query ACE hardware status"),
-            ('ACE_DRY', 'cmd_ACE_DRY', "Start ACE filament dryer"),
-            ('ACE_DRY_STOP', 'cmd_ACE_DRY_STOP', "Stop ACE filament dryer"),
-            ('ACE_LANE_RESET', 'cmd_ACE_LANE_RESET', "Retract ACE lane filament back into unit"),
-            ('ACE_CMD', 'cmd_ACE_CMD', "Send a raw ACE protocol command and print the reply"),
-            ('ACE_FEED_TEST', 'cmd_ACE_FEED_TEST', "Sweep feed speed to test whether it changes feed rate"),
-            ('ACE_STUCK_SPOOL_DETECTION', 'cmd_ACE_STUCK_SPOOL_DETECTION', "Enable/disable ACE stuck spool detection"),
-        ]:
-            try:
-                self.gcode.register_command(
-                    cmd,
-                    (lambda gcmd, m=method_name: self._run_on_ace_unit(gcmd, m)),
-                    desc=desc)
-            except Exception:
-                pass
+        # User-facing commands use Klipper mux commands keyed by UNIT=, matching
+        # how AFC_OpenAMS registers its commands. The command name is fixed and the
+        # unit is selected by the UNIT= argument, so there are no per-unit name
+        # suffixes for Klipper's gcode parser to truncate (e.g. a "_Ace2_1" suffix
+        # would parse as "_Ace2"). Load/unload run as direct method calls (see
+        # unit_load_lane / unit_unload_lane), so no internal gcode command is needed.
+        for cmd, handler, desc in (
+            ('ACE_CALIBRATE', self.cmd_ACE_CALIBRATE, "Calibrate ACE feed distance to toolhead"),
+            ('ACE_CALIBRATE_HUB', self.cmd_ACE_CALIBRATE_HUB, "Calibrate ACE feed distance to hub"),
+            ('ACE_STATUS', self.cmd_ACE_STATUS, "Query ACE hardware status"),
+            ('ACE_DRY', self.cmd_ACE_DRY, "Start ACE filament dryer"),
+            ('ACE_DRY_STOP', self.cmd_ACE_DRY_STOP, "Stop ACE filament dryer"),
+            ('ACE_LANE_RESET', self.cmd_ACE_LANE_RESET, "Retract ACE lane filament back into unit"),
+            ('ACE_CMD', self.cmd_ACE_CMD, "Send a raw ACE protocol command and print the reply"),
+            ('ACE_FEED_TEST', self.cmd_ACE_FEED_TEST, "Sweep feed speed to test whether it changes feed rate"),
+            ('ACE_STUCK_SPOOL_DETECTION', self.cmd_ACE_STUCK_SPOOL_DETECTION, "Enable/disable ACE stuck spool detection"),
+        ):
+            self.gcode.register_mux_command(cmd, "UNIT", self.name, handler, desc=desc)
 
         # Register temperature_ace sensor factory for [temperature_sensor]
         # sections that use sensor_type: temperature_ace.  This is a
@@ -1641,50 +1587,31 @@ class afcACE(afcUnit):
 
     def unit_load_lane(self, cur_lane, cur_extruder) -> bool:
         """Full toolhead load for a stepperless ACE lane (AFC.load_sequence's
-        unit_load_lane hook). The internal _ACE_CUSTOM_LOAD command runs the
-        serial transport and verifies the toolhead sensor itself, raising on
-        failure, so this just runs it and finalizes the lane state.
+        unit_load_lane hook). Runs the ACE serial transport directly via
+        _ace_load_sequence (which verifies the toolhead sensor and returns False
+        on failure), then finalizes the lane state.
 
         :param cur_lane: Lane to load.
         :param cur_extruder: Extruder the lane loads into.
-        :return bool: True on a verified load.
+        :return bool: True on a verified load, False on failure.
         """
         afc = self.afc
-        self.gcode.run_script_from_command(
-            f"_ACE_CUSTOM_LOAD UNIT={self.name} LANE={cur_lane.name}")
+        if not self._ace_load_sequence(cur_lane, cur_extruder):
+            return False
         cur_lane.status = AFCLaneState.TOOL_LOADED
         afc.save_vars()
         return True
 
-    def _cmd_ace_custom_load(self, gcmd):
-        """Handle _ACE_CUSTOM_LOAD — filament transport to toolhead area.
-
-        :param gcmd: Gcode command; LANE selects the lane to load. Raises a
-            gcode error on an unknown lane or a failed load.
-        """
-        lane_name = gcmd.get('LANE')
-        cur_lane = self.afc.lanes.get(lane_name)
-        if cur_lane is None:
-            raise gcmd.error(f"Unknown lane: {lane_name}")
-        # The base command is registered "first unit wins", so self may not be
-        # the unit that owns this lane. Dispatch to the lane's own ACE unit so
-        # the correct serial connection / feed sequence is used.
-        unit = getattr(cur_lane, 'unit_obj', None) or self
-        cur_extruder = cur_lane.extruder_obj
-        result = unit._ace_load_sequence(cur_lane, cur_extruder)
-        if not result:
-            raise gcmd.error(f"ACE load failed for {lane_name}")
-
     def unit_unload_lane(self, cur_lane, cur_extruder) -> bool:
         """Full toolhead unload for a stepperless ACE lane (AFC.unload_sequence's
         unit_unload_lane hook). Runs the shared toolhead phase (quick-pull,
-        buffer/sync/select, cut/tip-form), the ACE serial unwind via the internal
-        _ACE_CUSTOM_UNLOAD command (which raises on failure), the post-unload
-        macro, then finalizes the lane state.
+        buffer/sync/select, cut/tip-form), the ACE serial unwind directly via
+        _ace_unload_sequence (returns False on failure), the post-unload macro,
+        then finalizes the lane state.
 
         :param cur_lane: Lane to unload.
         :param cur_extruder: Extruder the lane is synced to on entry.
-        :return bool: True on success.
+        :return bool: True on success, False on failure.
         """
         afc = self.afc
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
@@ -1696,34 +1623,15 @@ class afcACE(afcUnit):
         cur_lane.sync_to_extruder()
         cur_lane.select_lane()
         afc.do_tool_cut_tip_form(cur_lane, cur_extruder)
-        # ACE serial unwind. The internal command raises gcmd.error on failure,
-        # aborting the unload — the unit_unload_lane caller does no error
-        # checking of its own.
-        self.gcode.run_script_from_command(
-            f"_ACE_CUSTOM_UNLOAD UNIT={self.name} LANE={cur_lane.name}")
+        # ACE serial unwind (direct call; returns False on failure).
+        if not self._ace_unload_sequence(cur_lane, cur_extruder):
+            return False
         if afc.post_unload_macro is not None:
             self.gcode.run_script_from_command(afc.post_unload_macro)
         cur_lane.set_tool_unloaded(normal_toolchange=True)
         cur_lane.status = AFCLaneState.NONE
         afc.save_vars()
         return True
-
-    def _cmd_ace_custom_unload(self, gcmd):
-        """Handle _ACE_CUSTOM_UNLOAD — filament transport from toolhead.
-
-        :param gcmd: Gcode command; LANE selects the lane to unload. Raises a
-            gcode error on an unknown lane or a failed unload.
-        """
-        lane_name = gcmd.get('LANE')
-        cur_lane = self.afc.lanes.get(lane_name)
-        if cur_lane is None:
-            raise gcmd.error(f"Unknown lane: {lane_name}")
-        # Dispatch to the lane's own ACE unit (see _cmd_ace_custom_load).
-        unit = getattr(cur_lane, 'unit_obj', None) or self
-        cur_extruder = cur_lane.extruder_obj
-        result = unit._ace_unload_sequence(cur_lane, cur_extruder)
-        if not result:
-            raise gcmd.error(f"ACE unload failed for {lane_name}")
 
     def _ace_load_sequence(self, cur_lane, cur_extruder) -> bool:
         """ACE load transport: serial feed to toolhead area + feed assist.
@@ -1984,27 +1892,6 @@ class afcACE(afcUnit):
         "UNIT": {"type": "string", "default": ""},
         "LANE": {"type": "string", "default": ""},
     }
-
-    def _run_on_ace_unit(self, gcmd, method_name):
-        """Dispatch a base (suffix-free) command to the target ACE unit.
-
-        Resolves the unit from an optional UNIT= argument; when UNIT is omitted
-        or doesn't match a known ACE unit, falls back to this unit (the first
-        one registered, which is the only one in single-unit setups). This keeps
-        the suffix-free commands addressable by name without relying on the
-        per-unit command suffixes that Klipper's gcode parser truncates for
-        names like "Ace2_1".
-
-        :param gcmd: the gcode command (read for an optional UNIT= argument).
-        :param method_name: name of the bound command method to invoke.
-        """
-        unit_name = gcmd.get('UNIT', None)
-        target = self
-        if unit_name:
-            cand = getattr(self.afc, 'units', {}).get(unit_name)
-            if cand is not None and hasattr(cand, method_name):
-                target = cand
-        return getattr(target, method_name)(gcmd)
 
     def cmd_ACE_CALIBRATE(self, gcmd):
         """Calibrate ACE feed distance to toolhead for a lane.
