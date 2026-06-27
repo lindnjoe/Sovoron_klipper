@@ -109,7 +109,7 @@
           "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 386.0895080566406,
+          "remaining_weight_g": 385.8744201660156,
           "spool_name": "Inland PLA - True Red",
           "spoolman_id": 5,
           "total_weight_g": 1000.0
@@ -186,7 +186,7 @@
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1"
           ],
-          "timestamp": "2026-06-27T13:18:12Z"
+          "timestamp": "2026-06-27T15:04:18Z"
         },
         "optional": []
       },
