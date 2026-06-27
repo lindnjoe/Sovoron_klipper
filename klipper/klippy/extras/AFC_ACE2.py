@@ -516,30 +516,38 @@ def v2_response_to_v1(cmd, seq, payload, logger=None):
             rgba = _fval(csub, 1, 0)
             color = [(rgba >> 24) & 0xFF, (rgba >> 16) & 0xFF, (rgba >> 8) & 0xFF]
             break
-        # Nozzle temperature range lives in tag field 6 as a nested message
-        # {1: min, 2: max} (confirmed 190/230 for PLA on tested firmware — see
-        # docs/ACE2_firmware_analysis.md). Shaped as the {min,max} dict that the
-        # ACE inventory (_apply_slot_info) consumes for extruder_temp_min/max.
-        extruder_temp = {}
-        for wtype, t_payload in fields.get(6, []):
-            if wtype != 2:
-                continue
-            tsub = pb_decode(t_payload)
-            t_min, t_max = _fval(tsub, 1, 0), _fval(tsub, 2, 0)
-            if t_min or t_max:
-                extruder_temp = {'min': t_min, 'max': t_max}
-            break
+        # Temperature ranges live in nested {1: min, 2: max} tag fields:
+        # field 6 = nozzle (confirmed 190/230 for PLA), field 7 = bed (confirmed
+        # 55/65 for PLA). See docs/ACE2_firmware_analysis.md. Shaped as the
+        # {min,max} dicts the ACE inventory (_apply_slot_info) consumes for
+        # extruder_temp_min/max and bed_temp_min/max.
+        def _temp_range(fnum):
+            for _w, _payload in fields.get(fnum, []):
+                if _w != 2:
+                    continue
+                _sub = pb_decode(_payload)
+                _lo, _hi = _fval(_sub, 1, 0), _fval(_sub, 2, 0)
+                return {'min': _lo, 'max': _hi} if (_lo or _hi) else {}
+            return {}
+        extruder_temp = _temp_range(6)
+        bed_temp = _temp_range(7)
         ret['result'] = {
             'index': _fval(fields, 1, 0),
             'sku': _fstr(fields, 3, ''),
             'type': ftype, 'brand': '', 'color': color,
             'rfid': 2 if ftype else 0,
-            # Richer ACE2 tag fields (confirmed from gklib analysis,
-            # docs/ACE2_firmware_analysis.md): diameter is uint32 in 0.01mm
-            # units; remaining_length is total remaining filament in mm.
+            # Richer ACE2 tag fields. diameter is uint32 in 0.01mm units.
+            # field 11 (gklib calls it "remainder") is a STATIC value on the
+            # read-only tag, so it can't track filament used — surfaced as
+            # total_length (mm), the likely full-spool length. NOT a live
+            # remaining; AFC/Spoolman tracks consumption itself. Unconfirmed —
+            # verify by comparing a full vs used spool of the same SKU (same
+            # value => static total; different => the tag is written with
+            # remaining). See docs/ACE2_firmware_analysis.md.
             'diameter': _fval(fields, 8, 0) / 100.0,
-            'remaining_length': _fval(fields, 11, 0),
+            'total_length': _fval(fields, 11, 0),
             'extruder_temp': extruder_temp,
+            'hotbed_temp': bed_temp,
             # Full raw field map for diagnostics (see ACE_RFID_DUMP).
             'raw': dump_fields(fields),
         }
@@ -784,6 +792,17 @@ class afcACE2(afcACE):
                 "(tolerance_mm ~= feed_error_length - feed_check_length / %.4f)."
                 % (config.get_name(), self.feed_check_length, ACE2_ENCODER_SCALE,
                    _expected, ACE2_ENCODER_SCALE))
+        # Stuck/tangle detection. Unlike the V1 ACE (which only exposes
+        # cont_assist_time and forces the time-based heuristic in the parent
+        # _check_stuck), the ACE2 has a real filament encoder: its OdometerTimer
+        # task compares commanded motor steps against measured encoder movement
+        # and reports a per-slot error state (stuck/tangled/assist/motor error)
+        # when they diverge. That is a true mechanical-jam signal, so we enable
+        # detection by default here and override _check_stuck (below) to react to
+        # those firmware states instead of the assist-duration proxy. Re-read the
+        # same key the parent read with default False, flipping the default to
+        # True for the ACE2. ACE_STUCK_SPOOL_DETECTION still toggles it at runtime.
+        self._stuck_detection = config.getboolean("stuck_spool_detection", True)
 
     def _apply_feed_check(self):
         """Push the encoder feed-check window to the ACE (V2 only). The unit
@@ -803,6 +822,90 @@ class afcACE2(afcACE):
             self.logger.warning(
                 "ACE2 %s: set_feed_check failed (non-fatal): %s"
                 % (self.name, e))
+
+    # ACE2 slot states that mean the encoder/odometer disagrees with the
+    # commanded motor move — a real upstream jam, tangle, slip, or motor fault.
+    # The unit's OdometerTimer task derives these, so they are hardware-accurate.
+    _ENCODER_JAM_STATES = (
+        'stuck_error', 'tangled_error', 'assist_error', 'motor_error')
+
+    def _check_stuck(self, result):
+        """ACE2 stuck/tangle detection from the firmware odometer verdict.
+
+        The ACE2 carries a filament encoder; its OdometerTimer task compares the
+        commanded motor steps against the measured encoder movement and reports a
+        per-slot error state (stuck/tangled/assist/motor error) when they
+        diverge. That is a true mechanical-jam signal, so we react to it directly
+        instead of inferring a jam from how long feed-assist has run (the V1
+        ``_check_stuck`` heuristic, which this overrides). Gated to the active
+        assist lane's slot — the one being driven during a print — so an idle
+        slot's stale error can never pause a healthy print. The caller skips this
+        during load/unload (``_operation_active``), where feed/rollback errors
+        are part of normal operation.
+
+        :param result: Decoded GET_STATUS dict with a per-slot ``slots`` list.
+        """
+        if not self._stuck_detection:
+            return
+        # Only meaningful during a real, un-paused print.
+        if (not self.afc.function.in_print()
+                or self.afc.function.is_paused()):
+            self._stuck_tripped = False
+            return
+        name = self._active_assist_lane()
+        if name is None:
+            self._stuck_tripped = False
+            return
+        slot = self._slot_map.get(name)
+        slots = result.get("slots")
+        if (slot is None or not isinstance(slots, list)
+                or slot >= len(slots) or not isinstance(slots[slot], dict)):
+            return
+        state = slots[slot].get("slot_status")
+        if state not in self._ENCODER_JAM_STATES:
+            # Healthy (or recovered) — re-arm the one-shot latch.
+            self._stuck_tripped = False
+            return
+        if self._stuck_tripped:
+            return  # already handled this jam; don't re-pause every heartbeat
+        self._stuck_tripped = True
+        # Defer the pause off the serial/heartbeat path onto the reactor.
+        self.afc.reactor.register_callback(
+            lambda et, n=name, s=slot, st=state:
+            self._handle_encoder_jam(n, s, st))
+
+    def _handle_encoder_jam(self, name, slot, state):
+        """Stop assist on the jammed slot and pause the print (deferred from
+        ``_check_stuck``) for an ACE2 firmware-reported encoder jam.
+
+        :param name: Lane name whose slot reported the jam.
+        :param slot: ACE2 slot index for that lane.
+        :param state: The firmware slot_status that tripped (e.g. ``stuck_error``).
+        """
+        # Stop driving the motor into the blockage before we pause.
+        try:
+            self._stop_feed_assist(slot)
+        except Exception:
+            pass
+        pretty = {
+            'stuck_error': 'stuck spool (encoder saw no movement while feeding)',
+            'tangled_error': 'tangled spool',
+            'assist_error': 'feed-assist slip (encoder fell behind the motor)',
+            'motor_error': 'motor error',
+        }.get(state, state)
+        msg = (
+            "ACE2 {unit} lane {lane}: {what}. The unit's filament encoder reports "
+            "the spool is not moving with the motor — likely a jam or tangle at "
+            "the unit. Clear the snag, then resume. Run ACE_STUCK_SPOOL_DETECTION "
+            "ENABLE=0 to disable this check.".format(
+                unit=self.name, lane=name, what=pretty))
+        try:
+            # Route through AFC so it snapshots position and uses the AFC
+            # pause/resume path (z-hop, restore on AFC_RESUME).
+            self.afc.error.AFC_error(msg, pause=True)
+        except Exception:
+            self.logger.error(msg)
+            self.gcode.run_script_from_command("PAUSE")
 
     def _make_connection(self, reactor, serial_port, logger, baud_rate):
         """
