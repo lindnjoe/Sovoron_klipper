@@ -175,7 +175,12 @@ class AFCU1PrintSetup:
             lane = self.afc.lanes.get(lane_name)
             if lane is None:
                 continue
-            phys = self._get_physical_index(lane.extruder_obj.name)
+            # Physical index comes from the Klipper extruder name (th_extruder_name),
+            # which can differ from the AFC_extruder section name when extruder_name:
+            # remapping is used. Fall back to the section name for older setups.
+            ext = lane.extruder_obj
+            ext_name = getattr(ext, 'th_extruder_name', None) or ext.name
+            phys = self._get_physical_index(ext_name)
             if phys is None or phys >= self.physical_extruder_num:
                 continue
             map_entries.append([logical_index, phys])
@@ -211,7 +216,12 @@ class AFCU1PrintSetup:
             lane = self.afc.lanes.get(lane_name)
             if lane is None:
                 continue
-            phys = self._get_physical_index(lane.extruder_obj.name)
+            # Physical index comes from the Klipper extruder name (th_extruder_name),
+            # which can differ from the AFC_extruder section name when extruder_name:
+            # remapping is used. Fall back to the section name for older setups.
+            ext = lane.extruder_obj
+            ext_name = getattr(ext, 'th_extruder_name', None) or ext.name
+            phys = self._get_physical_index(ext_name)
             if phys is None or phys >= self.physical_extruder_num:
                 continue
             result.setdefault(phys, []).append((logical_index, lane))
@@ -421,9 +431,20 @@ class AFCU1PrintSetup:
         map_entries, used_physical, phys_to_lane, logical_indices = (
             self._build_extruder_map(used_tools))
         if not map_entries:
+            # Diagnostic: show what we had so an empty map is debuggable
+            # (e.g. tool_cmds present but physical index unresolved).
+            mapping = {
+                tc: getattr(self.afc.lanes.get(ln), 'extruder_obj', None)
+                and (getattr(self.afc.lanes[ln].extruder_obj,
+                             'th_extruder_name', None)
+                     or self.afc.lanes[ln].extruder_obj.name)
+                for tc, ln in self.afc.tool_cmds.items()}
             self.logger.info(
                 "AFC_PRINT_SETUP_U1: No AFC tool mappings found, "
-                "cannot configure print_task_config")
+                "cannot configure print_task_config "
+                "(used_tools=%s tool_cmds->extruder=%s physical_extruders=%d)"
+                % (sorted(used_tools) if used_tools else used_tools,
+                   mapping, self.physical_extruder_num))
             return
 
         self.logger.info(
