@@ -640,17 +640,29 @@ class afcACE(afcUnit):
                 and hub.is_virtual_pin())
 
     def _set_hub_state(self, lane, state: bool):
-        """Drive the lane's hub presence (loaded-to-hub) signal.
+        """Reflect LIVE hub-switch occupancy on the lane's raw_load_state.
 
-        Vivid-style: ACE has no physical hub sensor, so the lane's
-        raw_load_state carries the loaded-to-hub state and the native AFC_hub
-        reports any(lane.raw_load_state). prep_state (filament inserted in slot)
-        is tracked separately. No switch_pin_callback / set_state_driven needed.
+        Both the ACE and OpenAMS stage filament to just BEFORE the hub switch, so
+        the switch (OpenAMS HES, or the ACE's virtual/real hub switch) reads CLEAR
+        while staged — the latched "staged" state is carried separately by
+        lane.loaded_to_hub. raw_load_state must therefore track the live switch,
+        NOT the latched staged flag: the native AFC_hub aggregates it as
+        any(lane.raw_load_state) and TOOL_LOAD gates on `load_state and not
+        hub.state` (for a virtual hub load_state -> loaded_to_hub). If we latched
+        raw_load_state True for a merely-staged lane, the lane's own filament would
+        read as "hub not clear" and block its own load.
+
+        - Virtual (pinless) hub: no live sensor, so the live signal is clear at
+          idle (filament is parked before the virtual switch) -> always False.
+        - Real hub switch: its own pin callback drives raw_load_state (clear when
+          filament is parked before it), so we must not override it here.
 
         :param lane: Lane whose hub-presence signal to drive.
-        :param state: True if filament is staged at/past the hub.
+        :param state: Unused for the live signal (kept for call-site symmetry);
+            "staged" means parked before the switch, i.e. the switch reads clear.
         """
-        lane._load_state = bool(state)
+        if self._is_virtual_hub(lane):
+            lane._load_state = False
 
     def _sync_slot_states(self, hw_status):
         """Sync lane prep/load state from ACE hardware slot status.
