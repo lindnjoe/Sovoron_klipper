@@ -1521,6 +1521,14 @@ class afc:
                 return False
         elif hasattr(cur_lane.unit_obj, "unit_load_lane"):
             result = cur_lane.unit_obj.unit_load_lane(cur_lane, cur_extruder)
+            # A custom unit load (ACE/ACE2/OpenAMS) returns False when the
+            # filament never reached the toolhead sensor. It has already reported
+            # the failure (handle_lane_failure -> pause); abort here so we don't
+            # fall through to the shared "mark tool loaded / return True" tail
+            # below and continue the toolchange on a lane that never loaded.
+            # Use `is False` so a unit that returns None is unaffected.
+            if result is False:
+                return False
         else:
             use_direct_dist = False
             if (cur_lane.hub_obj
