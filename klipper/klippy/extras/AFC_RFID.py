@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 import json
+import os
 import re
 from typing import TYPE_CHECKING
 from urllib.request import Request
@@ -79,6 +80,18 @@ class SpoolmanClient:
                 f"Spoolman {method} {path} failed; request body: "
                 f"{json.dumps(body) if body is not None else '(none)'}")
         return result
+
+    def reachable(self):
+        """Return True if the Spoolman server answers a lightweight request.
+
+        Used to tell a genuine 'no match' apart from the server being down, so the
+        offline cache only kicks in on a real outage (not on an empty Spoolman).
+        """
+        try:
+            return self._spoolman_proxy(
+                "GET", "/v1/info", print_error=False) is not None
+        except Exception:
+            return False
 
     def search_filaments(self, article_number=None, vendor_name=None, material=None):
         """Search Spoolman filaments by optional criteria.
@@ -1033,6 +1046,187 @@ def _missing_filament_fields(filament: dict, slot_info: dict) -> dict:
     return updates
 
 
+SPOOLMAN_CACHE_FILE = "AFC_spoolman_cache.json"
+# One-shot guard: pre-build the whole offline cache once per klipper run,
+# on the first reachable Spoolman interaction (set in sync_rfid_to_spoolman).
+_CACHE_PREWARMED = False
+
+
+def spoolman_cache_key(slot_info: dict):
+    """Stable cache key for a tag: its UID when the reader exposes one, else the
+    product SKU (for no-UID readers like the ACE/ACE2). None when neither exists.
+    """
+    uid = _norm_uid(slot_info.get("uid"))
+    if uid:
+        return f"uid:{uid}"
+    sku = (slot_info.get("sku") or "").strip()
+    return f"sku:{sku}" if sku else None
+
+
+def _spool_cache_entry(spool: dict, filament):
+    """Snapshot the Spoolman fields needed to re-apply a spool to a lane offline."""
+    fil = filament or (spool.get("filament") if isinstance(spool, dict) else None) or {}
+    vendor = fil.get("vendor") or {}
+    return {
+        "spool_id": spool.get("id"),
+        "filament_id": fil.get("id"),
+        "name": fil.get("name", ""),
+        "material": fil.get("material"),
+        "extruder_temp": fil.get("settings_extruder_temp"),
+        "bed_temp": fil.get("settings_bed_temp"),
+        "density": fil.get("density"),
+        "diameter": fil.get("diameter"),
+        "color_hex": fil.get("color_hex"),
+        "multi_color_hexes": fil.get("multi_color_hexes"),
+        "vendor": vendor.get("name", "") if isinstance(vendor, dict) else "",
+        "spool_weight": spool.get("spool_weight"),
+        "remaining_weight": spool.get("remaining_weight"),
+        "initial_weight": spool.get("initial_weight"),
+    }
+
+
+class SpoolmanCache:
+    """On-disk JSON cache of resolved Spoolman spools, keyed by tag UID (or SKU
+    for no-UID readers). Lets a previously-seen tag restore its filament config
+    and spool link when Spoolman is unreachable, so a network outage doesn't lose
+    the lane's filament settings.
+    """
+
+    def __init__(self, path, logger=None):
+        self.path = path
+        self.logger = logger
+        self._data = self._load()
+
+    def _load(self):
+        try:
+            with open(self.path) as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (FileNotFoundError, ValueError, OSError):
+            return {}
+
+    def get(self, key):
+        return self._data.get(key) if key else None
+
+    def put(self, key, entry):
+        if not key or not isinstance(entry, dict):
+            return
+        if self._data.get(key) == entry:   # no-op rewrite -> don't churn the file
+            return
+        self._data[key] = entry
+        self._save()
+
+    def _save(self):
+        tmp = self.path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(self._data, f, indent=1, sort_keys=True)
+            os.replace(tmp, self.path)
+        except OSError as e:
+            if self.logger:
+                self.logger.debug(f"Spoolman cache save failed ({self.path}): {e}")
+
+
+def apply_cached_spool(afc, lane, entry: dict, logger, prefix: str):
+    """Apply a cached Spoolman spool snapshot to a lane WITHOUT contacting
+    Spoolman (used on an outage). Mirrors the fields AFCSpool.set_spoolID sets
+    from a live fetch, so the lane keeps its filament config and spool link.
+    """
+    try:
+        lane.spool_id = entry.get("spool_id")
+        lane.auto_switch_triggered = False
+        if entry.get("material") is not None:
+            lane.material = entry["material"]
+        if (not getattr(afc, "ignore_spoolman_material_temps", False)
+                and entry.get("extruder_temp") is not None):
+            lane.extruder_temp = entry["extruder_temp"]
+        if entry.get("bed_temp") is not None:
+            lane.bed_temp = entry["bed_temp"]
+        if entry.get("density") is not None:
+            lane.filament_density = entry["density"]
+        if entry.get("diameter") is not None:
+            lane.filament_diameter = entry["diameter"]
+        if entry.get("spool_weight") is not None:
+            lane.empty_spool_weight = entry["spool_weight"]
+        if entry.get("remaining_weight") is not None:
+            lane.weight = entry["remaining_weight"]
+        if entry.get("initial_weight") is not None:
+            try:
+                lane.espooler.espooler_values.full_weight = entry["initial_weight"]
+            except Exception:
+                pass
+        lane.spool_vendor = entry.get("vendor", "") or ""
+        multi = entry.get("multi_color_hexes")
+        if multi:
+            lane.multi_color = multi.split(",")
+            lane.color = f"#{lane.multi_color[0]}"
+        elif entry.get("color_hex"):
+            lane.color = "#{}".format(entry["color_hex"])
+            lane.multi_color = []
+        lane.send_lane_data()
+        afc.save_vars()
+        logger.info(
+            f"{prefix}: Spoolman unreachable - restored spool "
+            f"#{entry.get('spool_id')} ({entry.get('name', '')}) from offline cache")
+        return True
+    except Exception as e:
+        logger.debug(f"{prefix}: failed to apply cached spool: {e}")
+        return False
+
+
+def build_spoolman_cache(afc, logger, prefix="Spoolman cache"):
+    """Pre-warm the offline cache from a full Spoolman scan.
+
+    Fetches every Spoolman spool and records it under each NFC tag UID it carries
+    AND its product SKU, so even tags that have not been inserted yet can be
+    restored during an outage. For a SKU shared by several spools, caches the
+    fullest non-archived one (same choice as find_spool_by_sku).
+
+    :return int: number of cache entries written, or -1 if Spoolman is
+        unreachable / not configured.
+    """
+    if getattr(afc, "spoolman", None) is None or getattr(afc, "moonraker", None) is None:
+        return -1
+    client = SpoolmanClient(afc.moonraker)
+    if not client.reachable():
+        logger.info(f"{prefix}: Spoolman unreachable - skipping cache pre-build")
+        return -1
+    try:
+        spools = client.search_spools()
+    except Exception as e:
+        logger.info(f"{prefix}: Spoolman spool scan failed: {e}")
+        return -1
+
+    cache = SpoolmanCache(
+        os.path.join(getattr(afc, "cfgloc", "."), SPOOLMAN_CACHE_FILE), logger)
+    uid_count = 0
+    sku_best = {}   # sku -> (remaining_weight, entry); fullest non-archived wins
+    for spool in spools:
+        if not isinstance(spool, dict):
+            continue
+        fil = spool.get("filament") or {}
+        entry = _spool_cache_entry(spool, fil)
+        for uid in _spool_uids(spool):
+            cache.put(f"uid:{uid}", entry)
+            uid_count += 1
+        sku = (fil.get("article_number") or "").strip()
+        if sku and not spool.get("archived"):
+            try:
+                rem = float(spool.get("remaining_weight") or 0)
+            except (TypeError, ValueError):
+                rem = 0.0
+            if sku not in sku_best or rem > sku_best[sku][0]:
+                sku_best[sku] = (rem, entry)
+    for sku, (_rem, entry) in sku_best.items():
+        cache.put(f"sku:{sku}", entry)
+    total = uid_count + len(sku_best)
+    logger.info(
+        f"{prefix}: pre-built {total} cache entries "
+        f"({uid_count} by UID, {len(sku_best)} by SKU) from "
+        f"{len(spools)} Spoolman spools")
+    return total
+
+
 def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                           allow_create: bool = False, set_next: bool = False,
                           spool_weight=None):
@@ -1081,6 +1275,44 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
 
     moonraker = SpoolmanClient(afc.moonraker)
     scanned_uid = _norm_uid(slot_info.get("uid"))
+
+    cache = SpoolmanCache(
+        os.path.join(getattr(afc, "cfgloc", "."), SPOOLMAN_CACHE_FILE), logger)
+    cache_key = spoolman_cache_key(slot_info)
+
+    # Offline fallback: Spoolman is configured but the server is unreachable.
+    # Restore this tag's last-known spool from the on-disk cache instead of
+    # failing, keyed by UID (or SKU for no-UID readers like the ACE/ACE2).
+    if not moonraker.reachable():
+        entry = cache.get(cache_key)
+        if entry is None:
+            logger.info(
+                f"{prefix}: Spoolman unreachable and no offline cache entry for "
+                f"{cache_key or 'this tag'} - leaving tag defaults in place")
+            return
+        if set_next:
+            try:
+                afc.spool.next_spool_id = entry.get("spool_id")
+            except Exception:
+                pass
+            logger.info(
+                f"{prefix}: Spoolman unreachable - staged cached spool "
+                f"#{entry.get('spool_id')} ({entry.get('name', '')}) for next load")
+        else:
+            apply_cached_spool(afc, lane, entry, logger, prefix)
+        return
+
+    # First reachable Spoolman interaction this session: pre-build the whole
+    # offline cache from a full scan, so even tags not yet inserted survive a
+    # later outage. One-shot per klipper run (module flag); best-effort, and it
+    # runs entirely from the RFID path (no unit type or core module required).
+    global _CACHE_PREWARMED
+    if not _CACHE_PREWARMED:
+        _CACHE_PREWARMED = True
+        try:
+            build_spoolman_cache(afc, logger, prefix=prefix)
+        except Exception as e:
+            logger.debug(f"{prefix}: cache pre-warm skipped: {e}")
 
     try:
         # Spool identity is the tag UID — the ONLY match criterion. A UID that's
@@ -1211,6 +1443,13 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                           spool_weight if spool_weight and spool_weight > 0 else None)
 
         spool_id = spool.get("id")
+
+        # Cache the resolved spool so this tag can be restored offline next time
+        # Spoolman is down (keyed by UID, or SKU for no-UID readers).
+        try:
+            cache.put(cache_key, _spool_cache_entry(spool, filament))
+        except Exception as e:
+            logger.debug(f"{prefix}: spoolman cache write skipped: {e}")
 
         # Stamp tag metadata: manufacturing date -> lot_nr, UID -> card_uids.
         try:

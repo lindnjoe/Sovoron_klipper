@@ -319,8 +319,14 @@ def method_to_v2(method, params):
     if method == 'drying':
         temp = int(params.get('temp', 50))
         duration = int(params.get('duration', 0))
+        # The DRYING fan field (request[8], a "fan mode byte" in the firmware) is
+        # an ON/OFF mode, NOT a speed/RPM/percentage. The host passes a fan_speed
+        # for V1-ACE call compatibility (V1 ignores it); on the ACE2 map any
+        # positive value to fan-on (1) and 0 to fan-off (0). This is NOT the
+        # 0-100% scale used by the separate SET_FAN command (cmd 71).
+        fan_on = 1 if int(params.get('fan_speed', 1)) > 0 else 0
         return Cmd.DRYING, (pb_uint32(1, temp) + pb_uint32(2, duration)
-                            + pb_bool(3, True))
+                            + pb_uint32(3, fan_on))
     if method == 'drying_stop':
         return Cmd.DRYING, pb_uint32(1, 0) + pb_uint32(2, 0)
     if method == 'set_fan_speed':

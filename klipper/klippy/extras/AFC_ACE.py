@@ -301,6 +301,7 @@ class afcACE(afcUnit):
             ('ACE_STUCK_SPOOL_DETECTION', self.cmd_ACE_STUCK_SPOOL_DETECTION, "Enable/disable ACE stuck spool detection"),
             ('ACE_FEED_INFO', self.cmd_ACE_FEED_INFO, "Per-slot feed diagnostics (steps/length/encoder) for feed-check tuning"),
             ('ACE_RFID_DUMP', self.cmd_ACE_RFID_DUMP, "Dump full raw RFID/filament-info read for a slot"),
+            ('ACE_FAN', self.cmd_ACE_FAN, "Set ACE unit fan speed (ACE2: 0-100%; V1: ignored by firmware)"),
         ):
             self.gcode.register_mux_command(cmd, "UNIT", self.name, handler, desc=desc)
 
@@ -1267,6 +1268,12 @@ class afcACE(afcUnit):
                     f"(dist_hub={lane.dist_hub:.0f}mm)")
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
                 self._wait_for_feed_complete(slot, dist, self.retract_speed)
+                # The eject pulls the filament back INTO the unit (past the hub),
+                # so it is no longer staged at the hub. Clear loaded_to_hub (and the
+                # hub signal) or the next load takes the short hub->toolhead feed
+                # and lands ~dist_hub short of the toolhead.
+                lane.loaded_to_hub = False
+                self._set_hub_state(lane, False)
             except Exception as e:
                 self.logger.error(f"ACE eject failed for {lane.name}: {e}")
 
@@ -1311,6 +1318,10 @@ class afcACE(afcUnit):
                     f"tool_loaded={getattr(cur_lane, 'tool_loaded', False)})")
                 self._ace.unwind_filament(slot, dist, self.retract_speed)
                 self._wait_for_feed_complete(slot, dist, self.retract_speed)
+                # Pulled back into the unit (past the hub): clear loaded_to_hub so
+                # the next load feeds the full dist_hub + bowden path.
+                cur_lane.loaded_to_hub = False
+                self._set_hub_state(cur_lane, False)
             except Exception as e:
                 self.logger.error(f"ACE lane_unload failed for {cur_lane.name}: {e}")
         return True
@@ -1922,7 +1933,12 @@ class afcACE(afcUnit):
         # ACE serial unwind — retract to hub staging point
         hub = cur_lane.hub_obj
         bowden = getattr(hub, 'afc_unload_bowden_length', getattr(hub, 'afc_bowden_length', 0)) if hub else 0
-        retract_dist = bowden - cur_lane.dist_hub
+        # Retract the hub->toolhead distance to leave the tip staged AT the hub,
+        # symmetric with the reload feed (which feeds afc_bowden_length from the
+        # hub). afc_unload_bowden_length is the hub->toolhead unload distance, the
+        # same basis as afc_bowden_length, so do NOT subtract dist_hub: that
+        # under-retracts and leaves the tip past the hub (reload then overshoots).
+        retract_dist = bowden
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(slot, retract_dist, self.retract_speed)
@@ -2326,6 +2342,33 @@ class afcACE(afcUnit):
             gcmd.respond_info("ACE dryer stopped")
         except Exception as e:
             gcmd.respond_info(f"Error stopping dryer: {e}")
+
+    cmd_ACE_FAN_help = "Set the ACE unit fan speed"
+    def cmd_ACE_FAN(self, gcmd):
+        """Set the ACE unit fan speed.
+
+        Usage
+        -----
+        `ACE_FAN UNIT=<unit> SPEED=<0-100>`
+
+        On the ACE2 this drives SET_FAN (cmd 71); the firmware maps 0-100% to 5
+        internal levels. On the V1 ACE the firmware ignores fan speed, so the
+        command is accepted but has no effect. This controls the unit fan, which
+        is separate from the dryer cycle's own on/off fan (set via ACE_DRY FAN=).
+
+        :param gcmd: Gcode command supplying SPEED (0-100).
+        """
+        speed = gcmd.get_int('SPEED', 100, minval=0, maxval=100)
+        if not self._ace or not self._ace.connected:
+            gcmd.respond_info("ACE not connected")
+            return
+        try:
+            # 'speed' is the ACE2 encoder key; 'fan_speed' covers the V1 method.
+            self._ace.send_command(
+                "set_fan_speed", params={"speed": speed, "fan_speed": speed})
+            gcmd.respond_info(f"ACE fan set to {speed}%")
+        except Exception as e:
+            gcmd.respond_info(f"Error setting fan: {e}")
 
     def cmd_ACE_LANE_RESET(self, gcmd):
         """Retract lane filament back into ACE unit.
