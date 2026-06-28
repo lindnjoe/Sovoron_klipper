@@ -1089,20 +1089,11 @@ _CACHE_PREWARMED = False
 def _spoolman_cache_path(afc):
     """Full path to the offline Spoolman cache. Stored in the PARENT config folder
     (one level above the AFC config folder) so it doesn't clutter the AFC folder
-    the user actively edits - matching where PLR keeps its state file. Migrates an
-    existing cache out of the old AFC-folder location on first use.
+    the user actively edits - matching where PLR keeps its state file.
     """
     cfgloc = getattr(afc, "cfgloc", ".") or "."
     parent = os.path.dirname(cfgloc.rstrip("/")) or cfgloc
-    new_path = os.path.join(parent, SPOOLMAN_CACHE_FILE)
-    old_path = os.path.join(cfgloc, SPOOLMAN_CACHE_FILE)
-    if (old_path != new_path and os.path.exists(old_path)
-            and not os.path.exists(new_path)):
-        try:
-            os.replace(old_path, new_path)
-        except OSError:
-            pass
-    return new_path
+    return os.path.join(parent, SPOOLMAN_CACHE_FILE)
 
 
 def spoolman_cache_key(slot_info: dict):
