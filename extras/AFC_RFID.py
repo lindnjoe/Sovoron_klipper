@@ -1134,7 +1134,8 @@ def _spool_cache_entry(spool: dict, filament):
         "name": fil.get("name", ""),
         "material": fil.get("material"),
         "extruder_temp": fil.get("settings_extruder_temp"),
-        "bed_temp": fil.get("settings_bed_temp"),
+        "bed_temp": (fil.get("settings_bed_temp")
+                     or default_bed_temp_for_material(fil.get("material"))),
         "density": fil.get("density"),
         "diameter": fil.get("diameter"),
         "color_hex": fil.get("color_hex"),
@@ -1403,6 +1404,23 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
             if spool is not None:
                 logger.info(f"{prefix}: matched spool #{spool.get('id')} "
                             f"by SKU {sku} (no tag UID)")
+
+        # Backfill a matched (existing) filament too — the create path below only
+        # backfills brand-new ones. Pushes any tag fields the filament is missing,
+        # e.g. a material-default bed temp the tag itself didn't carry.
+        if (spool is not None and filament is not None
+                and filament.get("id") is not None):
+            try:
+                updates = _missing_filament_fields(filament, slot_info)
+                if updates:
+                    updated = moonraker.update_filament(filament["id"], updates)
+                    logger.info(f"{prefix}: backfilled "
+                                f"{', '.join(sorted(updates))} on filament "
+                                f"#{filament['id']}")
+                    if isinstance(updated, dict):
+                        filament = updated
+            except Exception as e:
+                logger.debug(f"{prefix}: filament backfill skipped: {e}")
 
         if spool is None:
             # Still unmatched. Create only when permitted AND the spool can be
