@@ -1385,6 +1385,10 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
             build_spoolman_cache(afc, logger, prefix=prefix)
         except Exception as e:
             logger.debug(f"{prefix}: cache pre-warm skipped: {e}")
+        # build_spoolman_cache wrote via its OWN SpoolmanCache instance; reload
+        # ours from disk so the cache.put below merges into the freshly-built file
+        # instead of clobbering it with our stale (pre-build) in-memory copy.
+        cache = SpoolmanCache(_spoolman_cache_path(afc), logger)
 
     try:
         # Spool identity is the tag UID — the ONLY match criterion. A UID that's
