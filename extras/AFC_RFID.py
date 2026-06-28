@@ -1047,6 +1047,9 @@ def _missing_filament_fields(filament: dict, slot_info: dict) -> dict:
 
 
 SPOOLMAN_CACHE_FILE = "AFC_spoolman_cache.json"
+# One-shot guard: pre-build the whole offline cache once per klipper run,
+# on the first reachable Spoolman interaction (set in sync_rfid_to_spoolman).
+_CACHE_PREWARMED = False
 
 
 def spoolman_cache_key(slot_info: dict):
@@ -1171,6 +1174,59 @@ def apply_cached_spool(afc, lane, entry: dict, logger, prefix: str):
         return False
 
 
+def build_spoolman_cache(afc, logger, prefix="Spoolman cache"):
+    """Pre-warm the offline cache from a full Spoolman scan.
+
+    Fetches every Spoolman spool and records it under each NFC tag UID it carries
+    AND its product SKU, so even tags that have not been inserted yet can be
+    restored during an outage. For a SKU shared by several spools, caches the
+    fullest non-archived one (same choice as find_spool_by_sku).
+
+    :return int: number of cache entries written, or -1 if Spoolman is
+        unreachable / not configured.
+    """
+    if getattr(afc, "spoolman", None) is None or getattr(afc, "moonraker", None) is None:
+        return -1
+    client = SpoolmanClient(afc.moonraker)
+    if not client.reachable():
+        logger.info(f"{prefix}: Spoolman unreachable - skipping cache pre-build")
+        return -1
+    try:
+        spools = client.search_spools()
+    except Exception as e:
+        logger.info(f"{prefix}: Spoolman spool scan failed: {e}")
+        return -1
+
+    cache = SpoolmanCache(
+        os.path.join(getattr(afc, "cfgloc", "."), SPOOLMAN_CACHE_FILE), logger)
+    uid_count = 0
+    sku_best = {}   # sku -> (remaining_weight, entry); fullest non-archived wins
+    for spool in spools:
+        if not isinstance(spool, dict):
+            continue
+        fil = spool.get("filament") or {}
+        entry = _spool_cache_entry(spool, fil)
+        for uid in _spool_uids(spool):
+            cache.put(f"uid:{uid}", entry)
+            uid_count += 1
+        sku = (fil.get("article_number") or "").strip()
+        if sku and not spool.get("archived"):
+            try:
+                rem = float(spool.get("remaining_weight") or 0)
+            except (TypeError, ValueError):
+                rem = 0.0
+            if sku not in sku_best or rem > sku_best[sku][0]:
+                sku_best[sku] = (rem, entry)
+    for sku, (_rem, entry) in sku_best.items():
+        cache.put(f"sku:{sku}", entry)
+    total = uid_count + len(sku_best)
+    logger.info(
+        f"{prefix}: pre-built {total} cache entries "
+        f"({uid_count} by UID, {len(sku_best)} by SKU) from "
+        f"{len(spools)} Spoolman spools")
+    return total
+
+
 def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
                           allow_create: bool = False, set_next: bool = False,
                           spool_weight=None):
@@ -1245,6 +1301,18 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
         else:
             apply_cached_spool(afc, lane, entry, logger, prefix)
         return
+
+    # First reachable Spoolman interaction this session: pre-build the whole
+    # offline cache from a full scan, so even tags not yet inserted survive a
+    # later outage. One-shot per klipper run (module flag); best-effort, and it
+    # runs entirely from the RFID path (no unit type or core module required).
+    global _CACHE_PREWARMED
+    if not _CACHE_PREWARMED:
+        _CACHE_PREWARMED = True
+        try:
+            build_spoolman_cache(afc, logger, prefix=prefix)
+        except Exception as e:
+            logger.debug(f"{prefix}: cache pre-warm skipped: {e}")
 
     try:
         # Spool identity is the tag UID — the ONLY match criterion. A UID that's
