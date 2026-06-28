@@ -52,6 +52,18 @@ class OAMSOpCode:
     CANCEL = 6
 
 
+def _oams_enum_name(cls, value, kind):
+    """Human-readable name for an OAMSStatus/OAMSOpCode value, derived from the
+    matching class attribute (e.g. STOPPED -> 'stopped', NO_SPOOL_IN_BAY ->
+    'no spool in bay'). Falls back to '<kind> <value>' for unknown values.
+    """
+    return next(
+        (k.replace('_', ' ').lower()
+         for k, v in vars(cls).items()
+         if isinstance(v, int) and v == value),
+        f"{kind} {value}")
+
+
 class RetryState:
     """Per-spool bookkeeping for load-retry attempts.
 
@@ -1159,11 +1171,15 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             OAMSStatus.STOPPED,
         ):
             self.logger.debug(
-                f"OAMS status update (non-action) code={code} action={action}"
+                f"OAMS status update (non-action): "
+                f"{_oams_enum_name(OAMSStatus, action, 'action')} "
+                f"({_oams_enum_name(OAMSOpCode, code, 'code')})"
             )
         else:
             self.logger.debug(
-                f"OAMS status update (unhandled) code={code} action={action}"
+                f"OAMS status update (unhandled): "
+                f"{_oams_enum_name(OAMSStatus, action, 'action')} "
+                f"({_oams_enum_name(OAMSOpCode, code, 'code')})"
             )
 
     def float_to_u32(self, f):
