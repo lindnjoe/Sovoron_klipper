@@ -935,6 +935,33 @@ def get_auto_spoolman_create(lane, unit_default=False):
     return unit_default
 
 
+# Bed temperatures are frequently absent from RFID tags (Bambu tags carry none -
+# Bambu Studio sets the bed temp from the plate/material preset, not the tag), so
+# they read back as 0. These per-material fallbacks fill a usable bed temp when the
+# tag (and Spoolman) have none. Edit to taste; unknown materials get no default.
+_DEFAULT_BED_TEMPS = {
+    "pla": 60, "petg": 75, "pet": 70, "abs": 95, "asa": 95,
+    "tpu": 40, "pc": 100, "pa": 80, "nylon": 80, "pva": 50,
+    "hips": 95, "pp": 35,
+}
+
+
+def default_bed_temp_for_material(material):
+    """Best-effort default bed temp (C) for a material when the tag/Spoolman has
+    none. Matches the longest known key the normalized material name starts with,
+    so 'PLA Basic'/'PLA-CF' -> pla, 'PETG HF' -> petg. None if unknown.
+    """
+    if not material:
+        return None
+    m = re.sub(r"[^a-z0-9]", "", str(material).lower())
+    if not m:
+        return None
+    for key in sorted(_DEFAULT_BED_TEMPS, key=len, reverse=True):
+        if m.startswith(key):
+            return _DEFAULT_BED_TEMPS[key]
+    return None
+
+
 def apply_filament_defaults(lane: AFCLane, slot_info: dict,
                             color_converter=None, afc_defaults=None):
     """Apply RFID material/color/temps to a lane if not already set.
@@ -977,6 +1004,13 @@ def apply_filament_defaults(lane: AFCLane, slot_info: dict,
             lane.bed_temp = float(rfid_bed_temp)
         except (TypeError, ValueError):
             pass
+    # Tag carried no bed temp (e.g. Bambu tags read 0): fall back to a per-material
+    # default so the lane still gets a usable bed temp.
+    if getattr(lane, "bed_temp", None) is None:
+        _bed_default = default_bed_temp_for_material(
+            getattr(lane, "material", None) or rfid_material)
+        if _bed_default is not None:
+            lane.bed_temp = float(_bed_default)
     # Stash the tag's sub-type/variant on the lane (read side of the Spoolman
     # 'variant' field) so consumers like the U1 print config can use the real
     # sub-type instead of a hardcoded default.
@@ -1271,6 +1305,13 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
     diameter = slot_info.get("diameter", 1.75)
     ext_temp = slot_info.get("extruder_temp")
     bed_temp = slot_info.get("bed_temp")
+    if not bed_temp:
+        # No bed temp on the tag (Bambu et al. read 0): fall back to a per-material
+        # default and write it into slot_info so the created/backfilled Spoolman
+        # filament persists it (and the lane picks it up via set_spoolID).
+        bed_temp = default_bed_temp_for_material(material)
+        if bed_temp is not None:
+            slot_info["bed_temp"] = bed_temp
     default_filament_weight = 1000
 
     moonraker = SpoolmanClient(afc.moonraker)
