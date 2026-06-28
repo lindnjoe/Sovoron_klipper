@@ -1086,14 +1086,31 @@ SPOOLMAN_CACHE_FILE = "AFC_spoolman_cache.json"
 _CACHE_PREWARMED = False
 
 
-def _spoolman_cache_path(afc):
-    """Full path to the offline Spoolman cache. Stored in the PARENT config folder
-    (one level above the AFC config folder) so it doesn't clutter the AFC folder
-    the user actively edits - matching where PLR keeps its state file.
+def _printer_data_dir(afc):
+    """Printer_data root, derived the same way AFC_PLR does: one level above
+    'config' in the AFC vars-file path (so multi-instance setups resolve
+    correctly), with a ~/printer_data fallback.
     """
-    cfgloc = getattr(afc, "cfgloc", ".") or "."
-    parent = os.path.dirname(cfgloc.rstrip("/")) or cfgloc
-    return os.path.join(parent, SPOOLMAN_CACHE_FILE)
+    afc_var = getattr(afc, "VarFile", "") if afc is not None else ""
+    if afc_var:
+        p = os.path.expanduser(afc_var)
+        parts = p.split(os.sep)
+        if "config" in parts:
+            root = os.sep.join(parts[:parts.index("config")])
+            if root:
+                return root
+        return os.path.dirname(p)
+    return os.path.expanduser("~/printer_data")
+
+
+def _spoolman_cache_path(afc):
+    """Full path to the offline Spoolman cache. Stored in its OWN directory under
+    the Klipper data dir (printer_data/afc_spoolman/), matching how PLR keeps its
+    afc_plr dir there - so it stays out of the config folders entirely. The
+    directory is created on first write (see SpoolmanCache._save).
+    """
+    return os.path.join(
+        _printer_data_dir(afc), "afc_spoolman", SPOOLMAN_CACHE_FILE)
 
 
 def spoolman_cache_key(slot_info: dict):
@@ -1163,6 +1180,9 @@ class SpoolmanCache:
     def _save(self):
         tmp = self.path + ".tmp"
         try:
+            _d = os.path.dirname(self.path)
+            if _d:
+                os.makedirs(_d, exist_ok=True)
             with open(tmp, "w") as f:
                 json.dump(self._data, f, indent=1, sort_keys=True)
             os.replace(tmp, self.path)
