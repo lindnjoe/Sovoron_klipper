@@ -1086,6 +1086,25 @@ SPOOLMAN_CACHE_FILE = "AFC_spoolman_cache.json"
 _CACHE_PREWARMED = False
 
 
+def _spoolman_cache_path(afc):
+    """Full path to the offline Spoolman cache. Stored in the PARENT config folder
+    (one level above the AFC config folder) so it doesn't clutter the AFC folder
+    the user actively edits - matching where PLR keeps its state file. Migrates an
+    existing cache out of the old AFC-folder location on first use.
+    """
+    cfgloc = getattr(afc, "cfgloc", ".") or "."
+    parent = os.path.dirname(cfgloc.rstrip("/")) or cfgloc
+    new_path = os.path.join(parent, SPOOLMAN_CACHE_FILE)
+    old_path = os.path.join(cfgloc, SPOOLMAN_CACHE_FILE)
+    if (old_path != new_path and os.path.exists(old_path)
+            and not os.path.exists(new_path)):
+        try:
+            os.replace(old_path, new_path)
+        except OSError:
+            pass
+    return new_path
+
+
 def spoolman_cache_key(slot_info: dict):
     """Stable cache key for a tag: its UID when the reader exposes one, else the
     product SKU (for no-UID readers like the ACE/ACE2). None when neither exists.
@@ -1232,7 +1251,7 @@ def build_spoolman_cache(afc, logger, prefix="Spoolman cache"):
         return -1
 
     cache = SpoolmanCache(
-        os.path.join(getattr(afc, "cfgloc", "."), SPOOLMAN_CACHE_FILE), logger)
+        _spoolman_cache_path(afc), logger)
     uid_count = 0
     sku_best = {}   # sku -> (remaining_weight, entry); fullest non-archived wins
     for spool in spools:
@@ -1318,7 +1337,7 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
     scanned_uid = _norm_uid(slot_info.get("uid"))
 
     cache = SpoolmanCache(
-        os.path.join(getattr(afc, "cfgloc", "."), SPOOLMAN_CACHE_FILE), logger)
+        _spoolman_cache_path(afc), logger)
     cache_key = spoolman_cache_key(slot_info)
 
     # Offline fallback: Spoolman is configured but the server is unreachable.
