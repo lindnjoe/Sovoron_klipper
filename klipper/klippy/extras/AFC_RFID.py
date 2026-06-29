@@ -935,6 +935,33 @@ def get_auto_spoolman_create(lane, unit_default=False):
     return unit_default
 
 
+# Bed temperatures are frequently absent from RFID tags (Bambu tags carry none -
+# Bambu Studio sets the bed temp from the plate/material preset, not the tag), so
+# they read back as 0. These per-material fallbacks fill a usable bed temp when the
+# tag (and Spoolman) have none. Edit to taste; unknown materials get no default.
+_DEFAULT_BED_TEMPS = {
+    "pla": 60, "petg": 75, "pet": 70, "abs": 95, "asa": 95,
+    "tpu": 40, "pc": 100, "pa": 80, "nylon": 80, "pva": 50,
+    "hips": 95, "pp": 35,
+}
+
+
+def default_bed_temp_for_material(material):
+    """Best-effort default bed temp (C) for a material when the tag/Spoolman has
+    none. Matches the longest known key the normalized material name starts with,
+    so 'PLA Basic'/'PLA-CF' -> pla, 'PETG HF' -> petg. None if unknown.
+    """
+    if not material:
+        return None
+    m = re.sub(r"[^a-z0-9]", "", str(material).lower())
+    if not m:
+        return None
+    for key in sorted(_DEFAULT_BED_TEMPS, key=len, reverse=True):
+        if m.startswith(key):
+            return _DEFAULT_BED_TEMPS[key]
+    return None
+
+
 def apply_filament_defaults(lane: AFCLane, slot_info: dict,
                             color_converter=None, afc_defaults=None):
     """Apply RFID material/color/temps to a lane if not already set.
@@ -977,6 +1004,13 @@ def apply_filament_defaults(lane: AFCLane, slot_info: dict,
             lane.bed_temp = float(rfid_bed_temp)
         except (TypeError, ValueError):
             pass
+    # Tag carried no bed temp (e.g. Bambu tags read 0): fall back to a per-material
+    # default so the lane still gets a usable bed temp.
+    if getattr(lane, "bed_temp", None) is None:
+        _bed_default = default_bed_temp_for_material(
+            getattr(lane, "material", None) or rfid_material)
+        if _bed_default is not None:
+            lane.bed_temp = float(_bed_default)
     # Stash the tag's sub-type/variant on the lane (read side of the Spoolman
     # 'variant' field) so consumers like the U1 print config can use the real
     # sub-type instead of a hardcoded default.
@@ -1052,6 +1086,33 @@ SPOOLMAN_CACHE_FILE = "AFC_spoolman_cache.json"
 _CACHE_PREWARMED = False
 
 
+def _printer_data_dir(afc):
+    """Printer_data root, derived the same way AFC_PLR does: one level above
+    'config' in the AFC vars-file path (so multi-instance setups resolve
+    correctly), with a ~/printer_data fallback.
+    """
+    afc_var = getattr(afc, "VarFile", "") if afc is not None else ""
+    if afc_var:
+        p = os.path.expanduser(afc_var)
+        parts = p.split(os.sep)
+        if "config" in parts:
+            root = os.sep.join(parts[:parts.index("config")])
+            if root:
+                return root
+        return os.path.dirname(p)
+    return os.path.expanduser("~/printer_data")
+
+
+def _spoolman_cache_path(afc):
+    """Full path to the offline Spoolman cache. Stored in its OWN directory under
+    the Klipper data dir (printer_data/afc_spoolman/), matching how PLR keeps its
+    afc_plr dir there - so it stays out of the config folders entirely. The
+    directory is created on first write (see SpoolmanCache._save).
+    """
+    return os.path.join(
+        _printer_data_dir(afc), "afc_spoolman", SPOOLMAN_CACHE_FILE)
+
+
 def spoolman_cache_key(slot_info: dict):
     """Stable cache key for a tag: its UID when the reader exposes one, else the
     product SKU (for no-UID readers like the ACE/ACE2). None when neither exists.
@@ -1073,7 +1134,8 @@ def _spool_cache_entry(spool: dict, filament):
         "name": fil.get("name", ""),
         "material": fil.get("material"),
         "extruder_temp": fil.get("settings_extruder_temp"),
-        "bed_temp": fil.get("settings_bed_temp"),
+        "bed_temp": (fil.get("settings_bed_temp")
+                     or default_bed_temp_for_material(fil.get("material"))),
         "density": fil.get("density"),
         "diameter": fil.get("diameter"),
         "color_hex": fil.get("color_hex"),
@@ -1119,6 +1181,9 @@ class SpoolmanCache:
     def _save(self):
         tmp = self.path + ".tmp"
         try:
+            _d = os.path.dirname(self.path)
+            if _d:
+                os.makedirs(_d, exist_ok=True)
             with open(tmp, "w") as f:
                 json.dump(self._data, f, indent=1, sort_keys=True)
             os.replace(tmp, self.path)
@@ -1198,7 +1263,7 @@ def build_spoolman_cache(afc, logger, prefix="Spoolman cache"):
         return -1
 
     cache = SpoolmanCache(
-        os.path.join(getattr(afc, "cfgloc", "."), SPOOLMAN_CACHE_FILE), logger)
+        _spoolman_cache_path(afc), logger)
     uid_count = 0
     sku_best = {}   # sku -> (remaining_weight, entry); fullest non-archived wins
     for spool in spools:
@@ -1271,13 +1336,20 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
     diameter = slot_info.get("diameter", 1.75)
     ext_temp = slot_info.get("extruder_temp")
     bed_temp = slot_info.get("bed_temp")
+    if not bed_temp:
+        # No bed temp on the tag (Bambu et al. read 0): fall back to a per-material
+        # default and write it into slot_info so the created/backfilled Spoolman
+        # filament persists it (and the lane picks it up via set_spoolID).
+        bed_temp = default_bed_temp_for_material(material)
+        if bed_temp is not None:
+            slot_info["bed_temp"] = bed_temp
     default_filament_weight = 1000
 
     moonraker = SpoolmanClient(afc.moonraker)
     scanned_uid = _norm_uid(slot_info.get("uid"))
 
     cache = SpoolmanCache(
-        os.path.join(getattr(afc, "cfgloc", "."), SPOOLMAN_CACHE_FILE), logger)
+        _spoolman_cache_path(afc), logger)
     cache_key = spoolman_cache_key(slot_info)
 
     # Offline fallback: Spoolman is configured but the server is unreachable.
@@ -1313,6 +1385,10 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
             build_spoolman_cache(afc, logger, prefix=prefix)
         except Exception as e:
             logger.debug(f"{prefix}: cache pre-warm skipped: {e}")
+        # build_spoolman_cache wrote via its OWN SpoolmanCache instance; reload
+        # ours from disk so the cache.put below merges into the freshly-built file
+        # instead of clobbering it with our stale (pre-build) in-memory copy.
+        cache = SpoolmanCache(_spoolman_cache_path(afc), logger)
 
     try:
         # Spool identity is the tag UID — the ONLY match criterion. A UID that's
@@ -1332,6 +1408,23 @@ def sync_rfid_to_spoolman(afc, lane, slot_info: dict, logger, prefix: str,
             if spool is not None:
                 logger.info(f"{prefix}: matched spool #{spool.get('id')} "
                             f"by SKU {sku} (no tag UID)")
+
+        # Backfill a matched (existing) filament too — the create path below only
+        # backfills brand-new ones. Pushes any tag fields the filament is missing,
+        # e.g. a material-default bed temp the tag itself didn't carry.
+        if (spool is not None and filament is not None
+                and filament.get("id") is not None):
+            try:
+                updates = _missing_filament_fields(filament, slot_info)
+                if updates:
+                    updated = moonraker.update_filament(filament["id"], updates)
+                    logger.info(f"{prefix}: backfilled "
+                                f"{', '.join(sorted(updates))} on filament "
+                                f"#{filament['id']}")
+                    if isinstance(updated, dict):
+                        filament = updated
+            except Exception as e:
+                logger.debug(f"{prefix}: filament backfill skipped: {e}")
 
         if spool is None:
             # Still unmatched. Create only when permitted AND the spool can be
