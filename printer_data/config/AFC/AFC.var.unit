@@ -22,7 +22,7 @@
             "color": "#f4ee2a",
             "weight": 988.8057812206342,
             "extruder_temp": 210,
-            "bed_temp": null,
+            "bed_temp": 60.0,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
@@ -376,7 +376,7 @@
     },
     "Tools": {},
     "system": {
-        "current_load": null,
+        "current_load": "lane0",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
