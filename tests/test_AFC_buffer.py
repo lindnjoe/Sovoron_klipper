@@ -52,7 +52,7 @@ def _make_buffer(name="TN", error_sensitivity=0.0):
     buf.lanes = {}
     buf.last_state = "Unknown"
     buf.enable = False
-    buf.current = ""
+    buf.current_lane = None
     buf.advance_state = False
     buf.trailing_state = False
 
