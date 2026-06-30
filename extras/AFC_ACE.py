@@ -473,16 +473,17 @@ class afcACE(afcUnit):
         return None
 
     def _handle_ready(self):
-        """``klippy:ready`` handler: seed each lane's virtual hub from its
-        restored loaded_to_hub state, then defer the ACE serial connect onto a
-        reactor callback so it runs once the reactor is fully up."""
-        # Seed each lane's virtual hub with its real loaded state up front.
-        # Loadless serial lanes default _load_state=True upstream, so a virtual
-        # hub (state = any(raw_load_state)) reads "loaded" until something drives
-        # it — and if the ACE never connects (empty/offline unit) nothing ever
-        # does. Driving it here sets _state_driven so the hub reports its real
-        # state regardless of the hardware connection. No-op for physical hubs
-        # (their real switch_pin drives the state), so both setups work.
+        """``klippy:ready`` handler: seed each lane's virtual-hub load state, then
+        defer the ACE serial connect onto a reactor callback so it runs once the
+        reactor is fully up."""
+        # Seed each lane's virtual-hub state up front. Loadless serial lanes
+        # default _load_state=True upstream, so a virtual hub (state =
+        # any(raw_load_state)) would read "loaded" for every lane until something
+        # corrects it — and if the ACE never connects (empty/offline unit) nothing
+        # would. _set_hub_state drives each lane's raw_load_state to its real value
+        # (for a virtual hub, derived from tool_loaded), so the hub reports the
+        # right state even before/without a hardware connection. No-op for physical
+        # hubs (their real switch_pin drives the state), so both setups work.
         for lane in self.lanes.values():
             self._set_hub_state(lane, lane.loaded_to_hub)
         self.afc.reactor.register_callback(self._deferred_ace_connect)
