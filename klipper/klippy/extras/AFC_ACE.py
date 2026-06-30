@@ -1734,7 +1734,8 @@ class afcACE(afcUnit):
 
         if not self._ace or not self._ace.connected:
             afc.error.handle_lane_failure(
-                cur_lane, f"ACE not connected ({self.serial_port})")
+                cur_lane, f"ACE not connected ({self.serial_port})",
+                pause=afc.function.in_print())
             return False
 
         # In combined mode, stop feed assist on other slots
@@ -1773,7 +1774,8 @@ class afcACE(afcUnit):
             )
             if afc.function.in_print():
                 message += "\nOnce cleared, click resume to continue printing"
-            afc.error.handle_lane_failure(cur_lane, message)
+            afc.error.handle_lane_failure(cur_lane, message,
+                                          pause=afc.function.in_print())
             return False
 
         # ACE serial feed to toolhead area
@@ -1789,11 +1791,13 @@ class afcACE(afcUnit):
                     success = self._smart_load_retry(cur_lane, slot, feed_dist)
                     if not success:
                         afc.error.handle_lane_failure(
-                            cur_lane, f"ACE feed failed for {cur_lane.name}")
+                            cur_lane, f"ACE feed failed for {cur_lane.name}",
+                            pause=afc.function.in_print())
                         return False
         except Exception as e:
             afc.error.handle_lane_failure(
-                cur_lane, f"ACE load feed error: {e}")
+                cur_lane, f"ACE load feed error: {e}",
+                pause=afc.function.in_print())
             return False
 
         # Post-feed sensor check: feed completed but filament may not have
@@ -1826,7 +1830,8 @@ class afcACE(afcUnit):
                     cur_lane,
                     f"Filament did not reach toolhead sensor after feed + "
                     f"{pulse_num} retry pulses (10s timeout) for {cur_lane.name}.\n"
-                    f"Check filament path and bowden length calibration.")
+                    f"Check filament path and bowden length calibration.",
+                    pause=afc.function.in_print())
                 return False
 
         # Set loaded_to_hub AFTER successful feed
@@ -1915,7 +1920,8 @@ class afcACE(afcUnit):
 
         if not self._ace or not self._ace.connected:
             afc.error.handle_lane_failure(
-                cur_lane, f"ACE not connected ({self.serial_port})")
+                cur_lane, f"ACE not connected ({self.serial_port})",
+                pause=afc.function.in_print())
             return False
 
         # Retract filament out of the toolhead/extruder gears before
@@ -1946,7 +1952,8 @@ class afcACE(afcUnit):
             self._wait_for_feed_complete(slot, retract_dist, self.retract_speed)
         except Exception as e:
             afc.error.handle_lane_failure(
-                cur_lane, f"ACE unwind failed for {cur_lane.name}: {e}")
+                cur_lane, f"ACE unwind failed for {cur_lane.name}: {e}",
+                pause=afc.function.in_print())
             return False
 
         afc.afcDeltaTime.log_with_time("ACE unwind complete")
