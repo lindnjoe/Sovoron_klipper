@@ -767,6 +767,15 @@ class afcAMS(afcUnit):
         self.gcode.register_mux_command(
             'AFC_OAMS_CLEAR_ERRORS', "UNIT", self.name, self.cmd_AFC_OAMS_CLEAR_ERRORS,
             desc="Clear OpenAMS errors and resync state")
+        # Internal global command for stuck-spool auto-recovery. Multiple afcAMS
+        # units share the printer gcode namespace, so ignore AlreadyRegistered.
+        try:
+            self.gcode.register_command(
+                '_AFC_OAMS_STUCK_RECOVERY',
+                self._cmd_stuck_spool_recovery,
+                desc="Internal: auto-recover from a stuck spool via unload+reload")
+        except Exception:
+            pass
 
         # Sensor polling state
         self._last_f1s = [None] * 4
@@ -1123,16 +1132,26 @@ class afcAMS(afcUnit):
         if fps_name and fps_name not in msg:
             msg = f"{msg} (FPS: {fps_name})"
 
-        if self.stuck_spool_auto_recovery:
-            # TODO: implement real auto-recovery (unload + reload + resume). Until
-            # that exists this branch must NOT silently continue — a stuck spool
-            # would otherwise print for hours with a jam. Log the intent, then fall
-            # through and pause like the non-recovery path.
-            self.logger.info(
-                f"{msg} — auto-recovery not implemented yet; pausing instead")
-        if "paused" not in msg.lower():
-            msg += ". Print paused — check spool and resume."
-        self.afc.error.AFC_error(msg, pause=True)
+        st = self._get_monitor_state()
+        lane_name = st.current_lane if st else None
+
+        # Error LED on the stuck bay.
+        if st and self._follower and st.current_spool_idx is not None:
+            try:
+                self._follower.set_led_error_if_changed(
+                    self.oams, self.oams_name, st.current_spool_idx, 1,
+                    "stuck spool detected")
+            except Exception as e:
+                self.logger.debug(f"stuck LED set failed: {e}")
+
+        # Auto-recover (unload + reload + resume) when enabled and the lane is
+        # known; otherwise pause for the user.
+        if self.stuck_spool_auto_recovery and lane_name:
+            self._on_stuck_spool_recovery_needed(fps_name, lane_name)
+        else:
+            if "paused" not in msg.lower():
+                msg += ". Print paused — check spool and resume."
+            self.afc.error.AFC_error(msg, pause=True)
 
     def _on_clog_detected(self, fps_name: str = None, message: str = None):
         """Called by OAMSMonitor when clog detected during print.
@@ -1155,6 +1174,152 @@ class afcAMS(afcUnit):
         :param fps_name: FPS channel name whose stuck condition cleared.
         """
         self.logger.info(f"Stuck spool cleared{' on ' + fps_name if fps_name else ''}")
+
+    def _on_stuck_spool_recovery_needed(self, fps_name, lane_name):
+        """Trigger stuck spool recovery (unload + reload + resume).
+
+        Called from reactor timer context (non-blocking): schedules the recovery
+        gcode command, which runs in the gcode thread where blocking is safe.
+
+        :param fps_name: FPS buffer name that reported the stuck spool.
+        :param lane_name: lane currently loaded on that FPS.
+        """
+        self.logger.info(
+            f"Stuck spool recovery scheduled: fps={fps_name}, lane={lane_name}")
+        try:
+            self.gcode.run_script_from_command(
+                f"_AFC_OAMS_STUCK_RECOVERY LANE={lane_name} FPS={fps_name or ''}")
+        except Exception as e:
+            self.logger.error(
+                f"Failed to schedule stuck spool recovery for {lane_name}: {e}")
+            try:
+                self.gcode.run_script_from_command("PAUSE")
+            except Exception as pe:
+                self.logger.error(
+                    f"Failed to pause after recovery-schedule failure: {pe}")
+
+    def _cmd_stuck_spool_recovery(self, gcmd):
+        """Internal gcode command: full unload + reload + resume for a stuck spool.
+
+        Runs in the gcode thread so the blocking TOOL_UNLOAD/TOOL_LOAD are safe.
+
+        :param gcmd: gcode command supplying LANE and FPS.
+        """
+        lane_name = gcmd.get('LANE', None)
+        fps_name = gcmd.get('FPS', None)
+        lane = self.afc.lanes.get(lane_name) if lane_name else None
+        if lane is None:
+            self.logger.error(
+                f"Stuck spool recovery: lane '{lane_name}' not found, pausing")
+            self._stuck_spool_recovery_fallback(fps_name, lane_name, "lane not found")
+            return
+
+        self.logger.info(
+            f"Stuck spool auto-recovery starting: unload then reload for {lane_name}")
+
+        # Save toolhead position so AFC_RESUME can restore it afterwards.
+        self.afc.save_pos()
+
+        # Pause the print queue so no more gcode feeds from the sdcard.
+        pause_resume = self.printer.lookup_object("pause_resume", None)
+        if pause_resume is not None and not self.afc.function.is_paused():
+            pause_resume.send_pause_command()
+
+        # Z-hop to clear the part.
+        try:
+            pos = self.afc.gcode_move.last_position
+            self.afc.move_z_pos(pos[2] + self.afc.z_hop, "stuck_spool_recovery_zhop")
+        except Exception as e:
+            self.logger.warning(f"Stuck spool recovery: Z-hop failed: {e}")
+
+        try:
+            self.logger.info(f"Stuck spool recovery: unloading {lane_name}")
+            if not self.afc.TOOL_UNLOAD(lane, set_start_time=True):
+                raise RuntimeError(f"TOOL_UNLOAD returned False for {lane_name}")
+
+            # The unload retracts past the hub sensor, but filament inertia can
+            # briefly re-trigger it; TOOL_LOAD reads hub.state at the start and
+            # bails "Hub not clear" if set. Poll until it settles.
+            HUB_CLEAR_TIMEOUT = 5.0
+            HUB_POLL_INTERVAL = 0.1
+            hub = getattr(lane, 'hub_obj', None)
+            if hub is not None and hub.state:
+                reactor = self.printer.get_reactor()
+                waited = 0.0
+                while hub.state and waited < HUB_CLEAR_TIMEOUT:
+                    reactor.pause(reactor.monotonic() + HUB_POLL_INTERVAL)
+                    waited += HUB_POLL_INTERVAL
+                if hub.state:
+                    self.logger.warning(
+                        f"Stuck spool recovery: hub still active {waited:.1f}s after "
+                        f"unload of {lane_name} - proceeding with TOOL_LOAD anyway")
+
+            self.logger.info(f"Stuck spool recovery: reloading {lane_name}")
+            if not self.afc.TOOL_LOAD(lane, set_start_time=True):
+                raise RuntimeError(f"TOOL_LOAD returned False for {lane_name}")
+        except Exception as e:
+            self.logger.error(f"Stuck spool auto-recovery FAILED for {lane_name}: {e}")
+            self._stuck_spool_recovery_fallback(fps_name, lane_name, str(e))
+            return
+
+        self.logger.info(
+            f"Stuck spool auto-recovery SUCCEEDED for {lane_name}, resuming print")
+        self._stuck_spool_recovery_clear_oams_state(fps_name, lane_name)
+        try:
+            self.afc.error.reset_failure()
+            # AFC_RESUME guards on is_paused()==True before restoring the toolhead
+            # and restarting the SD card; a stray resume during recovery can clear
+            # the flag, so force it back so AFC_RESUME takes the full path.
+            if not self.afc.function.is_paused():
+                pr = self.printer.lookup_object("pause_resume", None)
+                if pr is not None:
+                    pr.is_paused = True
+            self.gcode.run_script_from_command("AFC_RESUME")
+        except Exception as e:
+            self.logger.error(f"Stuck spool recovery: AFC_RESUME failed: {e}")
+
+    def _stuck_spool_recovery_fallback(self, fps_name, lane_name, reason):
+        """Fall back to pausing when auto-recovery is not possible or fails.
+
+        :param fps_name: FPS buffer name.
+        :param lane_name: lane that was being recovered.
+        :param reason: human-readable failure reason.
+        """
+        msg = (
+            f"Stuck spool auto-recovery failed for {lane_name or fps_name}: {reason}.\n"
+            f"Please manually correct the issue, then run:\n"
+            f"  SET_LANE_LOADED LANE={lane_name}\n"
+            f"followed by AFC_OAMS_CLEAR_ERRORS")
+        self.logger.error(msg)
+        try:
+            self.afc.error.AFC_error(msg, pause=True)
+        except Exception as e:
+            self.logger.error(f"Failed to raise AFC error for stuck fallback: {e}")
+            try:
+                self.gcode.run_script_from_command("PAUSE")
+            except Exception:
+                pass
+
+    def _stuck_spool_recovery_clear_oams_state(self, fps_name, lane_name):
+        """Clear stuck-spool error state (LED + monitor) after a successful recovery.
+
+        :param fps_name: FPS buffer name (unused; kept for symmetry).
+        :param lane_name: lane that recovered (unused; kept for symmetry).
+        """
+        try:
+            st = self._get_monitor_state()
+            if st and st.current_spool_idx is not None and self._follower:
+                try:
+                    self._follower.clear_error_led(
+                        self.oams, self.oams_name, st.current_spool_idx,
+                        "stuck spool auto-recovery succeeded")
+                except Exception as e:
+                    self.logger.debug(f"clear_error_led failed: {e}")
+            if st:
+                st.stuck_active = False
+                st.stuck_start_time = None
+        except Exception as e:
+            self.logger.warning(f"Failed to clear stuck spool state: {e}")
 
     # ── Unit interface overrides ────────────────────────────────────
 
