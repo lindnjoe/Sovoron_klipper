@@ -1124,12 +1124,15 @@ class afcAMS(afcUnit):
             msg = f"{msg} (FPS: {fps_name})"
 
         if self.stuck_spool_auto_recovery:
-            self.logger.info(f"{msg} — attempting auto recovery")
-            # TODO: implement auto-recovery (unload + reload + resume)
-        else:
-            if "paused" not in msg.lower():
-                msg += ". Print paused — check spool and resume."
-            self.afc.error.AFC_error(msg, pause=True)
+            # TODO: implement real auto-recovery (unload + reload + resume). Until
+            # that exists this branch must NOT silently continue — a stuck spool
+            # would otherwise print for hours with a jam. Log the intent, then fall
+            # through and pause like the non-recovery path.
+            self.logger.info(
+                f"{msg} — auto-recovery not implemented yet; pausing instead")
+        if "paused" not in msg.lower():
+            msg += ". Print paused — check spool and resume."
+        self.afc.error.AFC_error(msg, pause=True)
 
     def _on_clog_detected(self, fps_name: str = None, message: str = None):
         """Called by OAMSMonitor when clog detected during print.
