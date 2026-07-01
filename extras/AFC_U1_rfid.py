@@ -55,6 +55,10 @@ class AFC_U1_RFID:
         self._poll_timer = None
         self._scanner_channels: set = set()
         self._channel_to_lane: Dict[int, str] = {}
+        # Extruder-mounted antenna channels (combined unit on one toolhead, e.g.
+        # an ACE feeding e0): channel -> extruder object. The one antenna reads
+        # whichever of the unit's lanes is currently loaded, resolved live.
+        self._channel_to_extruder: Dict[int, object] = {}
         self._consecutive_failures: Dict[int, int] = {}
         self._backed_off: bool = False
         self._backoff_cycles: int = 0
@@ -155,7 +159,16 @@ class AFC_U1_RFID:
             return
         self.logger = self.afc.logger
         for lane_name, channel in self._cfg_channels.items():
-            lane = self._resolve_lane(lane_name)
+            lane, extruder = self._resolve_lane(lane_name)
+            if lane is None and extruder is not None:
+                # Combined unit on one toolhead: the channel reads whichever
+                # lane is loaded to this extruder, resolved live per scan.
+                self.register_extruder_channel(extruder, channel)
+                n = len(getattr(extruder, 'lanes', {}))
+                self.logger.info(
+                    f"U1 RFID: '{lane_name}' is a combined extruder ({n} lanes) "
+                    f"— ch{channel} will read the currently-loaded lane")
+                continue
             if lane is None:
                 self.logger.warning(
                     f"U1 RFID: configured lane '{lane_name}' not found in AFC "
@@ -230,23 +243,29 @@ class AFC_U1_RFID:
             "U1 RFID: could not locate print_task_config RFID callback to patch")
 
     def _resolve_lane(self, name):
-        """Resolve a configured name to a lane object.
+        """Resolve a configured name to a lane or a combined extruder.
 
         Tries the AFC lane registry first (lane name). For individual-extruder
         tool setups the name is often the *extruder* name, so fall back to the
-        single lane driving that extruder — matching either the AFC_extruder
-        section name (extruder_obj.name) or the toolhead extruder name
-        (extruder_obj.th_extruder_name, added upstream in v1.1.22). Returns None
-        if it can't be resolved unambiguously, logging what IS available so a
-        config mismatch is obvious.
+        lane(s) driving that extruder — matching either the AFC_extruder section
+        name (extruder_obj.name) or the toolhead extruder name
+        (extruder_obj.th_extruder_name, added upstream in v1.1.22).
+
+        Returns a ``(lane, extruder)`` pair:
+          * ``(lane, None)``  — resolved to a single AFC lane.
+          * ``(None, ext)``   — the name is an extruder fed by *multiple* lanes
+            (e.g. a combined ACE unit on one U1 toolhead). The channel is an
+            extruder-mounted antenna that reads whichever lane is currently
+            loaded; the caller registers it for live per-scan resolution.
+          * ``(None, None)``  — couldn't resolve; logs what IS available so a
+            config mismatch is obvious.
 
         :param name: configured name — an AFC lane name or an extruder name.
-        :return: the resolved AFCLane, or None if it can't be resolved
-            unambiguously.
+        :return tuple: ``(lane, extruder)`` per the cases above.
         """
         lane = self.afc.lanes.get(name)
         if lane is not None:
-            return lane
+            return lane, None
 
         def _ext_names(l):
             """Return the set of extruder names associated with a lane.
@@ -260,6 +279,7 @@ class AFC_U1_RFID:
                     getattr(e, 'th_extruder_name', None)}
 
         matches = [l for l in self.afc.lanes.values() if name in _ext_names(l)]
+        ext_obj = getattr(matches[0], 'extruder_obj', None) if matches else None
         # Also consult the extruder registry directly, in case a lane's
         # extruder_obj linkage isn't reflected in the scan above.
         if not matches:
@@ -272,15 +292,15 @@ class AFC_U1_RFID:
                         ext = e
                         break
             if ext is not None:
+                ext_obj = ext
                 matches = list(getattr(ext, 'lanes', {}).values())
 
         if len(matches) == 1:
-            return matches[0]
+            return matches[0], None
         if len(matches) > 1:
-            self.logger.warning(
-                f"U1 RFID: '{name}' matches {len(matches)} lanes on that "
-                f"extruder — use the specific lane name instead")
-            return None
+            # Combined unit: one antenna feeds several lanes into one extruder.
+            # Resolve to the loaded lane at scan time instead of failing.
+            return None, ext_obj
 
         # Nothing matched — surface what's registered so the user can correct
         # the config. (Upstream v1.1.22 made standalone lanes opt-in via
@@ -294,7 +314,21 @@ class AFC_U1_RFID:
             f"{avail_lanes}; extruders={avail_ext}. If '{name}' is a standalone "
             f"toolhead, ensure its [AFC_stepper] has 'standalone: True' and the "
             f"[AFC_extruder {name}] section exists.")
-        return None
+        return None, None
+
+    def _loaded_lane_for_extruder(self, ext):
+        """Return the lane currently loaded to a combined extruder, or None.
+
+        The extruder-mounted antenna reads whatever filament is at the toolhead,
+        which is the lane AFC records as loaded (``extruder_obj.lane_loaded``).
+
+        :param ext: the AFC_extruder object for the combined toolhead.
+        :return: the loaded AFCLane, or None if nothing is loaded there.
+        """
+        loaded = getattr(ext, 'lane_loaded', None)
+        if not loaded:
+            return None
+        return getattr(ext, 'lanes', {}).get(loaded)
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel.
@@ -307,6 +341,24 @@ class AFC_U1_RFID:
         self._lane_objects[lane.name] = lane
         self._last_uid[channel] = None
         self._channel_to_lane[channel] = lane.name
+        self._consecutive_failures[channel] = 0
+
+    def register_extruder_channel(self, extruder, channel: int):
+        """Register a channel whose antenna reads a combined extruder's lanes.
+
+        Unlike :meth:`register_lane` there is no fixed lane — at scan time the
+        channel resolves to whichever lane is loaded to ``extruder``. Keyed into
+        the same poll/callback maps (by extruder name) so the existing read path
+        picks it up; ``_check_channel`` does the live lane resolution.
+
+        :param extruder: AFC_extruder object for the combined toolhead.
+        :param channel: U1 filament_detect channel index.
+        """
+        ext_name = getattr(extruder, 'name', None) or ("ch%d" % channel)
+        self._channel_to_extruder[channel] = extruder
+        self._lane_channel_map[ext_name] = channel
+        self._channel_to_lane[channel] = ext_name
+        self._last_uid[channel] = None
         self._consecutive_failures[channel] = 0
 
     def start(self):
@@ -631,7 +683,16 @@ class AFC_U1_RFID:
             info = self._get_channel_info(channel)
         # Standalone scanner channel: no lane; the scan stages next_spool_id.
         scanner_only = channel in self._cfg_scanner_channels
-        lane = None if scanner_only else self._lane_objects.get(lane_name)
+        # Extruder-mounted antenna (combined unit): resolve to the lane loaded
+        # to that extruder, since one antenna reads whichever lane is at the
+        # toolhead. lane may be None if nothing is loaded there right now.
+        ext_obj = self._channel_to_extruder.get(channel)
+        ext_channel = ext_obj is not None
+        if ext_channel:
+            lane = self._loaded_lane_for_extruder(ext_obj)
+            lane_name = getattr(lane, 'name', lane_name)
+        else:
+            lane = None if scanner_only else self._lane_objects.get(lane_name)
         is_scanner = scanner_only or (
             lane is not None and getattr(lane, 'spool_scanner', False))
 
@@ -664,7 +725,10 @@ class AFC_U1_RFID:
         if not scanner_only and lane is None:
             return
 
-        if not is_scanner and getattr(lane, "status", "") in self._LOCKED_STATES:
+        # An extruder-mounted antenna only ever reads the lane while it IS
+        # loaded (a locked state), so the lock guard must not suppress it there.
+        if (not is_scanner and not ext_channel
+                and getattr(lane, "status", "") in self._LOCKED_STATES):
             return
 
         # Webhook-preference grace: defer a colour-lossy filament_detect ('poll')
