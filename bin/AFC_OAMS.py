@@ -929,6 +929,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
                 self.logger.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 45 seconds")
+                # The firmware is still running its load routine (e.g. a stuck
+                # spool that never trips the hub sensor). Clearing only the
+                # host-side action_status leaves the MCU wedged and it rejects
+                # every subsequent command with ERROR_BUSY until reboot, so send
+                # the firmware cancel to actually release it before we give up.
+                try:
+                    self.load_spool_cancel()
+                except Exception as e:
+                    self.logger.warning(
+                        f"OAMS[{self.oams_idx}]: Failed to cancel stuck load after timeout: {e}"
+                    )
                 self.action_status      = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return OAMSOpCode.ERROR_UNSPECIFIED, "OAMS load operation timed out (MCU unresponsive)"
@@ -1058,6 +1069,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         """
         if self.action_status is None:
             return
+
+        # Tell the firmware to actually stop the in-flight action. Clearing only
+        # the host-side action_status leaves the MCU wedged in its load routine,
+        # which then rejects every subsequent command with ERROR_BUSY until the
+        # unit is power-cycled.
+        try:
+            self.load_spool_cancel()
+        except Exception as e:
+            self.logger.warning(
+                f"OAMS[{self.oams_idx}]: Failed to send firmware cancel during abort: {e}"
+            )
 
         if wait:
             self.logger.debug(
