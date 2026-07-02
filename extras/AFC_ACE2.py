@@ -338,10 +338,13 @@ def method_to_v2(method, params):
         enable = bool(params.get('enable', True))
         return Cmd.SET_RFID_ENABLE, pb_uint32(1, slot) + pb_bool(2, enable)
     if method == 'set_feed_check':
-        # Encoder feed-check window: check_length samples, error_length is the
-        # minimum movement before a feed/assist error fires. Both 3..254, with
-        # error_length <= check_length. A wider window + error_length closer to
-        # check_length = fewer false assist errors.
+        # V2 SET_FEED_CHECK: field 1 = check_length (the MINIMUM encoder reading
+        # required to pass), field 2 = error_length (commanded feed distance /
+        # checkpoint where the check is evaluated). Both 3..254. The real
+        # constraint is check_length < error_length * 1.2342 (enforced in
+        # __init__), NOT an ordering between the two. Lower check_length to widen
+        # the slip tolerance and cut false assist errors. See feed_check_length /
+        # feed_error_length in __init__ for the authoritative description.
         check_len = int(params.get('check_length', 254))
         error_len = int(params.get('error_length', 254))
         return Cmd.SET_FEED_CHECK, (pb_uint32(1, check_len)
