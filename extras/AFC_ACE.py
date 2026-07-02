@@ -1706,6 +1706,13 @@ class afcACE(afcUnit):
             self.gcode.run_script_from_command(afc.post_unload_macro)
         cur_lane.set_tool_unloaded(normal_toolchange=True)
         cur_lane.status = AFCLaneState.NONE
+        # tool_loaded is only cleared here; _set_hub_state derives virtual-hub
+        # occupancy from it, and the earlier call in _ace_unload_inner ran while
+        # tool_loaded was still True, leaving a stale raw_load_state=True. Without
+        # this refresh a lane->lane toolchange on a combined unit loads before the
+        # next hardware poll clears it and bails "Hub not clear" on the shared
+        # virtual hub (any(lane.raw_load_state)).
+        self._set_hub_state(cur_lane, False)
         afc.save_vars()
         return True
 
