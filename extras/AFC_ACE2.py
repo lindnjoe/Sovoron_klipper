@@ -433,7 +433,6 @@ def _decode_status(fields):
         })
     while len(slots) < 4:
         slots.append({
-            'index': len(slots),
             'status': 'empty', 'slot_status': 'unknown',
             'sku': '', 'type': '', 'rfid': 0, 'brand': '',
             'color': [0, 0, 0],
