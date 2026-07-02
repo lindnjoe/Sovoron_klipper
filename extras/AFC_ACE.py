@@ -1464,7 +1464,11 @@ class afcACE(afcUnit):
 
         :param cur_lane: Lane whose toolhead sensor/buffer latch state to clear.
         """
-        sensor_obj = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
+        # The U1 toolhead motion sensor is stored by AFC_extruder as
+        # 'fila_tool_start' (when u1_filament_sensor_name is configured);
+        # 'filament_sensor_obj' is never assigned, so fall back to it.
+        sensor_obj = (getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
+                      or getattr(cur_lane.extruder_obj, 'fila_tool_start', None))
         if sensor_obj is not None:
             sensor_obj.runout_helper.filament_present = False
         if hasattr(cur_lane.extruder_obj, 'tool_start_state'):
@@ -1482,7 +1486,11 @@ class afcACE(afcUnit):
         :param cur_lane: Lane whose toolhead sensor to check.
         :return bool: True when the toolhead pre-sensor reports filament.
         """
-        sensor_obj = getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
+        # The U1 toolhead motion sensor is stored by AFC_extruder as
+        # 'fila_tool_start' (when u1_filament_sensor_name is configured);
+        # 'filament_sensor_obj' is never assigned, so fall back to it.
+        sensor_obj = (getattr(cur_lane.extruder_obj, 'filament_sensor_obj', None)
+                      or getattr(cur_lane.extruder_obj, 'fila_tool_start', None))
         if sensor_obj is not None and hasattr(sensor_obj, 'runout_buttun_state'):
             return bool(sensor_obj.runout_buttun_state)
         return cur_lane.get_toolhead_pre_sensor_state()
