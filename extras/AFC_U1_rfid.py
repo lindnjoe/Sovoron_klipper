@@ -106,6 +106,15 @@ class AFC_U1_RFID:
         # off so creating Spoolman entries is an explicit choice.
         self._scanner_auto_create = config.getboolean(
             'scanner_auto_create', False)
+        # Stable-read gate for scanner channels: require the same UID on N
+        # consecutive reads before acting. RFID antennas can return a corrupt or
+        # partial UID on a single read, and since a spool's identity IS its UID,
+        # one bad read spawns a junk Spoolman spool. Raise this (e.g. 2-3) when a
+        # scanner antenna gives flaky reads. Default 1 = act on the first read
+        # (unchanged behaviour). Lane channels are unaffected.
+        self._scanner_confirm_reads = config.getint(
+            'scanner_confirm_reads', 1, minval=1)
+        self._pending_confirm: Dict[int, tuple] = {}  # channel -> (uid, count)
         # Default auto-create for LANE reads via this reader (extruder1/2/3 etc.
         # whose unit/extruder are upstream-frozen and can't take the option). A
         # lane's unit/extruder auto_spoolman_create still overrides this.
@@ -662,6 +671,7 @@ class AFC_U1_RFID:
 
         card_uid = info.get("CARD_UID")
         if not card_uid or card_uid == 0:
+            self._pending_confirm.pop(channel, None)
             if self._last_uid.get(channel) not in (None, 0):
                 if not is_scanner:
                     self._last_uid[channel] = 0
@@ -682,6 +692,25 @@ class AFC_U1_RFID:
 
         if card_uid == self._last_uid.get(channel):
             return
+
+        # Scanner stable-read gate: discard intermittent corrupt/partial UID
+        # reads by requiring the same UID on N consecutive reads before acting.
+        # A different UID mid-confirmation resets the count, so a stable clean
+        # read wins over transient misreads. Only applies to scanner reads from
+        # the noisy filament_detect path — a webhook is an authoritative
+        # full-data push and acts immediately.
+        if (is_scanner and self._scanner_confirm_reads > 1
+                and source != 'webhook'):
+            pending, count = self._pending_confirm.get(channel, (None, 0))
+            count = count + 1 if card_uid == pending else 1
+            self._pending_confirm[channel] = (card_uid, count)
+            if count < self._scanner_confirm_reads:
+                self.logger.debug(
+                    f"U1 RFID: ch{channel} UID {self._fmt_uid(card_uid)} seen "
+                    f"{count}/{self._scanner_confirm_reads} — waiting for a "
+                    f"stable read")
+                return
+            self._pending_confirm.pop(channel, None)
 
         if not scanner_only and lane is None:
             return
